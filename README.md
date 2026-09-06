@@ -31,7 +31,7 @@ Providers of generative AI systems must ensure their outputs are marked in a mac
 1. Clone this repository.
 2. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`), enable **Developer mode**.
 3. Click **Load unpacked** and select the repository folder.
-4. Browse. The pill appears bottom-right; the toolbar icon shows a count of flagged items and opens the full report. Settings live under the ⚙ button.
+4. Browse. The pill appears bottom-right; the toolbar icon shows a count of flagged items and opens the full report. **Copy** in the popup puts the whole report on the clipboard as JSON, for keeping evidence. Settings live under the ⚙ button and apply immediately.
 
 Requires Chrome/Chromium 116 or newer.
 
@@ -40,8 +40,11 @@ Requires Chrome/Chromium 116 or newer.
 ```
 npm test          # unit tests (Node ≥ 18, no dependencies)
 npm run lint      # syntax check of every script
+npm run e2e       # loads the extension into Chromium via Playwright and checks a fixture site
 npm run icons     # regenerate icons/*.png
 ```
+
+The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Both suites run in GitHub Actions (`.github/workflows/test.yml`).
 
 Layout:
 
@@ -61,6 +64,7 @@ content/overlay.js          shadow-DOM pill, panel, badges and popovers
 popup/                      toolbar report
 options/                    settings page
 test/                       node:test suites with synthetic JPEG/PNG/WebP/C2PA fixtures
+test/e2e/                   Playwright run against a fixture site with the extension loaded
 ```
 
 Every `lib/*.js` file is a plain script in the extension and a CommonJS module under Node, so the analysers are unit-tested with synthetic fixtures (`test/helpers.js` builds PNG chunks, TIFF/EXIF blocks, XMP packets, JUMBF boxes and CBOR claims from scratch).

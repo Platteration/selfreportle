@@ -22,12 +22,21 @@
     try { await chrome.tabs.sendMessage(tab.id, { type: 'srl:toggle-overlay' }); } catch (e) { /* ignore */ }
   });
 
+  let current = null;
+  $('copy').addEventListener('click', async () => {
+    if (!current) return;
+    const report = { generatedBy: 'Selfreportle ' + chrome.runtime.getManifest().version, generatedAt: new Date().toISOString(), ...current };
+    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); $('copy').textContent = 'Copied'; } catch (e) { $('copy').textContent = 'Failed'; }
+    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500);
+  });
+
   async function load() {
     let result = null;
     try { result = await chrome.runtime.sendMessage({ type: 'srl:get-result', tabId: tab.id }); } catch (e) { result = null; }
     if (!result) {
       try { result = await chrome.tabs.sendMessage(tab.id, { type: 'srl:get-page-result' }); } catch (e) { result = null; }
     }
+    current = result;
     render(result);
   }
 

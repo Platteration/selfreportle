@@ -97,6 +97,15 @@ async function analyzeImages(images, settings) {
 async function analyzeOne(img, maxBytes) {
   const url = img.url || '';
   const base = { id: img.id, url };
+  if (img.base64) {
+    try {
+      const bytes = fromBase64(img.base64);
+      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated });
+      return { ...base, format: analysed.format, bytes: bytes.length, truncated: !!img.truncated, signals: analysed.signals, metadata: analysed.metadata };
+    } catch (e) {
+      return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not parse image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
+    }
+  }
   if (!/^(https?|data|file):/i.test(url)) {
     return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Cannot fetch this image type', detail: url.slice(0, 12) + '…' }] };
   }
@@ -113,6 +122,13 @@ async function analyzeOne(img, maxBytes) {
   if (imageCache.size >= IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
   imageCache.set(cacheKey, outcome);
   return { ...base, ...outcome };
+}
+
+function fromBase64(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 async function fetchBytes(url, maxBytes) {

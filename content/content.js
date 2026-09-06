@@ -40,6 +40,19 @@
     }, 1000);
   }
 
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync') return;
+    S.settings.load().then((s) => {
+      const wasEnabled = settings.enabled && !S.settings.isHostDisabled(settings, location.hostname);
+      settings = s;
+      const nowEnabled = s.enabled && !S.settings.isHostDisabled(s, location.hostname);
+      if (!nowEnabled) { S.overlay.clearMarkers(); S.overlay.setVisible(false); return; }
+      if (!wasEnabled) { S.overlay.init(s); S.overlay.setVisible(true); observeMutations(); }
+      S.overlay.applySettings(s);
+      analyze(true);
+    });
+  });
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.type !== 'string') return false;
     if (msg.type === 'srl:rescan') {
@@ -215,13 +228,18 @@
   function collectImages() {
     const out = [];
     for (const img of document.images) {
-      if (imageState.has(img)) continue;
       if (img.closest('[data-srl-ui]')) continue;
+      const url = img.currentSrc || img.src;
+      if (!url) continue;
+      const prev = imageState.get(img);
+      if (prev) {
+        if (prev.url === url) continue;
+        S.overlay.removeMarker(prev.key);   // src changed: analyse again
+        imageState.delete(img);
+      }
       const r = img.getBoundingClientRect();
       const w = r.width || img.width, h = r.height || img.height;
       if (w < settings.minImageSize || h < settings.minImageSize) continue;
-      const url = img.currentSrc || img.src;
-      if (!url) continue;
       out.push({ el: img, url, alt: img.alt || '', title: img.title || '', ariaLabel: img.getAttribute('aria-label') || '', caption: captionFor(img), w: Math.round(w), h: Math.round(h) });
     }
     return out;
@@ -235,9 +253,20 @@
       const st = { key, el: item.el, url: item.url, hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
       imageState.set(item.el, st);
       applyImageVerdict(st);
-      const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && !/^blob:/i.test(item.url) && imageState.size <= settings.maxImages;
+      const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && imageState.size <= settings.maxImages;
       if (fetchable) toFetch.push({ st, msg: { id: key, url: item.url } });
       else st.done = true;
+    }
+    // blob: URLs are only reachable from the page itself: read them here and
+    // hand the bytes (base64, capped) to the service worker.
+    for (const entry of toFetch) {
+      if (!/^blob:/i.test(entry.msg.url)) continue;
+      try {
+        const buf = await (await fetch(entry.msg.url)).arrayBuffer();
+        const cap = Math.min(buf.byteLength, settings.maxImageBytes);
+        entry.msg.base64 = toBase64(new Uint8Array(buf, 0, cap));
+        entry.msg.truncated = cap < buf.byteLength;
+      } catch (e) { entry.msg.base64 = null; }
     }
     pendingImages += toFetch.length;
     refreshSummary();
@@ -275,6 +304,12 @@
       if (st.bytes && st.bytes.format) details.push({ label: 'Inspected ' + Math.round((st.bytes.size || 0) / 1024) + ' KB of ' + st.bytes.format.toUpperCase() + (st.bytes.truncated ? ' (truncated)' : ''), detail: '' });
       S.overlay.upsertMarker({ key: st.key, el: st.el, kind: 'image', verdict: st.verdict, details });
     } else S.overlay.removeMarker(st.key);
+  }
+
+  function toBase64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
   }
 
   /* ---- summary / reporting --------------------------------------------- */
@@ -325,10 +360,8 @@
         const id = runId;
         const imgs = collectImages();
         if (imgs.length) processImages(imgs, id);
-        if (settings.showTextMarkers || true) {
-          const t = analyzeTextBlocks(true);
-          if (result) { result.text = t; refreshSummary(); }
-        }
+        const t = analyzeTextBlocks(true);
+        if (result) { result.text = t; refreshSummary(); }
         S.overlay.reposition();
       }, 900);
     });

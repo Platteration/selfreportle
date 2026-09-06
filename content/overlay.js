@@ -21,7 +21,7 @@
     .badge:hover { filter: brightness(1.08); }
     .badge[hidden] { display: none; }
     .badge .ic { font-size: 10px; }
-    .pill { position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; pointer-events: auto; display: flex; align-items: center; gap: 8px;
+    .pill { all: unset; position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; pointer-events: auto; display: flex; align-items: center; gap: 8px;
       background: #1f2430; color: #fff; border-radius: 999px; padding: 6px 10px 6px 12px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.35); cursor: pointer; }
     .pill .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c, #7a7f87); box-shadow: 0 0 0 2px rgba(255,255,255,.15); }
     .pill .lbl { opacity: .85; }
@@ -73,7 +73,9 @@
     shadow.appendChild(style);
     layer = el('div', 'layer');
     shadow.appendChild(layer);
-    pill = el('div', 'pill');
+    pill = el('button', 'pill');
+    pill.type = 'button';
+    pill.setAttribute('aria-label', 'Selfreportle AI content summary. Activate to open the panel.');
     pill.hidden = !settings.showPill;
     pill.addEventListener('click', (e) => {
       if (e.target.classList.contains('x')) { pill.hidden = true; panel.hidden = true; return; }
@@ -289,8 +291,17 @@
     if (v) schedule();
   }
 
+  function applySettings(s) {
+    settings = s || settings;
+    if (!host) return;
+    pill.hidden = !visible || !settings.showPill;
+    for (const m of [...markers.values()]) {
+      if ((m.kind === 'image' && !settings.showImageBadges) || (m.kind === 'text' && !settings.showTextMarkers)) removeMarker(m.key);
+    }
+  }
+
   function togglePanel() { if (panel) panel.hidden = !panel.hidden; }
   function isVisible() { return visible; }
 
-  S.overlay = { init, upsertMarker, removeMarker, clearMarkers, setSummary, setVisible, isVisible, togglePanel, reposition: schedule };
+  S.overlay = { init, upsertMarker, removeMarker, clearMarkers, setSummary, setVisible, isVisible, togglePanel, applySettings, reposition: schedule };
 })();

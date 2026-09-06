@@ -4,9 +4,10 @@
   "description": "Chromium extension that surfaces AI-content provenance and disclosure signals for a page's code, text and images (EU AI Act Article 50 context).",
   "private": true,
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node --test \"test/*.test.js\"",
     "icons": "node scripts/make-icons.js",
-    "lint": "node --check lib/*.js background/*.js content/*.js popup/*.js options/*.js"
+    "lint": "node --check lib/*.js background/*.js content/*.js popup/*.js options/*.js",
+    "e2e": "node test/e2e/run.js"
   },
   "engines": {
     "node": ">=18"
