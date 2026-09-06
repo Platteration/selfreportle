@@ -1,0 +1,9 @@
+/* Selfreportle — page-level marks for text blocks. Only attribute selectors,
+ * no layout changes (box-shadow does not affect flow). */
+[data-srl-text] { box-shadow: -4px 0 0 0 var(--srl-mark, #7a7f87) !important; }
+[data-srl-text="ai"] { --srl-mark: #d64545; }
+[data-srl-text="likely-ai"] { --srl-mark: #e07b1a; }
+[data-srl-text="possible-ai"] { --srl-mark: #b8b400; }
+[data-srl-text="ai-disclosed"], [data-srl-text="ai-assisted-disclosed"] { --srl-mark: #c99a00; }
+[data-srl-text="human-disclosed"] { --srl-mark: #2f9e5f; }
+[data-srl-hidden="1"] { box-shadow: none !important; }

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Selfreportle</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="logo"></span><div><h1>Selfreportle</h1><div class="sub">AI content signals for this page</div></div></div>
+    <div class="actions">
+      <button id="rescan" title="Analyse the page again">Rescan</button>
+      <button id="toggle" title="Show or hide in-page badges">Badges</button>
+      <button id="options" title="Settings">⚙</button>
+    </div>
+  </header>
+  <div id="url" class="url"></div>
+  <div id="overall" class="overall"></div>
+  <main id="main">
+    <div class="empty" id="empty">Nothing analysed yet for this tab. Reload the page or press Rescan. Browser-internal pages and the Web Store cannot be inspected.</div>
+  </main>
+  <footer>
+    <details>
+      <summary>About these signals and EU AI Act Article 50</summary>
+      <p><b>Site / code</b>: fingerprints of AI site generators (Lovable, v0, Bolt, Base44 …), meta tags and structured data that declare AI content, and comments crediting AI coding tools.</p>
+      <p><b>Text</b>: visible disclosures, hidden Unicode watermark characters (zero-width, tag, variation-selector runs), chat-transcript leakage, markdown residue, and stylometric heuristics. Heuristics are indicative only and are capped below the strongest verdict.</p>
+      <p><b>Images</b>: C2PA Content Credentials (claim generator, actions, digital source type, signer), IPTC/XMP digital source type, EXIF software, and generator parameters embedded by Stable Diffusion, ComfyUI, NovelAI, Midjourney. Signatures are parsed, not cryptographically verified. Invisible pixel watermarks (SynthID and similar) need vendor keys and are not detected.</p>
+      <p><b>EU AI Act (Regulation (EU) 2024/1689), Article 50</b>: providers must mark AI-generated audio, image, video and text in a machine-readable, detectable way; deployers must disclose deepfakes and AI-generated text published to inform the public on matters of public interest (unless a human has editorial responsibility). These obligations apply from 2 August 2026. The absence of signals is not proof of human origin, and a disclosure is a self-report.</p>
+    </details>
+  </footer>
+  <script src="../lib/signals.js"></script>
+  <script src="../lib/verdicts.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

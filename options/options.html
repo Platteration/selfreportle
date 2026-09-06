@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Selfreportle settings</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #fff; --fg: #1f2430; --muted: #6b7280; --line: #e5e7eb; --card: #f7f8fa; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #1b1f27; --fg: #e8eaf0; --muted: #9aa3b2; --line: #2e3440; --card: #232834; } }
+    body { margin: 0; padding: 24px; max-width: 720px; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin-bottom: 20px; }
+    fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 0 0 16px; }
+    legend { font-weight: 600; padding: 0 6px; }
+    label.row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+    label.row:first-of-type { border-top: 0; }
+    label.row small { display: block; color: var(--muted); }
+    input[type="number"], select, textarea { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+    input[type="number"] { width: 110px; }
+    textarea { width: 100%; min-height: 70px; }
+    .actions { display: flex; gap: 8px; align-items: center; }
+    button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+    button.primary { background: #3b7dd8; border-color: #3b7dd8; color: #fff; }
+    #status { color: var(--muted); }
+    .privacy { font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>Selfreportle settings</h1>
+  <div class="sub">Controls for how AI-content signals are gathered and shown.</div>
+  <form id="form">
+    <fieldset>
+      <legend>General</legend>
+      <label class="row"><span>Enable analysis<small>Turn the extension off everywhere without uninstalling.</small></span><input type="checkbox" name="enabled"></label>
+      <label class="row"><span>Skip these hosts<small>One hostname per line. Subdomains are included.</small></span><textarea name="disabledHosts" placeholder="example.com&#10;intranet.local"></textarea></label>
+    </fieldset>
+    <fieldset>
+      <legend>In-page display</legend>
+      <label class="row"><span>Floating summary pill<small>Bottom-right summary that expands into a panel.</small></span><input type="checkbox" name="showPill"></label>
+      <label class="row"><span>Image badges<small>Badge on each image with a provenance signal.</small></span><input type="checkbox" name="showImageBadges"></label>
+      <label class="row"><span>Text markers<small>Left bar and chip on flagged paragraphs.</small></span><input type="checkbox" name="showTextMarkers"></label>
+      <label class="row"><span>Badge images with no signals too<small>Shows a grey badge on inspected images that carry no provenance at all.</small></span><input type="checkbox" name="markUnflaggedImages"></label>
+    </fieldset>
+    <fieldset>
+      <legend>Images</legend>
+      <label class="row"><span>Read embedded image metadata<small>Fetches image bytes (without cookies) to read C2PA, XMP, EXIF and PNG generator chunks. Turn off to analyse captions and URLs only.</small></span><input type="checkbox" name="fetchImages"></label>
+      <label class="row"><span>Maximum images per page</span><input type="number" name="maxImages" min="0" max="500"></label>
+      <label class="row"><span>Bytes inspected per image (KB)<small>Provenance metadata usually sits in the first few hundred KB.</small></span><input type="number" name="maxImageKB" min="64" max="32768"></label>
+      <label class="row"><span>Minimum rendered size (px)<small>Smaller images (icons, trackers) are ignored.</small></span><input type="number" name="minImageSize" min="16" max="2000"></label>
+    </fieldset>
+    <fieldset>
+      <legend>Text</legend>
+      <label class="row"><span>Stylometry sensitivity<small>Scales heuristic (vocabulary, rhythm) signals. Hard signals such as hidden characters and disclosures are unaffected.</small></span>
+        <select name="sensitivity"><option value="low">Low (fewer false alarms)</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+    </fieldset>
+    <div class="actions"><button type="submit" class="primary">Save</button><button type="button" id="reset">Reset to defaults</button><button type="button" id="clearCache">Clear image cache</button><span id="status"></span></div>
+  </form>
+  <p class="privacy">Privacy: all analysis runs locally in your browser. The only network activity is fetching image bytes from the sites you visit (credentials omitted). Nothing is sent to the extension author or any third party.</p>
+  <script src="../lib/settings.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
