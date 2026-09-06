@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Selfreportle – AI Content Disclosure Detector",
+  "name": "Selfreportle \u2013 AI Content Disclosure Detector",
   "short_name": "Selfreportle",
   "version": "0.1.0",
   "description": "Shows whether a page's code, text and images carry AI-generation markers or disclosures (C2PA Content Credentials, IPTC/XMP metadata, generator fingerprints, hidden Unicode watermarks) in the context of EU AI Act Article 50.",
@@ -12,7 +12,7 @@
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_title": "Selfreportle – AI content signals for this page",
+    "default_title": "Selfreportle \u2013 AI content signals for this page",
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -34,7 +34,11 @@
   ],
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
       "js": [
         "lib/signals.js",
         "lib/settings.js",
@@ -42,10 +46,13 @@
         "lib/text-analyzer.js",
         "lib/site-analyzer.js",
         "lib/image-hints.js",
+        "lib/attribution.js",
         "content/overlay.js",
         "content/content.js"
       ],
-      "css": ["content/content.css"],
+      "css": [
+        "content/content.css"
+      ],
       "run_at": "document_idle"
     }
   ]

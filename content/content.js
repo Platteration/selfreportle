@@ -81,11 +81,15 @@
     }
     const snapshot = collectSnapshot();
     const site = S.siteAnalyzer.analyzeSite(snapshot);
+    site.attribution = S.attribution.attributeSite(site, snapshot);
     const disclosures = S.signals.findDisclosures(snapshot.bodyText, { max: 25 }).map(({ level, match, context, scope }) => ({ level, match, context, scope }));
     const text = analyzeTextBlocks();
+    const metaText = snapshot.metas.filter((m) => /generator|ai/i.test(m.name || m.property || '')).map((m) => (m.name || m.property) + '=' + m.content).join(' | ');
+    const textHints = { disclosures: disclosures.filter((d) => d.scope === 'text' || d.scope === 'general'), metaText };
+    text.attribution = S.attribution.attributeText(text, textHints);
     result = {
       url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
-      site, text, disclosures,
+      site, text, disclosures, textHints,
       images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
     };
     refreshSummary();
@@ -186,7 +190,13 @@
       if (r.verdict === 'no-signal') continue;
       verdicts.push(r.verdict);
       const key = 't' + (++textCounter);
-      S.overlay.upsertMarker({ key, el: b.el, kind: 'text', verdict: r.verdict, details: r.signals.map((s) => ({ label: s.label, detail: s.detail })) });
+      const blockAttr = S.attribution.attributeText({ verdict: r.verdict, disclosures: r.disclosures, page: { signals: r.signals } });
+      const details = r.signals.map((s) => ({ label: s.label, detail: s.detail }));
+      if (blockAttr) {
+        details.unshift({ label: 'Likely tool: ' + blockAttr.name, detail: S.attribution.CONFIDENCE_LABEL[blockAttr.confidence] + (blockAttr.evidence ? ' · ' + blockAttr.evidence : '') });
+        for (const k of S.attribution.skewsFor(blockAttr, 'text').slice(0, 3)) details.push({ label: 'Skew · ' + k.area, detail: k.note });
+      }
+      S.overlay.upsertMarker({ key, el: b.el, kind: 'text', verdict: r.verdict, details });
       flagged.push({ verdict: r.verdict, score: r.score, words: r.words, excerpt: b.text.replace(/\s+/g, ' ').trim().slice(0, 160), signals: r.signals.slice(0, 6).map(({ id, kind, label, detail, weight }) => ({ id, kind, label, detail, weight })) });
     }
     let page = null;
@@ -298,9 +308,14 @@
   function applyImageVerdict(st) {
     const c = V.combineImageSignals(st.signals);
     st.verdict = c.verdict; st.score = c.score;
+    st.attribution = V.AI_IMAGE_VERDICTS.has(st.verdict) ? S.attribution.attributeImage(st.signals, st.bytes && st.bytes.metadata) : null;
     const show = st.verdict !== 'no-signal' && st.verdict !== 'unavailable' ? true : settings.markUnflaggedImages && st.done;
     if (show) {
       const details = st.signals.filter((s) => s.label).map((s) => ({ label: s.label, detail: s.detail }));
+      if (st.attribution) {
+        details.unshift({ label: 'Likely tool: ' + st.attribution.name, detail: S.attribution.CONFIDENCE_LABEL[st.attribution.confidence] + (st.attribution.evidence ? ' · ' + st.attribution.evidence : '') + (st.attribution.detail ? ' · ' + st.attribution.detail : '') });
+        for (const k of S.attribution.skewsFor(st.attribution, 'image').slice(0, 3)) details.push({ label: 'Skew · ' + k.area, detail: k.note });
+      }
       if (st.bytes && st.bytes.format) details.push({ label: 'Inspected ' + Math.round((st.bytes.size || 0) / 1024) + ' KB of ' + st.bytes.format.toUpperCase() + (st.bytes.truncated ? ' (truncated)' : ''), detail: '' });
       S.overlay.upsertMarker({ key: st.key, el: st.el, kind: 'image', verdict: st.verdict, details });
     } else S.overlay.removeMarker(st.key);
@@ -323,14 +338,36 @@
       counts[st.verdict] = (counts[st.verdict] || 0) + 1;
       if (st.bytes) inspected++;
       if (st.verdict !== 'no-signal' && st.verdict !== 'unavailable' && items.length < 100) {
-        items.push({ url: st.url.slice(0, 500), verdict: st.verdict, score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
+        items.push({ url: st.url.slice(0, 500), verdict: st.verdict, score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, attribution: st.attribution ? stripSkews(st.attribution) : null, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
       }
     }
     result.images = { total: imageState.size, inspected, pending: pendingImages, counts, items };
     result.overall = V.overall(result);
-    S.overlay.setSummary({ overall: result.overall, site: result.site, text: result.text, images: result.images, disclosures: result.disclosures.filter((d) => d.level !== 'weak' && d.level !== 'human') });
+    result.aiSystems = collectAiSystems();
+    S.overlay.setSummary({ overall: result.overall, site: result.site, text: result.text, images: result.images, aiSystems: result.aiSystems, disclosures: result.disclosures.filter((d) => d.level !== 'weak' && d.level !== 'human') });
     clearTimeout(postTimer);
     postTimer = setTimeout(postResult, 250);
+  }
+
+  function stripSkews(a) { const { skews, ...rest } = a; return rest; }
+
+  /* Every AI system the page's evidence points to, with the layers it touched. */
+  function collectAiSystems() {
+    const map = new Map();
+    const add = (attr, layer) => {
+      if (!attr) return;
+      const key = attr.id || 'unknown-' + layer;
+      const cur = map.get(key) || { id: attr.id, name: attr.name, vendor: attr.vendor || null, country: attr.country || null, layers: [], confidence: attr.confidence, evidence: attr.evidence, marking: attr.marking || null, count: 0 };
+      if (!cur.layers.includes(layer)) cur.layers.push(layer);
+      cur.count++;
+      const rank = { confirmed: 3, declared: 2, inferred: 1, unknown: 0 };
+      if (rank[attr.confidence] > rank[cur.confidence]) { cur.confidence = attr.confidence; cur.evidence = attr.evidence; cur.name = attr.name; }
+      map.set(key, cur);
+    };
+    add(result.site && result.site.attribution, 'site');
+    add(result.text && result.text.attribution, 'text');
+    for (const st of imageState.values()) add(st.attribution, 'image');
+    return [...map.values()];
   }
 
   function trimMetadata(m) {
@@ -361,7 +398,11 @@
         const imgs = collectImages();
         if (imgs.length) processImages(imgs, id);
         const t = analyzeTextBlocks(true);
-        if (result) { result.text = t; refreshSummary(); }
+        if (result) {
+          t.attribution = S.attribution.attributeText(t, result.textHints);
+          result.text = t;
+          refreshSummary();
+        }
         S.overlay.reposition();
       }, 900);
     });

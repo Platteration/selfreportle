@@ -69,6 +69,13 @@ function loadPlaywright() {
     assert.ok(blob && blob.verdict === 'ai-generated', 'blob: image inspected via content script');
     assert.ok(result.images.total >= 8, 'late-added image picked up (' + result.images.total + ')');
     assert.equal(result.overall, 'undisclosed-ai');
+    const systems = Object.fromEntries((result.aiSystems || []).map((x) => [x.id, x]));
+    assert.equal(systems.lovable && systems.lovable.confidence, 'confirmed', 'site attributed to Lovable');
+    assert.ok(systems.openai && systems.openai.layers.includes('image'), 'C2PA image attributed to OpenAI');
+    assert.ok(systems.openai.layers.includes('text'), 'ChatGPT disclosure attributed to OpenAI');
+    assert.equal(systems.stability && systems.stability.confidence, 'confirmed', 'SD parameters attributed');
+    assert.equal(systems.midjourney && systems.midjourney.confidence, 'declared', 'Midjourney caption attributed');
+    assert.equal(systems.adobe && systems.adobe.confidence, 'confirmed', 'Firefly XMP attributed');
     assert.deepEqual(errors, []);
 
     const hasOverlay = await page.evaluate(() => !!document.querySelector('srl-overlay') && document.querySelectorAll('[data-srl-text]').length >= 4);

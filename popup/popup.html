@@ -26,11 +26,13 @@
       <p><b>Site / code</b>: fingerprints of AI site generators (Lovable, v0, Bolt, Base44 …), meta tags and structured data that declare AI content, and comments crediting AI coding tools.</p>
       <p><b>Text</b>: visible disclosures, hidden Unicode watermark characters (zero-width, tag, variation-selector runs), chat-transcript leakage, markdown residue, and stylometric heuristics. Heuristics are indicative only and are capped below the strongest verdict.</p>
       <p><b>Images</b>: C2PA Content Credentials (claim generator, actions, digital source type, signer), IPTC/XMP digital source type, EXIF software, and generator parameters embedded by Stable Diffusion, ComfyUI, NovelAI, Midjourney. Signatures are parsed, not cryptographically verified. Invisible pixel watermarks (SynthID and similar) need vendor keys and are not detected.</p>
+      <p><b>Attribution and skews</b>: the tool named is the one the evidence points to (confirmed by embedded metadata, declared on the page, or inferred from hosting or style). Skew notes summarise publicly reported tendencies of that vendor's models and of LLMs or image generators in general, reviewed as of the date shown; they describe typical default behaviour, not this specific content.</p>
       <p><b>EU AI Act (Regulation (EU) 2024/1689), Article 50</b>: providers must mark AI-generated audio, image, video and text in a machine-readable, detectable way; deployers must disclose deepfakes and AI-generated text published to inform the public on matters of public interest (unless a human has editorial responsibility). These obligations apply from 2 August 2026. The absence of signals is not proof of human origin, and a disclosure is a self-report.</p>
     </details>
   </footer>
   <script src="../lib/signals.js"></script>
   <script src="../lib/verdicts.js"></script>
+  <script src="../lib/attribution.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

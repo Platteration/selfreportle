@@ -39,3 +39,11 @@ h3 { font-size: 12px; margin: 8px 0 4px; color: var(--muted); text-transform: up
 footer { padding: 4px 12px 10px; font-size: 11px; color: var(--muted); }
 footer summary { cursor: pointer; }
 footer p { margin: 6px 0; }
+
+.attr { padding: 6px 8px; margin: 4px 0 8px; border-radius: 8px; background: var(--card); }
+.attr .d, .item .d { color: var(--muted); font-size: 12px; word-break: break-word; }
+.conf { color: var(--muted); font-weight: 400; font-size: 12px; }
+details summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.skew { padding: 6px 0 4px; border-top: 1px solid var(--line); font-size: 12px; }
+.skew b { display: block; }
+.skew .basis { color: var(--muted); font-size: 11px; }

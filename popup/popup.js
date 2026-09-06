@@ -57,6 +57,7 @@
     ov.appendChild(document.createTextNode(overall.label));
     ov.appendChild(el('small', null, trustHint(r)));
 
+    if (r.aiSystems && r.aiSystems.length) main.appendChild(systemsCard(r.aiSystems));
     main.appendChild(siteCard(r.site || {}, r));
     main.appendChild(textCard(r.text || {}));
     main.appendChild(imagesCard(r.images || {}));
@@ -101,9 +102,73 @@
     return d;
   }
 
+  const A = S.attribution;
+
+  function attributionRow(attr, kind) {
+    if (!attr) return null;
+    const d = el('div', 'attr');
+    const head = el('div');
+    head.appendChild(el('b', null, 'Likely tool: ' + attr.name));
+    head.appendChild(el('span', 'conf', ' · ' + (A.CONFIDENCE_LABEL[attr.confidence] || attr.confidence)));
+    d.appendChild(head);
+    if (attr.evidence) d.appendChild(el('div', 'd', attr.evidence));
+    if (attr.detail) d.appendChild(el('div', 'd', attr.detail));
+    const skews = A.skewsFor(attr.id ? A.profile(attr.id) && { ...attr, skews: A.profile(attr.id).skews } : attr, kind);
+    if (skews.length) {
+      const det = el('details');
+      det.appendChild(el('summary', null, 'Documented skews (' + skews.length + ')'));
+      for (const k of skews) {
+        const li = el('div', 'skew');
+        li.appendChild(el('b', null, k.area + (k.source === 'generic' ? ' (all ' + (kind === 'image' ? 'image generators' : kind === 'site' ? 'AI-built sites' : 'LLMs') + ')' : '')));
+        li.appendChild(el('div', null, k.note));
+        if (k.basis) li.appendChild(el('div', 'basis', 'Basis: ' + k.basis));
+        det.appendChild(li);
+      }
+      d.appendChild(det);
+    }
+    return d;
+  }
+
+  function systemsCard(systems) {
+    const top = systems.slice().sort((a, b) => ({ confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[b.confidence] || 0) - ({ confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[a.confidence] || 0));
+    const named = top.filter((x) => x.id);
+    const { c, bd } = card('AI tools identified', 'site', 'no-signal', null, true, { label: named.length ? named.map((x) => x.vendor || x.name).join(', ') : 'unidentified', color: named.length ? V.COLORS.orange : V.COLORS.grey });
+    for (const sys of top) {
+      const it = el('div', 'item');
+      const head = el('div');
+      head.appendChild(el('b', null, sys.name));
+      head.appendChild(el('span', 'conf', ' · ' + sys.layers.join(', ') + ' · ' + (A.CONFIDENCE_LABEL[sys.confidence] || sys.confidence)));
+      it.appendChild(head);
+      if (sys.vendor) it.appendChild(el('div', 'd', sys.vendor + (sys.country ? ', ' + sys.country : '')));
+      if (sys.evidence) it.appendChild(el('div', 'd', 'Evidence: ' + sys.evidence));
+      if (sys.marking) it.appendChild(el('div', 'd', 'Marking: ' + sys.marking));
+      const prof = sys.id ? A.profile(sys.id) : null;
+      const kind = sys.layers.includes('image') && !sys.layers.includes('text') ? 'image' : sys.layers.includes('site') && sys.layers.length === 1 ? 'site' : 'text';
+      const skews = prof ? A.skewsFor({ ...sys, skews: prof.skews }, kind) : (kind === 'image' ? A.GENERIC_IMAGE_SKEWS : kind === 'site' ? A.GENERIC_SITE_SKEWS : A.GENERIC_TEXT_SKEWS).map((k) => ({ ...k, source: 'generic' }));
+      const own = skews.filter((k) => k.source !== 'generic').map((k) => k.area);
+      const generic = skews.length - own.length;
+      it.appendChild(el('div', 'd', 'Skews: ' + (own.length ? own.join(', ') : 'none specific') + (generic ? ' · +' + generic + ' general' : '')));
+      const det = el('details');
+      det.open = top.length === 1;
+      det.appendChild(el('summary', null, 'Show skews and tendencies (' + skews.length + ')'));
+      for (const k of skews) {
+        const li = el('div', 'skew');
+        li.appendChild(el('b', null, k.area + (k.source === 'generic' ? ' · general' : '')));
+        li.appendChild(el('div', null, k.note));
+        if (k.basis) li.appendChild(el('div', 'basis', 'Basis: ' + k.basis));
+        det.appendChild(li);
+      }
+      it.appendChild(det);
+      bd.appendChild(it);
+    }
+    bd.appendChild(el('div', 'note', 'Skew notes summarise public reports and vendor statements reviewed ' + A.REVIEWED + '. They describe typical default behaviour of the tool, not this specific content, and models change between versions.'));
+    return c;
+  }
+
   function siteCard(site, r) {
     const open = V.AI_SITE_VERDICTS.has(site.verdict);
     const { c, bd } = card('Site & code', 'site', site.verdict, site.score, open);
+    const ar = attributionRow(site.attribution, 'site'); if (ar) bd.appendChild(ar);
     if (site.generator) bd.appendChild(el('div', 'note', 'Generator meta: ' + site.generator));
     for (const s of site.signals || []) bd.appendChild(sigRow(s));
     if (!(site.signals || []).length) bd.appendChild(el('div', 'note', 'No generator fingerprints, disclosure meta tags, structured-data flags or AI code comments found.'));
@@ -114,6 +179,7 @@
   function textCard(text) {
     const open = V.AI_TEXT_VERDICTS.has(text.verdict);
     const { c, bd } = card('Text', 'text', text.verdict, text.score, open);
+    const ar = attributionRow(text.attribution, 'text'); if (ar) bd.appendChild(ar);
     bd.appendChild(el('div', 'note', (text.blocks || 0) + ' text blocks, ' + (text.words || 0) + ' words analysed; ' + (text.flaggedBlocks || 0) + ' flagged.'));
     if (text.page && text.page.signals && text.page.signals.length) {
       bd.appendChild(el('h3', null, 'Whole-page signals'));
@@ -162,6 +228,7 @@
       const u = el('span', 'u', it.url);
       u.title = it.url;
       d.appendChild(u);
+      if (it.attribution) d.appendChild(el('div', 'd', 'Likely tool: ' + it.attribution.name + ' · ' + (A.CONFIDENCE_LABEL[it.attribution.confidence] || '') + (it.attribution.detail ? ' · ' + it.attribution.detail : '')));
       for (const s of (it.signals || []).slice(0, 4)) d.appendChild(sigRow(s));
       if (it.metadata && it.metadata.c2pa) {
         const c2 = it.metadata.c2pa;

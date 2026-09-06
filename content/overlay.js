@@ -226,6 +226,19 @@
     panel.appendChild(row('Site', 'site', sum.site));
     panel.appendChild(row('Text', 'text', sum.text));
     panel.appendChild(imageRow(sum.images));
+    if (sum.aiSystems && sum.aiSystems.length) {
+      const r = el('div', 'row');
+      const k = el('div', 'k'); k.textContent = 'AI tools'; r.appendChild(k);
+      const v = el('div', 'v');
+      for (const a of sum.aiSystems.slice(0, 5)) {
+        const s = el('div', 'sig');
+        s.textContent = a.name + ' (' + a.layers.join(', ') + ')';
+        const sp = el('span'); sp.textContent = ' — ' + (S.attribution.CONFIDENCE_LABEL[a.confidence] || a.confidence); s.appendChild(sp);
+        v.appendChild(s);
+      }
+      const hint = el('div', 'sig'); hint.textContent = 'Open the toolbar popup for each tool\'s documented skews.'; v.appendChild(hint);
+      r.appendChild(v); panel.appendChild(r);
+    }
     if (sum.disclosures && sum.disclosures.length) {
       const r = el('div', 'row');
       const k = el('div', 'k'); k.textContent = 'Disclosed'; r.appendChild(k);
@@ -255,6 +268,7 @@
     const k = el('div', 'k'); k.textContent = label; d.appendChild(k);
     const v = el('div', 'v');
     const t = el('div', 'tag'); t.style.setProperty('--c', info.color); t.appendChild(el('i')); t.appendChild(document.createTextNode(info.label)); v.appendChild(t);
+    if (r.attribution) { const a = el('div', 'sig'); a.textContent = 'Likely tool: ' + r.attribution.name; const sp = el('span'); sp.textContent = ' — ' + (S.attribution.CONFIDENCE_LABEL[r.attribution.confidence] || ''); a.appendChild(sp); v.appendChild(a); }
     for (const s of (r.signals || []).slice(0, 3)) {
       const sg = el('div', 'sig'); sg.textContent = s.label; if (s.detail) { const sp = el('span'); sp.textContent = ' — ' + s.detail.slice(0, 120); sg.appendChild(sp); } v.appendChild(sg);
     }

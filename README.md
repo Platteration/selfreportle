@@ -12,6 +12,17 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
 | **Images** | C2PA Content Credentials (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
+### Which AI, and what it tends to do
+
+For every layer the extension also names the tool the evidence points to, with the strength of that attribution:
+
+* **confirmed** by embedded metadata or artefacts (C2PA claim generator and signer, XMP creator tool, Stable Diffusion parameters including the checkpoint name and front-end, ChatGPT citation markers, site-generator fingerprints);
+* **declared** on the page (a caption, disclosure or meta tag that names the tool);
+* **inferred** from hosting or style (weak, and labelled as a guess);
+* or **unidentified**, in which case the generic tendencies of LLMs, image generators or AI-built sites are shown instead.
+
+Each identified vendor comes with a short list of documented **skews**: sycophancy, measured political lean, content rules of the vendor's jurisdiction (for example PRC-aligned refusals in DeepSeek and Qwen), representation defaults of image generators, commercial grounding, provenance and litigation history, and the underlying model vendor behind site builders such as Lovable, Bolt, v0 and Replit Agent. Every note carries its basis and the catalogue carries a review date (`lib/attribution.js`, `REVIEWED`). These notes describe typical default behaviour reported publicly, not the specific page, and models change between versions.
+
 Verdict colours: red = AI-generated / strong indicators, orange = AI-edited or likely AI, amber = disclosed as AI, yellow = weak signals, green = capture credentials or declared human, blue = algorithmic / conventional builder, grey = no signal.
 
 ### What it cannot do (and says so)
@@ -54,6 +65,7 @@ lib/signals.js              pattern catalogue (tools, builders, disclosures, lex
 lib/text-analyzer.js        text signals
 lib/site-analyzer.js        site/code signals (works on a serialisable DOM snapshot)
 lib/image-hints.js          DOM-side image hints (captions, hosts, file names)
+lib/attribution.js          vendor/product profiles, attribution rules, documented skews
 lib/image-metadata.js       JPEG/PNG/WebP/ISOBMFF parsing: EXIF, XMP, PNG text, C2PA/JUMBF
 lib/cbor.js                 minimal CBOR codec for C2PA claims and COSE
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules
