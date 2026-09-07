@@ -2,13 +2,17 @@
   'use strict';
   const S = globalThis.SRL;
   const V = S.verdicts;
+  const A = S.attribution;
   const $ = (id) => document.getElementById(id);
 
-  // ?tabId=N lets the popup be opened as a normal page for debugging.
   const debugTabId = parseInt(new URLSearchParams(location.search).get('tabId'), 10);
   const tab = Number.isFinite(debugTabId) ? await chrome.tabs.get(debugTabId) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   if (!tab) return;
-  $('url').textContent = tab.url || '';
+  $('url').textContent = (tab.url || '').replace(/^https?:\/\//, '');
+  $('url').title = tab.url || '';
+
+  let current = null;
+  let active = 'overview';
 
   $('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
   $('rescan').addEventListener('click', async () => {
@@ -21,26 +25,23 @@
   $('toggle').addEventListener('click', async () => {
     try { await chrome.tabs.sendMessage(tab.id, { type: 'srl:toggle-overlay' }); } catch (e) { /* ignore */ }
   });
-
-  let current = null;
-  $('copy').addEventListener('click', async () => {
-    if (!current) return;
-    const report = { generatedBy: 'Selfreportle ' + chrome.runtime.getManifest().version, generatedAt: new Date().toISOString(), ...current };
-    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); $('copy').textContent = 'Copied'; } catch (e) { $('copy').textContent = 'Failed'; }
-    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500);
+  $('tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-tab]');
+    if (b) select(b.dataset.tab);
   });
 
-  async function load() {
-    let result = null;
-    try { result = await chrome.runtime.sendMessage({ type: 'srl:get-result', tabId: tab.id }); } catch (e) { result = null; }
-    if (!result) {
-      try { result = await chrome.tabs.sendMessage(tab.id, { type: 'srl:get-page-result' }); } catch (e) { result = null; }
-    }
-    current = result;
-    render(result);
+  function select(name) {
+    active = name;
+    for (const b of $('tabs').querySelectorAll('button[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+    for (const sec of $('main').querySelectorAll('section')) sec.hidden = sec.dataset.tab !== name;
+    $('main').scrollTop = 0;
   }
 
   function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+
+  function tint(node, color) { node.style.setProperty('--c', color); return node; }
+
+  /* ---------------- render ---------------- */
 
   function render(r) {
     const main = $('main');
@@ -48,25 +49,58 @@
     const ov = $('overall');
     if (!r) {
       ov.textContent = '';
+      $('tabs').hidden = true;
       main.appendChild(el('div', 'empty', 'Nothing analysed yet for this tab. Reload the page or press Rescan. Browser-internal pages and the Web Store cannot be inspected.'));
       return;
     }
-    const overall = V.OVERALL[r.overall || V.overall(r)] || V.OVERALL.none;
-    ov.style.setProperty('--c', overall.color);
+    $('tabs').hidden = false;
+    const key = r.overall || V.overall(r);
+    const overall = V.OVERALL[key] || V.OVERALL.none;
     ov.innerHTML = '';
-    ov.appendChild(document.createTextNode(overall.label));
-    ov.appendChild(el('small', null, trustHint(r)));
+    tint(ov, overall.color);
+    ov.appendChild(el('span', 'ic', overall.icon || '○'));
+    const body = el('div');
+    body.appendChild(document.createTextNode(overall.label));
+    body.appendChild(el('small', null, trustHint(key)));
+    ov.appendChild(body);
 
-    if (r.aiSystems && r.aiSystems.length) main.appendChild(systemsCard(r.aiSystems));
-    main.appendChild(siteCard(r.site || {}, r));
-    main.appendChild(textCard(r.text || {}));
-    main.appendChild(imagesCard(r.images || {}));
-    if (r.disclosures && r.disclosures.length) main.appendChild(disclosureCard(r.disclosures));
-    if (r.site && r.site.trustNotes && r.site.trustNotes.length) main.appendChild(trustCard(r.site.trustNotes));
+    main.appendChild(section('overview', overviewPanel(r)));
+    main.appendChild(section('site', sitePanel(r.site || {})));
+    main.appendChild(section('text', textPanel(r.text || {})));
+    main.appendChild(section('images', imagesPanel(r.images || {})));
+    main.appendChild(section('tools', toolsPanel(r)));
+    counts(r);
+    select(active);
   }
 
-  function trustHint(r) {
-    switch (r.overall) {
+  function section(name, nodes) {
+    const s = el('section');
+    s.dataset.tab = name;
+    s.hidden = true;
+    for (const n of [].concat(nodes)) if (n) s.appendChild(n);
+    return s;
+  }
+
+  function counts(r) {
+    const c = (r.images && r.images.counts) || {};
+    const flaggedImages = (c['ai-generated'] || 0) + (c['ai-edited'] || 0) + (c['ai-disclosed'] || 0) + (c.suspected || 0);
+    const set = (name, n, color) => {
+      const b = $('tabs').querySelector('button[data-tab="' + name + '"]');
+      const old = b.querySelector('.n');
+      if (old) old.remove();
+      if (!n) return;
+      const s = el('span', 'n', String(n));
+      tint(s, color);
+      b.appendChild(s);
+    };
+    set('site', V.AI_SITE_VERDICTS.has(r.site && r.site.verdict) ? 1 : 0, V.info('site', r.site && r.site.verdict).color);
+    set('text', (r.text && r.text.flaggedBlocks) || 0, V.info('text', r.text && r.text.verdict).color);
+    set('images', flaggedImages, V.COLORS.vermillion);
+    set('tools', (r.aiSystems || []).length, V.COLORS.orange);
+  }
+
+  function trustHint(key) {
+    switch (key) {
       case 'undisclosed-ai': return 'AI-generation markers were found but no disclosure statement. Verify the operator before relying on this content or doing business.';
       case 'disclosed-ai': return 'AI use is declared on the page or in metadata. Decide whether that is acceptable for your purpose.';
       case 'weak-ai': return 'Only heuristic or indirect signals. Treat as a prompt to look closer, not a verdict.';
@@ -75,21 +109,7 @@
     }
   }
 
-  function card(title, kind, verdict, score, open, override) {
-    const info = override || V.info(kind, verdict);
-    const c = el('div', 'card' + (open ? ' open' : ''));
-    const hd = el('div', 'hd');
-    hd.style.setProperty('--c', info.color);
-    hd.appendChild(el('span', 'dot'));
-    hd.appendChild(el('span', 't', title));
-    hd.appendChild(el('span', 'v', info.label));
-    hd.addEventListener('click', () => c.classList.toggle('open'));
-    c.appendChild(hd);
-    const bd = el('div', 'bd');
-    if (typeof score === 'number') { const bar = el('div', 'bar'); bar.style.setProperty('--c', info.color); const i = el('i'); i.style.width = Math.round(score * 100) + '%'; bar.appendChild(i); bd.appendChild(bar); }
-    c.appendChild(bd);
-    return { c, bd };
-  }
+  /* ---------------- shared pieces ---------------- */
 
   function sigRow(s) {
     const d = el('div', 'sig');
@@ -102,9 +122,42 @@
     return d;
   }
 
-  const A = S.attribution;
+  function verdictLine(kind, verdict, score) {
+    const info = V.info(kind, verdict);
+    const wrap = el('div');
+    const t = tint(el('div', 'tag'), info.color);
+    t.appendChild(el('span', 'ic', info.icon));
+    t.appendChild(document.createTextNode(info.label));
+    wrap.appendChild(t);
+    if (typeof score === 'number') {
+      const bar = tint(el('div', 'bar'), info.color);
+      const i = el('i');
+      i.style.width = Math.round(Math.min(1, score) * 100) + '%';
+      bar.appendChild(i);
+      wrap.appendChild(bar);
+    }
+    return wrap;
+  }
 
-  function attributionRow(attr, kind) {
+  function skewList(attr, kind, openByDefault) {
+    const prof = attr.id ? A.profile(attr.id) : null;
+    const skews = A.skewsFor(prof ? { ...attr, skews: prof.skews } : attr, kind);
+    if (!skews.length) return null;
+    const own = skews.filter((k) => k.source !== 'generic');
+    const det = el('details');
+    det.open = !!openByDefault;
+    det.appendChild(el('summary', null, 'Skews and tendencies (' + own.length + ' specific, ' + (skews.length - own.length) + ' general)'));
+    for (const k of skews) {
+      const li = el('div', 'skew');
+      li.appendChild(el('b', null, k.area + (k.source === 'generic' ? ' · general' : '')));
+      li.appendChild(el('div', null, k.note));
+      if (k.basis) li.appendChild(el('div', 'basis', 'Basis: ' + k.basis));
+      det.appendChild(li);
+    }
+    return det;
+  }
+
+  function attributionBox(attr, kind) {
     if (!attr) return null;
     const d = el('div', 'attr');
     const head = el('div');
@@ -113,27 +166,161 @@
     d.appendChild(head);
     if (attr.evidence) d.appendChild(el('div', 'd', attr.evidence));
     if (attr.detail) d.appendChild(el('div', 'd', attr.detail));
-    const skews = A.skewsFor(attr.id ? A.profile(attr.id) && { ...attr, skews: A.profile(attr.id).skews } : attr, kind);
-    if (skews.length) {
-      const det = el('details');
-      det.appendChild(el('summary', null, 'Documented skews (' + skews.length + ')'));
-      for (const k of skews) {
-        const li = el('div', 'skew');
-        li.appendChild(el('b', null, k.area + (k.source === 'generic' ? ' (all ' + (kind === 'image' ? 'image generators' : kind === 'site' ? 'AI-built sites' : 'LLMs') + ')' : '')));
-        li.appendChild(el('div', null, k.note));
-        if (k.basis) li.appendChild(el('div', 'basis', 'Basis: ' + k.basis));
-        det.appendChild(li);
-      }
-      d.appendChild(det);
-    }
+    const sk = skewList(attr, kind, false);
+    if (sk) d.appendChild(sk);
     return d;
   }
 
-  function systemsCard(systems) {
-    const top = systems.slice().sort((a, b) => ({ confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[b.confidence] || 0) - ({ confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[a.confidence] || 0));
-    const named = top.filter((x) => x.id);
-    const { c, bd } = card('AI tools identified', 'site', 'no-signal', null, true, { label: named.length ? named.map((x) => x.vendor || x.name).join(', ') : 'unidentified', color: named.length ? V.COLORS.orange : V.COLORS.slate });
-    for (const sys of top) {
+  /* ---------------- panels ---------------- */
+
+  function overviewPanel(r) {
+    const out = [];
+    const sum = el('div');
+    sum.appendChild(el('h3', null, 'Summary'));
+    sum.appendChild(sumRow('Site', verdictLine('site', (r.site || {}).verdict), (r.site || {}).attribution));
+    sum.appendChild(sumRow('Text', verdictLine('text', (r.text || {}).verdict), (r.text || {}).attribution));
+    const c = (r.images || {}).counts || {};
+    const worst = V.worst('image', Object.keys(c).filter((k) => c[k] > 0));
+    const imgLine = el('div');
+    imgLine.appendChild(verdictLine('image', worst));
+    const chips = el('div');
+    for (const k of ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'no-signal']) {
+      if (!c[k]) continue;
+      const chip = tint(el('span', 'chip'), V.IMAGE[k].color);
+      chip.appendChild(el('span', 'ic', V.IMAGE[k].icon));
+      chip.appendChild(document.createTextNode(c[k] + ' ' + V.IMAGE[k].short));
+      chips.appendChild(chip);
+    }
+    imgLine.appendChild(chips);
+    sum.appendChild(sumRow('Images', imgLine));
+    out.push(sum);
+
+    const discl = (r.disclosures || []).filter((d) => d.level !== 'weak');
+    if (discl.length) {
+      const d = el('div');
+      d.appendChild(el('h3', null, 'Disclosures found on the page'));
+      for (const x of discl.slice(0, 8)) {
+        const it = el('div', 'item');
+        it.appendChild(tint(el('span', 'chip', x.level + ' · ' + x.scope), x.level === 'human' ? V.COLORS.green : V.COLORS.orange));
+        it.appendChild(el('div', 'ex', '“…' + x.context + '…”'));
+        d.appendChild(it);
+      }
+      out.push(d);
+    }
+
+    const notes = (r.site && r.site.trustNotes) || [];
+    if (notes.length) {
+      const d = el('div');
+      d.appendChild(el('h3', null, 'Trust notes'));
+      for (const n of notes) d.appendChild(sigRow({ kind: 'info', label: n.label, detail: n.detail }));
+      d.appendChild(el('div', 'note', 'Template leftovers suggest an unfinished or auto-generated site. Not AI evidence by itself.'));
+      out.push(d);
+    }
+
+    out.push(exportBlock(r));
+    return out;
+  }
+
+  function sumRow(label, node, attr) {
+    const d = el('div', 'sum');
+    d.appendChild(el('div', 'k', label));
+    const v = el('div');
+    v.appendChild(node);
+    if (attr) v.appendChild(el('div', 'd', 'Likely ' + attr.name + ' · ' + (A.CONFIDENCE_LABEL[attr.confidence] || '')));
+    d.appendChild(v);
+    return d;
+  }
+
+  function sitePanel(site) {
+    const out = [];
+    out.push(verdictLine('site', site.verdict, site.score));
+    const ab = attributionBox(site.attribution, 'site');
+    if (ab) out.push(ab);
+    if (site.generator) out.push(el('div', 'note', 'Generator meta: ' + site.generator));
+    const sigs = el('div');
+    for (const s of site.signals || []) sigs.appendChild(sigRow(s));
+    if (!(site.signals || []).length) sigs.appendChild(el('div', 'note', 'No generator fingerprints, disclosure meta tags, structured-data flags or AI code comments found.'));
+    out.push(sigs);
+    if (V.AI_SITE_VERDICTS.has(site.verdict) && !site.disclosed) out.push(el('div', 'note', 'No statement about AI involvement was found on the page.'));
+    return out;
+  }
+
+  function textPanel(text) {
+    const out = [];
+    out.push(verdictLine('text', text.verdict, text.score));
+    const ab = attributionBox(text.attribution, 'text');
+    if (ab) out.push(ab);
+    out.push(el('div', 'note', (text.blocks || 0) + ' text blocks, ' + (text.words || 0) + ' words analysed; ' + (text.flaggedBlocks || 0) + ' flagged.'));
+    if (text.page && text.page.signals && text.page.signals.length) {
+      const d = el('div');
+      d.appendChild(el('h3', null, 'Whole-page signals'));
+      for (const s of text.page.signals) d.appendChild(sigRow(s));
+      out.push(d);
+    }
+    if (text.page && text.page.stats) {
+      const st = text.page.stats;
+      out.push(el('div', 'note', 'Stylometry: ' + st.sentences + ' sentences, sentence-length CV ' + (st.sentenceLengthCV == null ? 'n/a' : st.sentenceLengthCV) + ', lexicon ' + st.lexiconPointsPerK + ' pts/1k words, ' + st.contractions + ' contractions.'));
+    }
+    if (text.flagged && text.flagged.length) {
+      const d = el('div');
+      d.appendChild(el('h3', null, 'Flagged blocks'));
+      for (const f of text.flagged.slice(0, 15)) {
+        const info = V.info('text', f.verdict);
+        const it = el('div', 'item');
+        const chip = tint(el('span', 'chip'), info.color);
+        chip.appendChild(el('span', 'ic', info.icon));
+        chip.appendChild(document.createTextNode(info.short));
+        it.appendChild(chip);
+        it.appendChild(el('span', 'ex', ' “' + f.excerpt + '”'));
+        for (const s of (f.signals || []).slice(0, 3)) it.appendChild(sigRow(s));
+        d.appendChild(it);
+      }
+      out.push(d);
+    }
+    return out;
+  }
+
+  function imagesPanel(images) {
+    const out = [];
+    const counts = images.counts || {};
+    const verdicts = Object.keys(counts).filter((k) => counts[k] > 0);
+    out.push(verdictLine('image', V.worst('image', verdicts.length ? verdicts : ['no-signal'])));
+    const line = el('div');
+    for (const k of ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'no-signal', 'unavailable']) {
+      if (!counts[k]) continue;
+      const chip = tint(el('span', 'chip'), V.IMAGE[k].color);
+      chip.appendChild(el('span', 'ic', V.IMAGE[k].icon));
+      chip.appendChild(document.createTextNode(counts[k] + ' ' + V.IMAGE[k].label));
+      line.appendChild(chip);
+    }
+    out.push(line);
+    out.push(el('div', 'note', (images.total || 0) + ' images considered, ' + (images.inspected || 0) + ' inspected at byte level' + (images.pending ? ', ' + images.pending + ' pending' : '') + '.'));
+    const list = el('div');
+    for (const it of (images.items || []).slice(0, 25)) {
+      const info = V.IMAGE[it.verdict] || V.IMAGE['no-signal'];
+      const d = el('div', 'item');
+      const chip = tint(el('span', 'chip'), info.color);
+      chip.appendChild(el('span', 'ic', info.icon));
+      chip.appendChild(document.createTextNode(info.short));
+      d.appendChild(chip);
+      d.appendChild(el('div', 'u', it.url));
+      if (it.attribution) d.appendChild(el('div', 'd', 'Likely tool: ' + it.attribution.name + ' · ' + (A.CONFIDENCE_LABEL[it.attribution.confidence] || '') + (it.attribution.detail ? ' · ' + it.attribution.detail : '')));
+      for (const s of (it.signals || []).slice(0, 5)) d.appendChild(sigRow(s));
+      if (it.metadata && it.metadata.c2pa) {
+        const c2 = it.metadata.c2pa;
+        d.appendChild(el('div', 'note', 'C2PA: ' + [c2.claimGenerator, (c2.actions || []).map((a) => a.action + (a.digitalSourceType ? ' (' + a.digitalSourceType.split('/').pop() + ')' : '')).join(', '), c2.signerNames && c2.signerNames.length ? 'signer ' + c2.signerNames.join(', ') : ''].filter(Boolean).join(' · ')));
+      }
+      list.appendChild(d);
+    }
+    out.push(list);
+    return out;
+  }
+
+  function toolsPanel(r) {
+    const systems = (r.aiSystems || []).slice().sort((a, b) => rank(b.confidence) - rank(a.confidence));
+    if (!systems.length) return [el('div', 'empty', 'No AI tool could be identified on this page. That means the evidence named no product, not that none was used.')];
+    const out = [];
+    for (const sys of systems) {
       const it = el('div', 'item');
       const head = el('div');
       head.appendChild(el('b', null, sys.name));
@@ -142,121 +329,180 @@
       if (sys.vendor) it.appendChild(el('div', 'd', sys.vendor + (sys.country ? ', ' + sys.country : '')));
       if (sys.evidence) it.appendChild(el('div', 'd', 'Evidence: ' + sys.evidence));
       if (sys.marking) it.appendChild(el('div', 'd', 'Marking: ' + sys.marking));
-      const prof = sys.id ? A.profile(sys.id) : null;
       const kind = sys.layers.includes('image') && !sys.layers.includes('text') ? 'image' : sys.layers.includes('site') && sys.layers.length === 1 ? 'site' : 'text';
-      const skews = prof ? A.skewsFor({ ...sys, skews: prof.skews }, kind) : (kind === 'image' ? A.GENERIC_IMAGE_SKEWS : kind === 'site' ? A.GENERIC_SITE_SKEWS : A.GENERIC_TEXT_SKEWS).map((k) => ({ ...k, source: 'generic' }));
-      const own = skews.filter((k) => k.source !== 'generic').map((k) => k.area);
-      const generic = skews.length - own.length;
-      it.appendChild(el('div', 'd', 'Skews: ' + (own.length ? own.join(', ') : 'none specific') + (generic ? ' · +' + generic + ' general' : '')));
-      const det = el('details');
-      det.open = top.length === 1;
-      det.appendChild(el('summary', null, 'Show skews and tendencies (' + skews.length + ')'));
-      for (const k of skews) {
-        const li = el('div', 'skew');
-        li.appendChild(el('b', null, k.area + (k.source === 'generic' ? ' · general' : '')));
-        li.appendChild(el('div', null, k.note));
-        if (k.basis) li.appendChild(el('div', 'basis', 'Basis: ' + k.basis));
-        det.appendChild(li);
-      }
-      it.appendChild(det);
-      bd.appendChild(it);
+      const sk = skewList(sys, kind, systems.length === 1);
+      if (sk) it.appendChild(sk);
+      out.push(it);
     }
-    bd.appendChild(el('div', 'note', 'Skew notes summarise public reports and vendor statements reviewed ' + A.REVIEWED + '. They describe typical default behaviour of the tool, not this specific content, and models change between versions.'));
-    return c;
+    out.push(el('div', 'note', 'Skew notes summarise public reports and vendor statements reviewed ' + A.REVIEWED + '. They describe typical default behaviour of the tool, not this specific content, and models change between versions.'));
+    return out;
   }
 
-  function siteCard(site, r) {
-    const open = V.AI_SITE_VERDICTS.has(site.verdict);
-    const { c, bd } = card('Site & code', 'site', site.verdict, site.score, open);
-    const ar = attributionRow(site.attribution, 'site'); if (ar) bd.appendChild(ar);
-    if (site.generator) bd.appendChild(el('div', 'note', 'Generator meta: ' + site.generator));
-    for (const s of site.signals || []) bd.appendChild(sigRow(s));
-    if (!(site.signals || []).length) bd.appendChild(el('div', 'note', 'No generator fingerprints, disclosure meta tags, structured-data flags or AI code comments found.'));
-    if (V.AI_SITE_VERDICTS.has(site.verdict) && !site.disclosed) bd.appendChild(el('div', 'note', 'No statement about AI involvement was found on the page.'));
-    return c;
+  function rank(c) { return { confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[c] || 0; }
+
+  /* ---------------- export ---------------- */
+
+  function exportBlock(r) {
+    const d = el('div');
+    d.appendChild(el('h3', null, 'Keep a record'));
+    const row = el('div', 'exports');
+    row.appendChild(btn('Copy JSON', async (b) => {
+      const report = await buildReport(r);
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      flash(b, 'Copied');
+    }));
+    row.appendChild(btn('Save report', async (b) => {
+      const report = await buildReport(r);
+      download(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }), 'selfreportle-' + safeName(r.hostname) + '-' + stamp() + '.json');
+      flash(b, 'Saved');
+    }));
+    row.appendChild(btn('Save receipt', async (b) => {
+      const blob = await receipt(r);
+      download(blob, 'selfreportle-' + safeName(r.hostname) + '-' + stamp() + '.png');
+      flash(b, 'Saved');
+    }));
+    d.appendChild(row);
+    d.appendChild(el('div', 'note', 'The report carries a SHA-256 digest of its own findings so you can show it has not been edited since you saved it. It is self-attested by this extension, not notarised by a third party.'));
+    return d;
   }
 
-  function textCard(text) {
-    const open = V.AI_TEXT_VERDICTS.has(text.verdict);
-    const { c, bd } = card('Text', 'text', text.verdict, text.score, open);
-    const ar = attributionRow(text.attribution, 'text'); if (ar) bd.appendChild(ar);
-    bd.appendChild(el('div', 'note', (text.blocks || 0) + ' text blocks, ' + (text.words || 0) + ' words analysed; ' + (text.flaggedBlocks || 0) + ' flagged.'));
-    if (text.page && text.page.signals && text.page.signals.length) {
-      bd.appendChild(el('h3', null, 'Whole-page signals'));
-      for (const s of text.page.signals) bd.appendChild(sigRow(s));
-    }
-    if (text.page && text.page.stats) {
-      const st = text.page.stats;
-      bd.appendChild(el('div', 'note', 'Stylometry: ' + st.sentences + ' sentences, sentence-length CV ' + (st.sentenceLengthCV == null ? 'n/a' : st.sentenceLengthCV) + ', lexicon ' + st.lexiconPointsPerK + ' pts/1k words.'));
-    }
-    if (text.flagged && text.flagged.length) {
-      bd.appendChild(el('h3', null, 'Flagged blocks'));
-      for (const f of text.flagged.slice(0, 12)) {
-        const it = el('div', 'item');
-        const chip = el('span', 'chip', V.info('text', f.verdict).short);
-        chip.style.setProperty('--c', V.info('text', f.verdict).color);
-        it.appendChild(chip);
-        it.appendChild(el('span', 'ex', '“' + f.excerpt + '”'));
-        for (const s of (f.signals || []).slice(0, 3)) it.appendChild(sigRow(s));
-        bd.appendChild(it);
-      }
-    }
-    return c;
+  function btn(label, fn) {
+    const b = el('button', null, label);
+    b.type = 'button';
+    b.addEventListener('click', async () => {
+      try { await fn(b); } catch (e) { flash(b, 'Failed'); }
+    });
+    return b;
   }
 
-  function imagesCard(images) {
-    const counts = images.counts || {};
-    const verdicts = Object.keys(counts).filter((k) => counts[k] > 0);
+  function flash(b, msg) {
+    const old = b.textContent;
+    b.textContent = msg;
+    setTimeout(() => { b.textContent = old; }, 1500);
+  }
+
+  function safeName(h) { return String(h || 'page').replace(/[^a-z0-9.-]/gi, '_').slice(0, 40); }
+  function stamp() { return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19); }
+
+  function download(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  async function buildReport(r) {
+    const findings = { url: r.url, title: r.title, analysedAt: new Date(r.at).toISOString(), overall: r.overall, site: r.site, text: r.text, images: r.images, disclosures: r.disclosures, aiSystems: r.aiSystems };
+    const canonical = JSON.stringify(findings);
+    const digest = await sha256(canonical);
+    return {
+      tool: 'Selfreportle ' + chrome.runtime.getManifest().version,
+      skewCatalogueReviewed: A.REVIEWED,
+      savedAt: new Date().toISOString(),
+      integrity: { algorithm: 'SHA-256', digest, covers: 'the findings object as serialised by JSON.stringify', attestedBy: 'this extension only; not a third-party notarisation' },
+      caveats: [
+        'C2PA signatures are parsed, not cryptographically verified.',
+        'Absence of signals is not proof of human origin; metadata is routinely stripped on upload.',
+        'Stylometric text signals are heuristics and are capped below the strongest verdict.',
+        'Attribution confidence is one of confirmed, declared, inferred or unknown; only "confirmed" rests on embedded evidence.',
+      ],
+      findings,
+    };
+  }
+
+  async function sha256(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /* A shareable card: the verdict, the three layers and the tools found. */
+  async function receipt(r) {
+    const W = 1000, H = 560, P = 48;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const g = cv.getContext('2d');
+    const key = r.overall || V.overall(r);
+    const overall = V.OVERALL[key] || V.OVERALL.none;
+    g.fillStyle = '#12161d'; g.fillRect(0, 0, W, H);
+    g.fillStyle = overall.color; g.fillRect(0, 0, W, 8);
+    const font = (size, weight) => { g.font = (weight || 400) + ' ' + size + 'px -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'; };
+
+    font(15, 600); g.fillStyle = '#9aa3b2';
+    g.fillText('SELFREPORTLE · AI CONTENT SIGNALS', P, P + 12);
+    font(30, 700); g.fillStyle = '#e8eaf0';
+    g.fillText(clip(g, r.title || r.hostname, W - P * 2), P, P + 58);
+    font(16, 400); g.fillStyle = '#9aa3b2';
+    g.fillText(clip(g, r.url, W - P * 2), P, P + 86);
+
+    g.fillStyle = overall.color;
+    roundRect(g, P, P + 110, W - P * 2, 66, 10); g.fill();
+    font(24, 700); g.fillStyle = '#ffffff';
+    g.fillText((overall.icon || '') + '  ' + overall.label, P + 18, P + 152);
+
+    const rows = [
+      ['Site', V.info('site', (r.site || {}).verdict), (r.site || {}).attribution],
+      ['Text', V.info('text', (r.text || {}).verdict), (r.text || {}).attribution],
+      ['Images', imageSummaryInfo(r), null],
+    ];
+    let y = P + 216;
+    for (const [label, info, attr] of rows) {
+      g.fillStyle = info.color;
+      roundRect(g, P, y - 15, 20, 20, 5); g.fill();
+      font(17, 700); g.fillStyle = '#9aa3b2'; g.fillText(label, P + 34, y);
+      font(17, 400); g.fillStyle = '#e8eaf0'; g.fillText(clip(g, info.label, 620), P + 130, y);
+      if (attr) { font(14, 400); g.fillStyle = '#9aa3b2'; g.fillText(clip(g, 'likely ' + attr.name + ' (' + attr.confidence + ')', 620), P + 130, y + 21); }
+      y += attr ? 56 : 44;
+    }
+
+    const tools = (r.aiSystems || []).filter((x) => x.id).map((x) => x.name.replace(/\s*\(.*$/, ''));
+    if (tools.length) {
+      font(14, 600); g.fillStyle = '#9aa3b2'; g.fillText('TOOLS IDENTIFIED', P, y + 8);
+      font(16, 400); g.fillStyle = '#e8eaf0'; g.fillText(clip(g, tools.join(' · '), W - P * 2), P, y + 32);
+    }
+
+    font(13, 400); g.fillStyle = '#79818e';
+    g.fillText('Saved ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC · signals only, not proof of authorship · signatures parsed, not verified', P, H - P + 10);
+    return new Promise((res) => cv.toBlob(res, 'image/png'));
+  }
+
+  function imageSummaryInfo(r) {
+    const c = (r.images || {}).counts || {};
+    const verdicts = Object.keys(c).filter((k) => c[k] > 0);
     const worst = V.worst('image', verdicts.length ? verdicts : ['no-signal']);
-    const open = V.AI_IMAGE_VERDICTS.has(worst);
-    const { c, bd } = card('Images', 'image', worst, null, open);
-    const order = ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'no-signal', 'unavailable'];
-    const line = el('div');
-    for (const k of order) {
-      if (!counts[k]) continue;
-      const chip = el('span', 'chip', counts[k] + ' ' + V.IMAGE[k].label);
-      chip.style.setProperty('--c', V.IMAGE[k].color);
-      line.appendChild(chip);
-    }
-    bd.appendChild(line);
-    bd.appendChild(el('div', 'note', (images.total || 0) + ' images considered, ' + (images.inspected || 0) + ' inspected at byte level' + (images.pending ? ', ' + images.pending + ' pending' : '') + '.'));
-    for (const it of (images.items || []).slice(0, 20)) {
-      const d = el('div', 'item');
-      const chip = el('span', 'chip', V.IMAGE[it.verdict].short);
-      chip.style.setProperty('--c', V.IMAGE[it.verdict].color);
-      d.appendChild(chip);
-      const u = el('span', 'u', it.url);
-      u.title = it.url;
-      d.appendChild(u);
-      if (it.attribution) d.appendChild(el('div', 'd', 'Likely tool: ' + it.attribution.name + ' · ' + (A.CONFIDENCE_LABEL[it.attribution.confidence] || '') + (it.attribution.detail ? ' · ' + it.attribution.detail : '')));
-      for (const s of (it.signals || []).slice(0, 4)) d.appendChild(sigRow(s));
-      if (it.metadata && it.metadata.c2pa) {
-        const c2 = it.metadata.c2pa;
-        d.appendChild(el('div', 'note', 'C2PA: ' + [c2.claimGenerator, (c2.actions || []).map((a) => a.action + (a.digitalSourceType ? ' (' + a.digitalSourceType.split('/').pop() + ')' : '')).join(', '), c2.signerNames && c2.signerNames.length ? 'signer ' + c2.signerNames.join(', ') : ''].filter(Boolean).join(' · ')));
-      }
-      bd.appendChild(d);
-    }
-    return c;
+    const info = V.IMAGE[worst];
+    const n = (c['ai-generated'] || 0) + (c['ai-edited'] || 0) + (c['ai-disclosed'] || 0);
+    return { color: info.color, label: n ? n + ' of ' + (r.images.total || 0) + ' images show AI provenance' : info.label };
   }
 
-  function disclosureCard(list) {
-    const shown = list.filter((d) => d.level !== 'weak');
-    if (!shown.length) return document.createDocumentFragment();
-    const { c, bd } = card('Disclosures on the page', 'text', shown.some((d) => d.level !== 'human') ? 'ai-disclosed' : 'human-disclosed', null, false);
-    for (const d of shown.slice(0, 10)) {
-      const it = el('div', 'item');
-      it.appendChild(el('span', 'chip', d.level + ' · ' + d.scope));
-      it.appendChild(el('span', 'ex', '“…' + d.context + '…”'));
-      bd.appendChild(it);
-    }
-    return c;
+  function clip(g, text, max) {
+    let t = String(text || '');
+    if (g.measureText(t).width <= max) return t;
+    while (t.length > 4 && g.measureText(t + '…').width > max) t = t.slice(0, -1);
+    return t + '…';
   }
 
-  function trustCard(notes) {
-    const { c, bd } = card('Trust notes', 'site', 'no-signal', null, false, { label: notes.length + ' template leftover(s)', color: V.COLORS.blue });
-    for (const n of notes) bd.appendChild(sigRow({ kind: 'info', label: n.label, detail: n.detail }));
-    bd.appendChild(el('div', 'note', 'Template leftovers suggest an unfinished or auto-generated site. Not AI evidence by itself.'));
-    return c;
+  function roundRect(g, x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
+
+  /* ---------------- load ---------------- */
+
+  async function load() {
+    let result = null;
+    try { result = await chrome.runtime.sendMessage({ type: 'srl:get-result', tabId: tab.id }); } catch (e) { result = null; }
+    if (!result) {
+      try { result = await chrome.tabs.sendMessage(tab.id, { type: 'srl:get-page-result' }); } catch (e) { result = null; }
+    }
+    current = result;
+    render(result);
   }
 
   await load();

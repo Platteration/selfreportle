@@ -30,6 +30,8 @@ Each identified vendor comes with a short list of documented **skews**: sycophan
 * **Dark theme** for the in-page panel and popovers, following the reader's system setting.
 * **Toolbar icon changes state**, not just its count: the lens pupil takes the verdict colour, and resets to neutral on navigation.
 * **Right-click actions**: "Inspect this image for AI provenance" analyses any image on demand, ignoring the size floor and per-page cap; "Check selected text for AI signals" analyses a selection in place.
+* **Tabbed report** in the toolbar popup: a sticky verdict header over Overview, Site, Text, Images and Tools, each tab carrying a count badge.
+* **Keep a record**: copy the report as JSON, save it as a file, or save a shareable PNG receipt. Saved reports carry a SHA-256 digest of their own findings so you can show the file has not been edited since; that digest is self-attested by the extension, not notarised by a third party.
 * **Hidden-character reveal**: any flagged block whose popover contains invisible characters offers a view that names each one (ZWSP, TAG…, VS3, NNBSP) without touching the page, plus a "Copy cleaned text" button that strips them.
 
 Verdict colours: red = AI-generated / strong indicators, orange = AI-edited or likely AI, amber = disclosed as AI, yellow = weak signals, green = capture credentials or declared human, blue = algorithmic / conventional builder, grey = no signal.

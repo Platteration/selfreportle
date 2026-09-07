@@ -6,17 +6,25 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header>
-    <div class="brand"><span class="logo"></span><div><h1>Selfreportle</h1><div class="sub">AI content signals for this page</div></div></div>
-    <div class="actions">
-      <button id="rescan" title="Analyse the page again">Rescan</button>
-      <button id="copy" title="Copy the full report as JSON">Copy</button>
-      <button id="toggle" title="Show or hide in-page badges">Badges</button>
-      <button id="options" title="Settings">⚙</button>
+  <header id="head">
+    <div class="brand">
+      <span class="logo"></span>
+      <div class="who"><h1>Selfreportle</h1><div class="url" id="url"></div></div>
+      <div class="actions">
+        <button id="rescan" title="Analyse the page again">Rescan</button>
+        <button id="toggle" title="Show or hide in-page badges">Badges</button>
+        <button id="options" title="Settings" aria-label="Settings">⚙</button>
+      </div>
     </div>
+    <div id="overall" class="overall" role="status"></div>
+    <nav class="tabs" id="tabs" role="tablist">
+      <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+      <button role="tab" data-tab="site" aria-selected="false">Site</button>
+      <button role="tab" data-tab="text" aria-selected="false">Text</button>
+      <button role="tab" data-tab="images" aria-selected="false">Images</button>
+      <button role="tab" data-tab="tools" aria-selected="false">Tools</button>
+    </nav>
   </header>
-  <div id="url" class="url"></div>
-  <div id="overall" class="overall"></div>
   <main id="main">
     <div class="empty" id="empty">Nothing analysed yet for this tab. Reload the page or press Rescan. Browser-internal pages and the Web Store cannot be inspected.</div>
   </main>
