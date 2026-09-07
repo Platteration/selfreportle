@@ -3,7 +3,7 @@
  * permissions the content script lacks), parses embedded provenance, stores
  * per-tab results for the popup and updates the toolbar badge.
  */
-importScripts('../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/image-metadata.js');
+importScripts('../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/image-metadata.js', '../lib/history.js');
 
 const S = self.SRL;
 const results = new Map();          // tabId → page result
@@ -40,6 +40,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'srl:get-result':
       getResult(msg.tabId).then(sendResponse);
       return true;
+    case 'srl:get-history':
+      S.history.get(msg.host).then((rec) => sendResponse({ record: rec, summary: S.history.summarize(rec) }));
+      return true;
+    case 'srl:clear-history':
+      S.history.clear().then(() => sendResponse({ ok: true }));
+      return true;
     case 'srl:clear-cache':
       imageCache.clear();
       sendResponse({ ok: true });
@@ -66,6 +72,20 @@ async function storeResult(tabId, result) {
   results.set(tabId, result);
   try { await chrome.storage.session.set({ ['tab:' + tabId]: result }); } catch (e) { /* ignore */ }
   updateBadge(tabId, result);
+  recordHistory(result).catch(() => {});
+}
+
+/* One record per page load, not per incremental update. */
+const historySeen = new Map();
+async function recordHistory(result) {
+  if (!result || !result.hostname || !/^https?:/i.test(result.url || '')) return;
+  const settings = await S.settings.load();
+  if (!settings.rememberDomains) return;
+  const stamp = result.url + '|' + result.at;
+  if (historySeen.get(result.hostname) === stamp) return;
+  historySeen.set(result.hostname, stamp);
+  if (historySeen.size > 200) historySeen.delete(historySeen.keys().next().value);
+  await S.history.record(result);
 }
 
 async function getResult(tabId) {

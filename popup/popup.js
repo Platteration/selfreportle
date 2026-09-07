@@ -217,8 +217,34 @@
       out.push(d);
     }
 
+    const mem = el('div');
+    mem.id = 'memory';
+    out.push(mem);
+    loadMemory(r, mem);
+
     out.push(exportBlock(r));
     return out;
+  }
+
+  /* Local-only per-domain counters. One page says little; a pattern says more. */
+  async function loadMemory(r, host) {
+    let res = null;
+    try { res = await chrome.runtime.sendMessage({ type: 'srl:get-history', host: r.hostname }); } catch (e) { return; }
+    const sum = res && res.summary;
+    if (!sum) return;
+    host.appendChild(el('h3', null, 'This domain, on this device'));
+    const tone = sum.tone === 'high' ? V.COLORS.vermillion : sum.tone === 'some' ? V.COLORS.gold : V.COLORS.green;
+    const line = el('div', 'attr');
+    const t = tint(el('div', 'tag'), tone);
+    t.appendChild(el('span', 'ic', sum.tone === 'none' ? '○' : sum.tone === 'high' ? '◆' : '?'));
+    t.appendChild(document.createTextNode(sum.text));
+    line.appendChild(t);
+    if (sum.tools.length) {
+      const names = sum.tools.map((id) => { const p = A.profile(id); return p ? p.name.replace(/\s*\(.*$/, '') : id; });
+      line.appendChild(el('div', 'd', 'Tools seen here: ' + names.join(', ')));
+    }
+    line.appendChild(el('div', 'd', 'Counters only, kept on this device. Clear or switch off in settings.'));
+    host.appendChild(line);
   }
 
   function sumRow(label, node, attr) {
@@ -304,6 +330,7 @@
       chip.appendChild(document.createTextNode(info.short));
       d.appendChild(chip);
       d.appendChild(el('div', 'u', it.url));
+      if (it.platformLabel) d.appendChild(el('div', 'd', it.platformLabel.platform + ' label: “' + it.platformLabel.text + '”'));
       if (it.attribution) d.appendChild(el('div', 'd', 'Likely tool: ' + it.attribution.name + ' · ' + (A.CONFIDENCE_LABEL[it.attribution.confidence] || '') + (it.attribution.detail ? ' · ' + it.attribution.detail : '')));
       for (const s of (it.signals || []).slice(0, 5)) d.appendChild(sigRow(s));
       if (it.metadata && it.metadata.c2pa) {

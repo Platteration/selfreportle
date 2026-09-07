@@ -144,6 +144,37 @@
     refreshSummary();
     const imgs = collectImages();
     await processImages(imgs, id);
+    applyPlatformLabels();
+  }
+
+  /* Platform-applied AI labels (Instagram, TikTok, YouTube, LinkedIn,
+   * Pinterest, X). These survive where embedded metadata does not, so they
+   * are merged into the matching image's signals, and media that would
+   * otherwise be untracked gets its own badge. */
+  function applyPlatformLabels() {
+    if (!settings.platformLabels) return;
+    let labels = [];
+    try { labels = S.platformLabels.scanLabels(location.hostname, document); } catch (e) { return; }
+    if (!labels.length) return;
+    for (const label of labels) {
+      const signal = S.platformLabels.toImageSignal(label);
+      if (!label.media) {
+        if (!result.disclosures.some((d) => d.match === label.text)) {
+          result.disclosures.push({ level: label.level === 'info' ? 'weak' : label.level, match: label.text, context: signal.label + ': “' + label.text + '”', scope: 'image' });
+        }
+        continue;
+      }
+      let st = imageState.get(label.media);
+      if (!st) {
+        st = { key: 'i' + (++imageCounter), el: label.media, url: label.media.currentSrc || label.media.src || location.href, hints: [], bytes: null, verdict: 'no-signal', score: 0, signals: [], done: true, forced: true };
+        imageState.set(label.media, st);
+      }
+      if (st.signals.some((x) => x.id === 'platform-label' && x.detail === signal.detail)) continue;
+      st.signals = [...st.signals, signal];
+      st.platformLabel = { platform: label.platform, level: label.level, text: label.text };
+      applyImageVerdict(st, label.level !== 'info');
+    }
+    refreshSummary();
   }
 
   /* ---- site snapshot ---------------------------------------------------- */
@@ -386,8 +417,8 @@
     for (const st of imageState.values()) {
       counts[st.verdict] = (counts[st.verdict] || 0) + 1;
       if (st.bytes) inspected++;
-      if (st.verdict !== 'no-signal' && st.verdict !== 'unavailable' && items.length < 100) {
-        items.push({ url: st.url.slice(0, 500), verdict: st.verdict, score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, attribution: st.attribution ? stripSkews(st.attribution) : null, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
+      if ((st.platformLabel || (st.verdict !== 'no-signal' && st.verdict !== 'unavailable')) && items.length < 100) {
+        items.push({ url: st.url.slice(0, 500), verdict: st.verdict, score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, platformLabel: st.platformLabel || null, attribution: st.attribution ? stripSkews(st.attribution) : null, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
       }
     }
     result.images = { total: imageState.size, inspected, pending: pendingImages, counts, items };
@@ -446,6 +477,7 @@
         const id = runId;
         const imgs = collectImages();
         if (imgs.length) processImages(imgs, id);
+        applyPlatformLabels();
         const t = analyzeTextBlocks(true);
         if (result) {
           t.attribution = S.attribution.attributeText(t, result.textHints);

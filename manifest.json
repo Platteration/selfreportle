@@ -47,6 +47,7 @@
         "lib/text-analyzer.js",
         "lib/site-analyzer.js",
         "lib/image-hints.js",
+        "lib/platform-labels.js",
         "lib/attribution.js",
         "content/overlay.js",
         "content/content.js"

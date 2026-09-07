@@ -50,11 +50,16 @@
       <label class="row"><span>Minimum rendered size (px)<small>Smaller images (icons, trackers) are ignored.</small></span><input type="number" name="minImageSize" min="16" max="2000"></label>
     </fieldset>
     <fieldset>
+      <legend>Platforms and memory</legend>
+      <label class="row"><span>Read platform AI labels<small>Instagram, Facebook, TikTok, YouTube, LinkedIn and Pinterest strip embedded metadata and add their own marker instead. Reading those markers is the only provenance left on those sites.</small></span><input type="checkbox" name="platformLabels"></label>
+      <label class="row"><span>Remember what was found per domain<small>Counters only (pages seen, pages with AI markers, tools named), kept on this device and never uploaded. One page says little; a pattern across a domain says more.</small></span><input type="checkbox" name="rememberDomains"></label>
+    </fieldset>
+    <fieldset>
       <legend>Text</legend>
       <label class="row"><span>Stylometry sensitivity<small>Scales heuristic (vocabulary, rhythm) signals. Hard signals such as hidden characters and disclosures are unaffected.</small></span>
         <select name="sensitivity"><option value="low">Low (fewer false alarms)</option><option value="medium">Medium</option><option value="high">High</option></select></label>
     </fieldset>
-    <div class="actions"><button type="submit" class="primary">Save</button><button type="button" id="reset">Reset to defaults</button><button type="button" id="clearCache">Clear image cache</button><span id="status"></span></div>
+    <div class="actions"><button type="submit" class="primary">Save</button><button type="button" id="reset">Reset to defaults</button><button type="button" id="clearCache">Clear image cache</button><button type="button" id="clearHistory">Clear domain memory</button><span id="status"></span></div>
   </form>
   <p class="privacy">Privacy: all analysis runs locally in your browser. The only network activity is fetching image bytes from the sites you visit (credentials omitted). Nothing is sent to the extension author or any third party.</p>
   <script src="../lib/settings.js"></script>

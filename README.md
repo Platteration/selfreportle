@@ -12,6 +12,14 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
 | **Images** | C2PA Content Credentials (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
+### Platform labels, where metadata dies
+
+Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, Pinterest and X strip embedded metadata on upload and add their own marker instead. The extension reads those markers ("Made with AI", "AI info", "Altered or synthetic content", "Creator labeled as AI-generated", "AI modified", "Made with Grok"), attributes each to the media in the same post, and treats it as a disclosure by the platform rather than as embedded provenance. Matching is by visible text and accessible name, not by CSS class, because platform class names rotate constantly. Informational markers such as "AI info" are surfaced without changing the verdict.
+
+### Domain memory
+
+With `Remember what was found per domain` on, the extension keeps counters per hostname on this device only: pages seen, pages with AI markers, how many were disclosed, images with AI provenance, and which tools were named. No URLs and no page content are stored, nothing is uploaded, the store is capped at 400 domains by recency, and it can be cleared or switched off in settings. The Overview tab reads the pattern back, for example "AI markers on 14 of 20 pages you have opened here, none of them disclosed".
+
 ### Which AI, and what it tends to do
 
 For every layer the extension also names the tool the evidence points to, with the strength of that attribution:
@@ -77,6 +85,8 @@ lib/text-analyzer.js        text signals
 lib/site-analyzer.js        site/code signals (works on a serialisable DOM snapshot)
 lib/image-hints.js          DOM-side image hints (captions, hosts, file names)
 lib/attribution.js          vendor/product profiles, attribution rules, documented skews
+lib/platform-labels.js      AI labels applied by Instagram, TikTok, YouTube, LinkedIn, Pinterest, X
+lib/history.js              local-only per-domain counters
 lib/image-metadata.js       JPEG/PNG/WebP/ISOBMFF parsing: EXIF, XMP, PNG text, C2PA/JUMBF
 lib/cbor.js                 minimal CBOR codec for C2PA claims and COSE
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules
@@ -98,3 +108,4 @@ Every `lib/*.js` file is a plain script in the extension and a CommonJS module u
 * Image bytes are fetched from the page's own sources with `credentials: 'omit'`, limited to the first few MB (configurable), and cached in memory only.
 * Results are kept in `chrome.storage.session` per tab and discarded when the tab closes.
 * Hosts can be excluded in the settings.
+* Domain memory holds counters per hostname, never URLs or page content, on this device only. It is capped, clearable and can be switched off.

@@ -32,5 +32,6 @@
   fill(await S.load());
   form.addEventListener('submit', async (e) => { e.preventDefault(); fill(await S.save(read())); flash('Saved'); });
   document.getElementById('reset').addEventListener('click', async () => { await chrome.storage.sync.clear(); fill(await S.load()); flash('Defaults restored'); });
+  document.getElementById('clearHistory').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-history' }); flash('Domain memory cleared'); });
   document.getElementById('clearCache').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-cache' }); flash('Cache cleared'); });
 })();

@@ -37,7 +37,14 @@ function loadPlaywright() {
   const ctx = await chromium.launchPersistentContext(path.join(work, 'profile'), {
     headless: false,
     executablePath: process.env.PW_CHROMIUM || undefined,
-    args: ['--disable-extensions-except=' + EXT, '--load-extension=' + EXT, '--no-sandbox', '--headless=new'],
+    args: [
+      '--disable-extensions-except=' + EXT,
+      '--load-extension=' + EXT,
+      '--no-sandbox',
+      '--headless=new',
+      // Lets the platform-label fixture be served under a real platform host.
+      '--host-resolver-rules=MAP www.instagram.com 127.0.0.1:' + port + ',MAP *.instagram.com 127.0.0.1:' + port,
+    ],
   });
   try {
     let sw = ctx.serviceWorkers()[0];
@@ -80,6 +87,31 @@ function loadPlaywright() {
 
     const hasOverlay = await page.evaluate(() => !!document.querySelector('srl-overlay') && document.querySelectorAll('[data-srl-text]').length >= 4);
     assert.ok(hasOverlay, 'overlay and text markers rendered');
+
+    // Platform labels: same bytes, no embedded metadata, but a platform marker.
+    const feed = await ctx.newPage();
+    await feed.goto('http://www.instagram.com/feed.html');
+    await feed.waitForTimeout(3000);
+    const feedResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.includes('instagram.com/feed'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(feedResult, 'feed result stored');
+    const labelled = (feedResult.images.items || []).filter((i) => i.platformLabel);
+    assert.ok(labelled.some((i) => i.platformLabel.text === 'Made with AI' && i.verdict === 'ai-disclosed'), 'Made with AI label read');
+    const info = labelled.find((i) => i.platformLabel.text === 'AI info');
+    assert.ok(info, 'AI info marker read');
+    assert.equal(info.verdict, 'no-signal', 'an informational marker does not inflate the verdict');
+    assert.ok(!labelled.some((i) => /editorial team/.test(i.platformLabel.text)), 'long prose is not treated as a label');
+
+    // Domain memory: a second visit accumulates counters locally.
+    await page.reload();
+    await page.waitForTimeout(3000);
+    const mem = await sw.evaluate(async () => (await chrome.storage.local.get('srl:domains'))['srl:domains']);
+    assert.ok(mem && mem.localhost, 'domain record kept for localhost');
+    assert.ok(mem.localhost.pages >= 2, 'repeat visits counted (' + mem.localhost.pages + ')');
+    assert.ok(mem.localhost.aiPages >= 2, 'AI pages counted');
+    assert.ok(mem.localhost.tools.lovable >= 1, 'tools counted per domain');
     console.log('e2e OK:', JSON.stringify({ overall: result.overall, site: result.site.verdict, text: result.text.verdict, images: result.images.counts }));
   } finally {
     await ctx.close();

@@ -16,6 +16,7 @@ function build(out) {
   const xml = H.xmpPacket(`<rdf:Description xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:CreatorTool="Adobe Firefly"><Iptc4xmpExt:DigitalSourceType>${DST}compositeWithTrainedAlgorithmicMedia</Iptc4xmpExt:DigitalSourceType></rdf:Description>`);
   fs.writeFileSync(path.join(out, 'firefly.webp'), H.webp([H.webpChunk('XMP ', H.str(xml))]));
   fs.writeFileSync(path.join(out, 'index.html'), PAGE);
+  fs.writeFileSync(path.join(out, 'feed.html'), FEED);
 }
 
 const PAGE = `<!doctype html>
@@ -55,6 +56,28 @@ const PAGE = `<!doctype html>
 </script>
 </body>
 </html>`;
+
+/* Mimics a social feed: platform-applied AI labels, no embedded metadata.
+ * Served under a mapped hostname so the platform matcher fires. */
+const FEED = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Feed</title>
+<style>img{width:320px;height:240px;object-fit:cover;background:#bbb}article{margin:24px;font-family:sans-serif}</style>
+</head><body>
+<article data-testid="post">
+  <img src="plain.png" alt="Post one">
+  <span>Made with AI</span>
+  <p>Look at this sunset.</p>
+</article>
+<article data-testid="post">
+  <img src="plain.png" alt="Post two">
+  <span>AI info</span>
+  <p>Holiday photo.</p>
+</article>
+<article data-testid="post">
+  <img src="plain.png" alt="Post three">
+  <p>We made this with AI tools and a lot of help from our editorial team over several weeks, so the caption is long.</p>
+</article>
+</body></html>`;
 
 module.exports = { build };
 if (require.main === module) build(process.argv[2] || path.join(__dirname, 'site'));
