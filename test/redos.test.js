@@ -8,13 +8,20 @@ const path = require('path');
  * happens to contain, in the content script, on the page's own thread. A
  * pattern that backtracks quadratically is therefore a denial of service that
  * any site can trigger: one long run of the wrong character and the tab
- * freezes. One shipped that way (an unbounded, unanchored compound-street
- * prefix), so this guard is permanent.
+ * freezes. Three shipped that way — an unbounded compound-street prefix, an
+ * unbounded e-mail local part, and an unbounded word class in the three-item
+ * list detector — so this guard is permanent.
  *
  * Every regex literal in lib/ is run against inputs designed to make a
- * backtracking engine work hard, at two sizes. A pattern is flagged when it
- * exceeds a flat budget, or when quadrupling the input makes it more than
- * ~8x slower, which is the signature of superlinear behaviour.
+ * backtracking engine work hard, at 2 KB and again at 16 KB. Every pair is
+ * held to a flat budget; the growth ratio is checked as well whenever the
+ * small measurement is above the timer's noise floor, since 8x the input
+ * costing more than 16x the time is the signature of superlinear behaviour.
+ *
+ * The flat budget must apply to every pair, not only to pairs that already
+ * looked slow: pages present up to 300 KB of body text, which is 150x the
+ * small sample, so a quadratic pattern measuring a mere 0.09 ms here would
+ * cost around two seconds there.
  */
 
 const LIB = path.join(__dirname, '..', 'lib');
@@ -72,7 +79,7 @@ function timeRun(re, text) {
 
 const SMALL = 2000;
 const LARGE = 16000;     // 8x the input
-const BUDGET_MS = 120;   // flat ceiling at 16 KB
+const BUDGET_MS = 120;   // flat ceiling at 16 KB, applied to every pair
 const GROWTH = 16;       // 8x input should cost ~8x, not 64x
 const NOISE_MS = 0.1;    // below this the small measurement is jitter
 
@@ -82,6 +89,7 @@ test('no regex in lib/ backtracks superlinearly on hostile input', () => {
   const large = adversarialInputs(LARGE);
   const findings = [];
   let checked = 0;
+  let pairs = 0;
 
   for (const file of files) {
     const source = fs.readFileSync(path.join(LIB, file), 'utf8');
@@ -89,11 +97,11 @@ test('no regex in lib/ backtracks superlinearly on hostile input', () => {
       checked++;
       for (const shape of Object.keys(small)) {
         const a = timeRun(re, small[shape]);
-        // Below the noise floor the ratio is meaningless, and a pattern that
-        // fast at 2 KB cannot become dangerous at the 300 KB body cap.
-        if (a < NOISE_MS) continue;
         const b = timeRun(re, large[shape]);
-        if (b > BUDGET_MS || b / a > GROWTH) {
+        pairs++;
+        // Below the noise floor the ratio is meaningless, but the flat budget
+        // still applies: every pair is checked against it.
+        if (b > BUDGET_MS || (a >= NOISE_MS && b / a > GROWTH)) {
           findings.push(`${where} on "${shape}": ${a.toFixed(1)}ms at ${SMALL} → ${b.toFixed(1)}ms at ${LARGE}\n    ${src}`);
           break;
         }
@@ -102,6 +110,7 @@ test('no regex in lib/ backtracks superlinearly on hostile input', () => {
   }
 
   assert.ok(checked > 150, 'expected to find the pattern catalogue, only saw ' + checked);
+  assert.ok(pairs > 3000, 'every regex must be measured against every shape, only saw ' + pairs + ' pairs');
   assert.deepEqual(findings, [], 'superlinear regexes:\n  ' + findings.join('\n  '));
 });
 

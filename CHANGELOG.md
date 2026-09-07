@@ -55,6 +55,11 @@ development branch.
   and the three-item-list detector all had unbounded, unanchored quantifiers.
   All quantifiers are now bounded and anchored, and `test/redos.test.js`
   guards every pattern in `lib/` against the whole class.
+- Abbreviated street forms ("Musterstr. 12", "742 Elm St.") never matched: a
+  trailing word boundary cannot hold after a literal dot, so those branches
+  were unreachable. Bare "Ave"/"Rd"/"Blvd" now require a dot or a following
+  comma, so ordinary prose near a five-digit number is no longer reported as
+  an address.
 - Addresses were missed where they are commonest: "Musterstrasse" written with
   a double s, non-ASCII city names such as Zürich and Köln, Dutch canal-street
   compounds, Nordic street suffixes and the Swedish postcode format.

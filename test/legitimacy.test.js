@@ -110,6 +110,29 @@ test('addresses are recognised across European conventions', () => {
   }
 });
 
+/* A trailing \b can never hold after a literal dot, which silently made every
+ * abbreviated street form unreachable. */
+test('abbreviated street forms are matched, in both word and compound shapes', () => {
+  for (const t of ['Musterstr. 12, 10115 Berlin', 'Bahnhofstr. 3, 80331 München', '742 Elm St., Springfield 62704', '100 Main Blvd., Austin 78701']) {
+    const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: t, links: [] });
+    assert.equal(status(r, 'address'), 'present', t);
+  }
+});
+
+/* Allowing a bare "Ave"/"Rd"/"Blvd" would turn ordinary prose near any
+ * five-digit number into a reported address, which overstates how findable
+ * the trader is. The dot or an immediately following comma is required. */
+test('prose that merely contains a street word is not reported as an address', () => {
+  for (const t of [
+    'Ave Maria, gratia plena. 12345 copies sold. Ordered 5 items',
+    'Version 1.2.3 released to 40000 users named Bob',
+    'See fig. 4 and table 12345 in Chapter Nine',
+  ]) {
+    const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: t, links: [] });
+    assert.equal(status(r, 'address'), 'missing', t);
+  }
+});
+
 test('e-mail detection covers internationalised domains without false positives', () => {
   for (const t of ['info@example.com', 'first.last+tag@sub.domain.co.uk', 'hello@müller.de', 'büro@österreich.at']) {
     const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: 'Write to ' + t + ' today', links: [] });
