@@ -131,6 +131,7 @@
     const snapshot = collectSnapshot();
     const site = S.siteAnalyzer.analyzeSite(snapshot);
     site.attribution = S.attribution.attributeSite(site, snapshot);
+    const trader = S.legitimacy.analyzeLegitimacy({ url: snapshot.url, hostname: snapshot.hostname, bodyText: snapshot.bodyText, links: snapshot.anchors });
     const disclosures = S.signals.findDisclosures(snapshot.bodyText, { max: 25 }).map(({ level, match, context, scope }) => ({ level, match, context, scope }));
     const text = analyzeTextBlocks();
     const metaText = snapshot.metas.filter((m) => /generator|ai/i.test(m.name || m.property || '')).map((m) => (m.name || m.property) + '=' + m.content).join(' | ');
@@ -138,7 +139,7 @@
     text.attribution = S.attribution.attributeText(text, textHints);
     result = {
       url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
-      site, text, disclosures, textHints,
+      site, text, trader, disclosures, textHints,
       images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
     };
     refreshSummary();
@@ -187,6 +188,7 @@
     const inlineScripts = [...document.scripts].filter((s) => !s.src && s.textContent && s.type !== 'application/ld+json').slice(0, 40).map((s) => s.textContent.slice(0, 20000));
     const jsonLd = [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) => s.textContent.slice(0, 50000));
     const links = [...document.querySelectorAll('link[rel]')].slice(0, 150).map((l) => ({ rel: l.rel, href: l.href }));
+    const anchors = [...document.querySelectorAll('a[href]')].slice(0, 600).map((a) => ({ text: (a.textContent || '').trim().slice(0, 80), href: a.getAttribute('href') || '' }));
     const comments = [];
     const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_COMMENT);
     let n;
@@ -199,7 +201,7 @@
     try { bodyText = document.body ? document.body.innerText.slice(0, 300000) : ''; } catch (e) { bodyText = ''; }
     return {
       url: location.href, hostname: location.hostname, lang: document.documentElement.lang || '', title: document.title,
-      metas, scripts, inlineScripts, jsonLd, links, comments, attrNames: [...attrs], bodyText,
+      metas, scripts, inlineScripts, jsonLd, links, anchors, comments, attrNames: [...attrs], bodyText,
     };
   }
 

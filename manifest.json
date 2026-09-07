@@ -48,6 +48,7 @@
         "lib/site-analyzer.js",
         "lib/image-hints.js",
         "lib/platform-labels.js",
+        "lib/legitimacy.js",
         "lib/attribution.js",
         "content/overlay.js",
         "content/content.js"

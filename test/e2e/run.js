@@ -85,6 +85,10 @@ function loadPlaywright() {
     assert.equal(systems.adobe && systems.adobe.confidence, 'confirmed', 'Firefly XMP attributed');
     assert.deepEqual(errors, []);
 
+    assert.ok(result.trader, 'trader analysis present');
+    assert.ok(result.trader.missingCritical.includes('imprint'), 'missing imprint reported');
+    assert.equal(result.trader.checks.find((c) => c.id === 'https').status, 'concern', 'plain http flagged');
+
     const hasOverlay = await page.evaluate(() => !!document.querySelector('srl-overlay') && document.querySelectorAll('[data-srl-text]').length >= 4);
     assert.ok(hasOverlay, 'overlay and text markers rendered');
 

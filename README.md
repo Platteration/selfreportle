@@ -12,6 +12,14 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
 | **Images** | C2PA Content Credentials (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
+### Who is behind the site
+
+A separate **Trader** tab answers the question AI markers cannot: can the operator be identified? It reads the page for an imprint or legal notice, terms, privacy policy, returns or withdrawal policy, contact details, an about page, marketplace trader identification, a postal address, a telephone number, an e-mail address, VAT and company-register identifiers, and whether the page was served over HTTPS. VAT numbers are matched across EU formats plus the UK and Switzerland, tolerating the separators real imprints use; company numbers are matched per jurisdiction (UK company number, German HRB/HRA, Dutch KvK, French SIREN/SIRET, Italian REA, Spanish CIF/NIF, LEI, US EIN).
+
+Nothing is looked up. Identifiers are checked for format only, so a well-formed number can still belong to nobody, and the panel says so. Pages that look like shops are held to the fuller set of checks. Pressure patterns are listed separately, with the reason each is restricted under EU consumer law: countdown timers, invented scarcity and viewer counts, very large discount claims measured against the Omnibus Directive's 30-day rule, and blanket "no returns" against the 14-day right of withdrawal. There is deliberately no trader score: the panel lists what is present and what is not, and leaves the judgement to the reader.
+
+Legal background: e-Commerce Directive 2000/31/EC Article 5 and the national imprint rules built on it, the Consumer Rights Directive for distance selling, the Digital Services Act Article 31 for traders on marketplaces, and the Unfair Commercial Practices Directive as amended by the Omnibus Directive.
+
 ### Platform labels, where metadata dies
 
 Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, Pinterest and X strip embedded metadata on upload and add their own marker instead. The extension reads those markers ("Made with AI", "AI info", "Altered or synthetic content", "Creator labeled as AI-generated", "AI modified", "Made with Grok"), attributes each to the media in the same post, and treats it as a disclosure by the platform rather than as embedded provenance. Matching is by visible text and accessible name, not by CSS class, because platform class names rotate constantly. Informational markers such as "AI info" are surfaced without changing the verdict.
@@ -87,6 +95,7 @@ lib/image-hints.js          DOM-side image hints (captions, hosts, file names)
 lib/attribution.js          vendor/product profiles, attribution rules, documented skews
 lib/platform-labels.js      AI labels applied by Instagram, TikTok, YouTube, LinkedIn, Pinterest, X
 lib/history.js              local-only per-domain counters
+lib/legitimacy.js           trader identification, policies, identifiers, pressure patterns
 lib/image-metadata.js       JPEG/PNG/WebP/ISOBMFF parsing: EXIF, XMP, PNG text, C2PA/JUMBF
 lib/cbor.js                 minimal CBOR codec for C2PA claims and COSE
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules

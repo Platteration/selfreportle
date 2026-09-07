@@ -19,10 +19,11 @@ button:focus-visible { outline: 2px solid #0f6fa8; outline-offset: 1px; }
 .overall .ic { font-size: 14px; line-height: 1.3; }
 .overall small { display: block; font-weight: 400; opacity: .92; }
 .overall:empty { display: none; }
-.tabs { display: flex; gap: 2px; padding: 0 8px; }
-.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; background: none; color: var(--muted); padding: 6px 9px; font-size: 12px; }
+.tabs { display: flex; gap: 1px; padding: 0 6px; }
+.tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; background: none; color: var(--muted);
+  padding: 6px 4px; font-size: 11px; white-space: nowrap; }
 .tabs button[aria-selected="true"] { color: var(--fg); font-weight: 600; border-bottom-color: #0f6fa8; background: none; }
-.tabs button .n { display: inline-block; min-width: 15px; padding: 0 3px; margin-left: 4px; border-radius: 999px; background: var(--c, #5a6472); color: #fff; font-size: 10px; font-weight: 700; text-align: center; }
+.tabs button .n { color: var(--c, #5a6472); font-size: 10px; font-weight: 800; vertical-align: super; margin-left: 2px; }
 
 /* ---- panels ---- */
 main { flex: 1; overflow-y: auto; padding: 10px 12px 12px; }

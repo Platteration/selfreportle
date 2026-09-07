@@ -68,6 +68,7 @@
     main.appendChild(section('site', sitePanel(r.site || {})));
     main.appendChild(section('text', textPanel(r.text || {})));
     main.appendChild(section('images', imagesPanel(r.images || {})));
+    main.appendChild(section('trader', traderPanel(r.trader || null, r)));
     main.appendChild(section('tools', toolsPanel(r)));
     counts(r);
     select(active);
@@ -97,6 +98,8 @@
     set('text', (r.text && r.text.flaggedBlocks) || 0, V.info('text', r.text && r.text.verdict).color);
     set('images', flaggedImages, V.COLORS.vermillion);
     set('tools', (r.aiSystems || []).length, V.COLORS.orange);
+    const t = r.trader;
+    set('trader', t ? t.missingCritical.length + t.pressure.length : 0, t && t.missingCritical.length ? V.COLORS.vermillion : V.COLORS.gold);
   }
 
   function trustHint(key) {
@@ -340,6 +343,62 @@
       list.appendChild(d);
     }
     out.push(list);
+    return out;
+  }
+
+  const STATUS = {
+    present: { icon: '✓', color: V.COLORS.green },
+    weak: { icon: '~', color: V.COLORS.gold },
+    missing: { icon: '✗', color: V.COLORS.mist },
+    concern: { icon: '!', color: V.COLORS.vermillion },
+  };
+
+  function traderPanel(t, r) {
+    if (!t) return [el('div', 'empty', 'This page was not analysed for trader identification.')];
+    const out = [];
+    const headline = t.missingCritical.length
+      ? (t.commerce ? 'A page that takes money should say who runs it. ' : '') + t.missingCritical.length + ' expected disclosure' + (t.missingCritical.length === 1 ? '' : 's') + ' not found on this page.'
+      : 'The disclosures a reader would expect are present on this page.';
+    const banner = tint(el('div', 'attr'), t.missingCritical.length ? V.COLORS.vermillion : V.COLORS.green);
+    const bt = tint(el('div', 'tag'), t.missingCritical.length ? V.COLORS.vermillion : V.COLORS.green);
+    bt.appendChild(el('span', 'ic', t.missingCritical.length ? '!' : '✓'));
+    bt.appendChild(document.createTextNode(headline));
+    banner.appendChild(bt);
+    banner.appendChild(el('div', 'd', t.commerce ? 'This page looks like it sells something, so returns and terms are checked too.' : 'This page does not look like a shop, so only the basic disclosures are checked.'));
+    out.push(banner);
+
+    const list = el('div');
+    list.appendChild(el('h3', null, 'Identification and policies'));
+    for (const c of t.checks) {
+      const st = STATUS[c.status] || STATUS.missing;
+      const d = el('div', 'sig');
+      const k = el('span', 'k', st.icon);
+      k.style.color = st.color;
+      d.appendChild(k);
+      const v = el('div');
+      v.appendChild(el('div', 'l', c.label));
+      if (c.detail) v.appendChild(el('div', 'd', c.detail));
+      else if (c.status === 'missing') v.appendChild(el('div', 'd', 'Not found on this page. It may live on another page of the site.'));
+      d.appendChild(v);
+      list.appendChild(d);
+    }
+    out.push(list);
+
+    if (t.pressure.length) {
+      const p = el('div');
+      p.appendChild(el('h3', null, 'Pressure and urgency patterns'));
+      for (const x of t.pressure) {
+        const it = el('div', 'item');
+        it.appendChild(tint(el('span', 'chip', x.label), V.COLORS.orange));
+        it.appendChild(el('div', 'ex', '“…' + x.detail + '…”'));
+        it.appendChild(el('div', 'd', x.note));
+        p.appendChild(it);
+      }
+      p.appendChild(el('div', 'note', 'These are shown because EU consumer law restricts them, not as proof that anything is wrong. A genuine sale can have a genuine timer.'));
+      out.push(p);
+    }
+
+    out.push(el('div', 'note', t.note + ' Findings describe this page only, not the business behind it.'));
     return out;
   }
 
