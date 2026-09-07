@@ -82,3 +82,13 @@ test('marketplace trader identification is detected', () => {
   const r = L.analyzeLegitimacy({ url: 'https://m.test/i', hostname: 'm.test', bodyText: 'x', links: [{ text: 'Seller information', href: '/seller' }] });
   assert.equal(status(r, 'trader'), 'present');
 });
+
+/* The publisher page is UI, but the duty labelling it depends on is a
+ * factual claim about the law, so it is pinned here. */
+test('trader checks expose the ids the publisher self-check labels', () => {
+  const r = L.analyzeLegitimacy({ url: 'https://a.test/', hostname: 'a.test', bodyText: '', links: [] });
+  for (const id of ['imprint', 'privacy', 'contact', 'terms', 'returns']) {
+    assert.ok(r.checks.some((c) => c.id === id), id + ' must exist for the self-check to label it');
+  }
+  assert.ok('vat' in r.identifiers && 'registration' in r.identifiers);
+});

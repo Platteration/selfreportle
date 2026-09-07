@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
     "icons": "node scripts/make-icons.js",
-    "lint": "node --check lib/*.js background/*.js content/*.js popup/*.js options/*.js",
+    "lint": "for f in lib/*.js background/*.js content/*.js popup/*.js options/*.js publisher/*.js scripts/*.js; do node --check \"$f\" || exit 1; done",
     "e2e": "node test/e2e/run.js"
   },
   "engines": {

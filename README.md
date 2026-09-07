@@ -12,6 +12,12 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
 | **Images, video, audio** | C2PA Content Credentials, cryptographically verified (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC, MP4/M4A/MOV (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
+### Publisher self-check
+
+The same analysis, pointed at your own site. Open it from the popup and it shows what a reader running this extension actually sees on your page, then hands over paste-ready markup for the gaps: a machine-readable AI declaration, JSON-LD carrying the IPTC digital source type, a visible disclosure line, per-image marking, a build-pipeline note on keeping Content Credentials alive through re-encoding, and a footer linking the disclosures a visitor expects. It also lists your own files whose credentials are unsigned or fail to verify.
+
+Every row is labelled **legal duty** or **good practice**, because conflating them would be misleading. Article 50 puts the machine-readable marking duty on the *provider* of the generative model, not on you; as a *deployer* your duties are disclosing deepfakes and disclosing AI-generated text published to inform the public on matters of public interest, unless a human reviewed it and holds editorial responsibility. A marketing page about your own products is generally neither. The page says all of this plainly, and says it is not legal advice.
+
 ### Languages
 
 Detection is not English-only. Disclosure phrasing and LLM-typical wording are carried per language for **German, French, Spanish, Dutch, Italian, Portuguese and Polish** alongside English, in `lib/lexicons.js`. Two rules keep cross-language noise out:
@@ -136,6 +142,7 @@ background/service-worker.js  fetches image bytes cross-origin, caches, stores p
 content/content.js          orchestrates the analyses on the page and reports results
 content/overlay.js          shadow-DOM pill, panel, badges and popovers
 popup/                      toolbar report
+publisher/                  self-check for site owners: readiness checklist and snippets
 options/                    settings page
 test/                       node:test suites with synthetic JPEG/PNG/WebP/C2PA fixtures
 test/e2e/                   Playwright run against a fixture site with the extension loaded

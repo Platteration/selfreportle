@@ -226,6 +226,15 @@
     loadMemory(r, mem);
 
     out.push(exportBlock(r));
+
+    const own = el('div');
+    own.appendChild(el('h3', null, 'Your own site'));
+    const link = btn('Run a publisher self-check', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('publisher/publisher.html') + '?tabId=' + tab.id });
+    });
+    own.appendChild(link);
+    own.appendChild(el('div', 'note', 'Shows what a reader running this extension sees on your page, and hands you the markup to close the gaps.'));
+    out.push(own);
     return out;
   }
 

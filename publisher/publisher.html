@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Selfreportle — publisher self-check</title>
+  <link rel="stylesheet" href="publisher.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="logo"></span>
+      <div><h1>Publisher self-check</h1><div class="sub" id="url">Loading…</div></div>
+    </div>
+    <div class="actions"><button id="recheck">Re-check</button><button id="copyall">Copy all snippets</button></div>
+  </header>
+
+  <main id="main">
+    <p class="empty" id="empty">Open the page you want to check in another tab, then run this from the extension popup.</p>
+  </main>
+
+  <footer>
+    <h2>What the law actually requires, and of whom</h2>
+    <p>The EU AI Act (Regulation (EU) 2024/1689) Article 50 applies from <b>2 August 2026</b> and splits the duties:</p>
+    <ul>
+      <li><b>Providers</b> of generative AI systems must mark outputs in a machine-readable format and make them detectable as artificially generated or manipulated (Art. 50(2)). If you use someone else's model, this duty is theirs, not yours. What you can do is avoid destroying the marking they applied.</li>
+      <li><b>Deployers</b> — which is what an ordinary website operator is — must disclose deepfakes: image, audio or video content that appreciably resembles real people, objects, places or events (Art. 50(4)). For artistic or satirical work the disclosure may be lighter.</li>
+      <li><b>Deployers</b> publishing AI-generated or AI-manipulated <b>text to inform the public on matters of public interest</b> must disclose it, <i>unless</i> the content underwent human review and a person or organisation holds editorial responsibility (Art. 50(4)).</li>
+      <li>Disclosure must be clear and distinguishable, given at the latest at first interaction or exposure (Art. 50(5)).</li>
+    </ul>
+    <p>So a marketing page about your own products is generally not "information to the public on a matter of public interest", and a photo of your shopfront is not a deepfake. Much of what follows is therefore <b>good practice rather than legal duty</b>, and it is labelled that way. Nothing here is legal advice; if the answer matters commercially, ask a lawyer in your jurisdiction.</p>
+    <p>The machine-readable snippets below use conventions, not standards. There is a real standard for images, audio and video — <b>C2PA Content Credentials</b>, which this extension reads and verifies. There is no equivalent adopted standard for marking a web page or its text, so the meta tag and structured-data forms shown are the common conventions, offered because a convention read by tools like this one beats nothing at all.</p>
+  </footer>
+
+  <script src="../lib/lexicons.js"></script>
+  <script src="../lib/signals.js"></script>
+  <script src="../lib/verdicts.js"></script>
+  <script src="../lib/attribution.js"></script>
+  <script src="publisher.js"></script>
+</body>
+</html>

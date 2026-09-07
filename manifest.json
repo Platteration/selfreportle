@@ -59,5 +59,15 @@
       ],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "publisher/publisher.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
   ]
 }
