@@ -92,14 +92,18 @@ const UUID = {
   cbor: '6332626f00110010800000aa00389b71',
 };
 function cborBox(value) { return box('cbor', CBOR.encode(value)); }
-function c2paManifest({ generator = 'OpenAI', actions = [], signerCN = null, extraAssertions = [] } = {}) {
+function c2paManifest({ generator = 'OpenAI', actions = [], signerCN = null, extraAssertions = [], referenceAssertions = true } = {}) {
+  const labels = ['c2pa.actions.v2', ...extraAssertions.map(([label]) => label)];
   const assertionBoxes = [
     jumb(UUID.cbor, 'c2pa.actions.v2', [cborBox({ actions })]),
     ...extraAssertions.map(([label, val]) => jumb(UUID.cbor, label, [cborBox(val)])),
   ];
+  // Real producers list their assertions in the claim; hashes are absent here
+  // because this helper builds deliberately unsigned manifests.
+  const refs = referenceAssertions ? labels.map((l) => ({ url: 'self#jumbf=c2pa.assertions/' + l })) : [];
   const children = [
     jumb(UUID.assertions, 'c2pa.assertions', assertionBoxes),
-    jumb(UUID.claim, 'c2pa.claim', [cborBox({ 'dc:title': 'image.png', claim_generator: generator, claim_generator_info: [{ name: generator, version: '1.0' }], assertions: [] })]),
+    jumb(UUID.claim, 'c2pa.claim', [cborBox({ 'dc:title': 'image.png', claim_generator: generator, claim_generator_info: [{ name: generator, version: '1.0' }], assertions: refs })]),
   ];
   if (signerCN) {
     const cn = str(signerCN);
@@ -224,7 +228,7 @@ async function makeKeyPair() {
  * A manifest with a genuine COSE_Sign1 over the claim, real assertion hashes
  * and a real certificate chain. `tamper` lets a test break exactly one thing.
  */
-async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter } = {}) {
+async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null } = {}) {
   const leafKeys = await makeKeyPair();
   const now = new Date();
   const nb = notBefore || new Date(now.getTime() - 86400000);
@@ -269,10 +273,17 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
   const signature = new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, leafKeys.privateKey, sigStructure));
   if (tamper === 'signature') signature[0] ^= 0xff;
 
-  const cose = [protectedHeader, { 33: certs }, null, signature];
+  // A replay: the signature and its inline payload stay genuine, but the
+  // claim box carries something the signature never covered.
+  const cose = [protectedHeader, { 33: certs }, (inlinePayload || forgedClaim) ? claimRaw : null, signature];
+  const storedClaim = forgedClaim ? CBOR.encode(forgedClaim) : claimRaw;
+  // An assertion the signed claim never referenced: added after the fact,
+  // without disturbing the signature.
+  const present = dropAssertion ? [] : assertionBoxes.slice();
+  if (injectAssertion) present.push(jumb(UUID.cbor, injectAssertion[0], [cborBox(injectAssertion[1])]));
   const children = [
-    jumb(UUID.assertions, 'c2pa.assertions', assertionBoxes),
-    jumb(UUID.claim, 'c2pa.claim', [box('cbor', claimRaw)]),
+    jumb(UUID.assertions, 'c2pa.assertions', present),
+    jumb(UUID.claim, 'c2pa.claim', [box('cbor', storedClaim)]),
     jumb(UUID.signature, 'c2pa.signature', [cborBox(cose)]),
   ];
   return jumb(UUID.store, 'c2pa', [jumb(UUID.manifest, 'urn:uuid:11111111-2222-3333-4444-555555555555', children)]);

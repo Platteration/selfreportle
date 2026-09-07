@@ -22,9 +22,15 @@ Reading a manifest and trusting it are different things, so the extension answer
 
 **This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
 
-Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up, and the manifest's claims should be treated as unreliable), and **caution** (the claim is authentic but its assertions could not be reconciled). Nothing here touches the network, and an unanswered question is never reported as a pass.
+Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up), and **caution** (the claim is authentic but its assertions could not be fully reconciled, or the fetch was byte-capped before reaching them). Nothing here touches the network, and an unanswered question is never reported as a pass.
 
-The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then breaks exactly one thing at a time (the signature, one assertion, the chain linkage, the validity dates) to confirm each failure is caught and correctly distinguished. The end-to-end run does the same inside the browser.
+Three rules keep a valid signature from vouching for the wrong thing:
+
+* **The signature must cover the claim being reported.** A COSE payload carried inline is accepted only when it is byte-identical to the claim in the manifest. Without that check, a genuine signature can be lifted from one asset and attached beside an attacker's claim, and the reader shows their words under the real signer's name.
+* **Only assertions the signed claim references may speak for the asset.** An assertion box added afterwards disturbs no signature, so an unreferenced one is ignored; once hashes verify, only the assertions that matched are read.
+* **A broken manifest stops speaking entirely.** No claim from it reaches the verdict, and the finding that it is broken outranks any benign claim inside it, so a tampered manifest can never produce a green camera-provenance result.
+
+The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then attacks them one change at a time — a tampered signature, a swapped assertion, a broken chain link, expired dates, a replayed signature over a forged claim, an injected unreferenced assertion, an assertion deleted after signing, an unreadable certificate in the chain — to confirm each is caught and correctly distinguished from the others. The end-to-end run does the same inside the browser.
 
 ### Video and audio
 

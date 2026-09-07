@@ -49,6 +49,30 @@ development branch.
 - Images carrying a platform label are reported even when they show no other
   signal, so an informational marker is visible without inflating the verdict.
 
+### Security
+- **A genuine signature could be replayed over a forged claim.** The COSE
+  payload was verified as the signed body while the claim and assertions
+  reported to the reader came from a separate box, so an attacker's claim
+  displayed as verified under an honest signer's name. The signature must now
+  cover the claim being reported.
+- **A broken manifest kept speaking.** The finding that credentials do not
+  verify was dropped before it reached the verdict, so a tampered manifest
+  could still yield a green camera-provenance result. Broken credentials now
+  outrank every claim inside the manifest, and those claims are suppressed.
+- **Unreferenced assertions were trusted.** Actions were read from every
+  assertion box, including ones the signed claim never named and which anyone
+  can add without disturbing a signature.
+- **Assertions deleted after signing were passed over**, leaving "signature
+  verified" on a manifest whose evidence was gone.
+- A byte-capped fetch that clipped an assertion was reported as tampering;
+  it is now reported as incomplete evidence.
+- One unparsable certificate anywhere in the chain stopped the leaf signature
+  being checked at all.
+- Certificate dates that could not be parsed were treated as valid, and a
+  seconds-less GeneralizedTime was misread by about eighteen months.
+- The "box content" assertion hashing convention could never match, because
+  the hashed range wrongly included the inner box header.
+
 ### Fixed
 - **Three quadratic regexes that any page could have used to freeze a tab**,
   found by fuzzing: the German compound-street prefix, the e-mail local part
