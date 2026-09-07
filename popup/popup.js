@@ -336,10 +336,14 @@
       d.appendChild(el('div', 'u', it.url));
       if (it.platformLabel) d.appendChild(el('div', 'd', it.platformLabel.platform + ' label: “' + it.platformLabel.text + '”'));
       if (it.attribution) d.appendChild(el('div', 'd', 'Likely tool: ' + it.attribution.name + ' · ' + (A.CONFIDENCE_LABEL[it.attribution.confidence] || '') + (it.attribution.detail ? ' · ' + it.attribution.detail : '')));
-      for (const s of (it.signals || []).slice(0, 5)) d.appendChild(sigRow(s));
+      // The verification box below says this in full; don't say it twice.
+      const shown = (it.signals || []).filter((s) => s.id !== 'c2pa-verified' && s.id !== 'c2pa-unverified');
+      for (const s of shown.slice(0, 5)) d.appendChild(sigRow(s));
       if (it.metadata && it.metadata.c2pa) {
         const c2 = it.metadata.c2pa;
         d.appendChild(el('div', 'note', 'C2PA: ' + [c2.claimGenerator, (c2.actions || []).map((a) => a.action + (a.digitalSourceType ? ' (' + a.digitalSourceType.split('/').pop() + ')' : '')).join(', '), c2.signerNames && c2.signerNames.length ? 'signer ' + c2.signerNames.join(', ') : ''].filter(Boolean).join(' · ')));
+        const vr = verificationRow(c2.verification);
+        if (vr) d.appendChild(vr);
       }
       list.appendChild(d);
     }
@@ -401,6 +405,39 @@
 
     out.push(el('div', 'note', t.note + ' Findings describe this page only, not the business behind it.'));
     return out;
+  }
+
+  /* Cryptographic state of a Content Credentials manifest. Three outcomes,
+   * kept visually distinct because they mean different things. */
+  function verificationRow(v) {
+    if (!v) return null;
+    const sum = v.summary || {};
+    const state = sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
+      : sum.caution ? { icon: '!', color: V.COLORS.gold, word: 'Signed, assertions unreconciled' }
+        : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Signature verified' }
+          : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
+    const d = el('div', 'attr');
+    const t = tint(el('div', 'tag'), state.color);
+    t.appendChild(el('span', 'ic', state.icon));
+    t.appendChild(document.createTextNode(state.word));
+    d.appendChild(t);
+    if (sum.text) d.appendChild(el('div', 'd', sum.text));
+    if (v.signedBy && v.signedBy.subject) d.appendChild(el('div', 'd', 'Certificate subject: ' + v.signedBy.subject + (v.signedBy.issuer ? ', issued by ' + v.signedBy.issuer : '')));
+    const det = el('details');
+    det.appendChild(el('summary', null, 'What this does and does not prove'));
+    const body = el('div', 'skew');
+    body.appendChild(el('div', null, sum.ok
+      ? 'The manifest has not been altered since it was signed. It does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.'
+      : sum.broken
+        ? 'Something verifiably does not add up: the signature, an assertion hash or the certificate chain. Treat the claims inside the manifest as unreliable.'
+        : sum.caution
+          ? 'The claim is authentic but the assertions present do not hash to the values it recorded. Either an assertion was replaced after signing, or this reader does not know the hashing convention used.'
+          : 'No cryptographic check completed, so the manifest is being read as an unverified claim.'));
+    if (v.chain && v.chain.anchorNote) body.appendChild(el('div', 'basis', v.chain.anchorNote));
+    if (v.notes && v.notes.length) body.appendChild(el('div', 'basis', v.notes.join(' ')));
+    det.appendChild(body);
+    d.appendChild(det);
+    return d;
   }
 
   function toolsPanel(r) {

@@ -6,7 +6,7 @@ const H = require('../helpers.js');
 
 const DST = 'http://cv.iptc.org/newscodes/digitalsourcetype/';
 
-function build(out) {
+async function build(out) {
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, 'sd.png'), H.png([H.tEXt('parameters', 'a lighthouse at dusk\nSteps: 28, Sampler: DPM++ 2M, CFG scale: 6, Seed: 991, Size: 768x768, Model hash: 31e35c80fc')]));
   const manifest = H.c2paManifest({ generator: 'ChatGPT', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia', softwareAgent: { name: 'GPT-4o' } }], signerCN: 'OpenAI' });
@@ -21,6 +21,12 @@ function build(out) {
   const videoManifest = H.c2paManifest({ generator: 'Sora', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }], signerCN: 'OpenAI' });
   fs.writeFileSync(path.join(out, 'clip.mp4'), H.mp4(videoManifest, { placement: 'tail', mdatSize: 900 * 1024 }));
   fs.writeFileSync(path.join(out, 'media.html'), MEDIA);
+  // Genuinely signed credentials, and the same asset with the signature broken.
+  const good = await H.signedC2paManifest({ generator: 'Adobe Firefly', cn: 'Fixture Signer', chain: 'full', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  const bad = await H.signedC2paManifest({ generator: 'Adobe Firefly', cn: 'Fixture Signer', tamper: 'signature', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  fs.writeFileSync(path.join(out, 'signed.png'), H.png([H.pngChunk('caBX', good)]));
+  fs.writeFileSync(path.join(out, 'tampered.png'), H.png([H.pngChunk('caBX', bad)]));
+  fs.writeFileSync(path.join(out, 'signed.html'), SIGNED);
 }
 
 const PAGE = `<!doctype html>
@@ -87,6 +93,13 @@ const MEDIA = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Clip</title></head><body>
 <video src="clip.mp4" poster="sd.png" width="480" height="270" controls></video>
 <p>A short clip.</p>
+</body></html>`;
+
+const SIGNED = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Credentials</title>
+<style>img{width:300px;height:200px;background:#ccc}</style></head><body>
+<figure><img src="signed.png" alt="Signed"><figcaption>Signed</figcaption></figure>
+<figure><img src="tampered.png" alt="Tampered"><figcaption>Tampered</figcaption></figure>
 </body></html>`;
 
 module.exports = { build };

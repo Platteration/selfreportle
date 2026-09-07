@@ -493,7 +493,7 @@
     if (m.exif) out.exif = m.exif;
     if (m.xmp) out.xmp = m.xmp;
     if (m.pngText) out.pngText = Object.fromEntries(Object.entries(m.pngText).slice(0, 8).map(([k, v]) => [k, String(v).slice(0, 200)]));
-    if (m.c2pa) out.c2pa = { claimGenerator: m.c2pa.claimGenerator, claimGeneratorInfo: m.c2pa.claimGeneratorInfo, title: m.c2pa.title, actions: (m.c2pa.actions || []).slice(0, 12), assertions: m.c2pa.assertions, ingredients: m.c2pa.ingredients, signerNames: m.c2pa.signerNames, digitalSourceTypes: m.c2pa.digitalSourceTypes, softwareAgents: m.c2pa.softwareAgents, manifestCount: m.c2pa.manifestCount };
+    if (m.c2pa) out.c2pa = { claimGenerator: m.c2pa.claimGenerator, claimGeneratorInfo: m.c2pa.claimGeneratorInfo, title: m.c2pa.title, actions: (m.c2pa.actions || []).slice(0, 12), assertions: m.c2pa.assertions, ingredients: m.c2pa.ingredients, signerNames: m.c2pa.signerNames, digitalSourceTypes: m.c2pa.digitalSourceTypes, softwareAgents: m.c2pa.softwareAgents, manifestCount: m.c2pa.manifestCount, verification: m.c2pa.verification || null };
     if (m.comments) out.comments = m.comments;
     return out;
   }

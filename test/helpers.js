@@ -135,4 +135,147 @@ function mp4(manifest, { brand = 'mp42', placement = 'front', mdatSize = 4096 } 
   return placement === 'front' ? concat([ftyp, moov, mdat]) : concat([ftyp, mdat, moov]);
 }
 
-module.exports = { isoBox, c2paUuidBox, mp4, concat, str, png, pngChunk, tEXt, iTXt, tiff, jpeg, jpegSegment, xmpPacket, app1Xmp, app1Exif, app11Jumbf, c2paManifest, jumb, box, cborBox, UUID, webp, webpChunk };
+/* ---- DER / X.509: builds a real, self-consistent certificate so the
+ * verifier is exercised against actual cryptography, not a stub. ---- */
+const { webcrypto } = require('crypto');
+const subtle = webcrypto.subtle;
+
+function derLen(n) {
+  if (n < 0x80) return Uint8Array.from([n]);
+  const bytes = [];
+  let v = n;
+  while (v > 0) { bytes.unshift(v & 0xff); v >>= 8; }
+  return Uint8Array.from([0x80 | bytes.length, ...bytes]);
+}
+function der(tag, content) { return concat([Uint8Array.from([tag]), derLen(content.length), content]); }
+function derSeq(...parts) { return der(0x30, concat(parts)); }
+function derSet(...parts) { return der(0x31, concat(parts)); }
+function derInt(n) {
+  const bytes = [];
+  let v = BigInt(n);
+  if (v === 0n) bytes.push(0);
+  while (v > 0n) { bytes.unshift(Number(v & 0xffn)); v >>= 8n; }
+  if (bytes[0] & 0x80) bytes.unshift(0);
+  return der(0x02, Uint8Array.from(bytes));
+}
+function derIntRaw(bytes) {
+  let i = 0;
+  while (i < bytes.length - 1 && bytes[i] === 0) i++;
+  let v = bytes.subarray(i);
+  if (v[0] & 0x80) v = concat([Uint8Array.from([0]), v]);
+  return der(0x02, v);
+}
+function derOid(dotted) {
+  const p = dotted.split('.').map(Number);
+  const out = [p[0] * 40 + p[1]];
+  for (const n of p.slice(2)) {
+    const chunk = [];
+    let v = n;
+    do { chunk.unshift(v & 0x7f); v >>= 7; } while (v > 0);
+    for (let i = 0; i < chunk.length - 1; i++) chunk[i] |= 0x80;
+    out.push(...chunk);
+  }
+  return der(0x06, Uint8Array.from(out));
+}
+function derUtf8(text) { return der(0x0c, str(text)); }
+function derBitString(bytes) { return der(0x03, concat([Uint8Array.from([0]), bytes])); }
+function derUtcTime(date) {
+  const p = (n) => String(n).padStart(2, '0');
+  return der(0x17, str(p(date.getUTCFullYear() % 100) + p(date.getUTCMonth() + 1) + p(date.getUTCDate()) + p(date.getUTCHours()) + p(date.getUTCMinutes()) + p(date.getUTCSeconds()) + 'Z'));
+}
+function derName(attrs) {
+  return derSeq(...Object.entries(attrs).map(([oid, value]) => derSet(derSeq(derOid(oid), derUtf8(value)))));
+}
+const OID_CN = '2.5.4.3';
+const OID_O = '2.5.4.10';
+const ECDSA_SHA256 = derSeq(derOid('1.2.840.10045.4.3.2'));
+
+function rawEcdsaToDer(raw) {
+  const half = raw.length / 2;
+  return derSeq(derIntRaw(raw.subarray(0, half)), derIntRaw(raw.subarray(half)));
+}
+
+/* Issues a certificate for `subjectKey`, signed by `issuerKey`. Self-signed
+ * when the two are the same and the names match. */
+async function makeCertificate({ subject, issuer, subjectPublicKey, issuerPrivateKey, notBefore, notAfter, isCA = false, serial = 1 }) {
+  const spki = new Uint8Array(await subtle.exportKey('spki', subjectPublicKey));
+  const exts = [];
+  if (isCA) exts.push(derSeq(derOid('2.5.29.19'), der(0x04, derSeq(der(0x01, Uint8Array.from([0xff]))))));
+  exts.push(derSeq(derOid('2.5.29.15'), der(0x04, derBitString(Uint8Array.from([isCA ? 0x04 : 0x80])))));
+  const tbs = derSeq(
+    der(0xa0, derInt(2)),
+    derInt(serial),
+    ECDSA_SHA256,
+    derName(issuer),
+    derSeq(derUtcTime(notBefore), derUtcTime(notAfter)),
+    derName(subject),
+    spki,
+    der(0xa3, derSeq(...exts)),
+  );
+  const rawSig = new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, issuerPrivateKey, tbs));
+  return derSeq(tbs, ECDSA_SHA256, derBitString(rawEcdsaToDer(rawSig)));
+}
+
+async function makeKeyPair() {
+  return subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+}
+
+/*
+ * A manifest with a genuine COSE_Sign1 over the claim, real assertion hashes
+ * and a real certificate chain. `tamper` lets a test break exactly one thing.
+ */
+async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter } = {}) {
+  const leafKeys = await makeKeyPair();
+  const now = new Date();
+  const nb = notBefore || new Date(now.getTime() - 86400000);
+  const na = notAfter || new Date(now.getTime() + 86400000);
+
+  let certs;
+  if (chain === 'full') {
+    const rootKeys = await makeKeyPair();
+    const rootName = { [OID_CN]: 'Test Root', [OID_O]: org };
+    const root = await makeCertificate({ subject: rootName, issuer: rootName, subjectPublicKey: rootKeys.publicKey, issuerPrivateKey: rootKeys.privateKey, notBefore: nb, notAfter: na, isCA: true, serial: 1 });
+    const leaf = await makeCertificate({ subject: { [OID_CN]: cn, [OID_O]: org }, issuer: rootName, subjectPublicKey: leafKeys.publicKey, issuerPrivateKey: rootKeys.privateKey, notBefore: nb, notAfter: na, serial: 2 });
+    certs = [leaf, root];
+  } else if (chain === 'broken') {
+    const rootKeys = await makeKeyPair();
+    const otherKeys = await makeKeyPair();
+    const rootName = { [OID_CN]: 'Test Root', [OID_O]: org };
+    const root = await makeCertificate({ subject: rootName, issuer: rootName, subjectPublicKey: rootKeys.publicKey, issuerPrivateKey: rootKeys.privateKey, notBefore: nb, notAfter: na, isCA: true, serial: 1 });
+    // Leaf claims the root as issuer but was signed by an unrelated key.
+    const leaf = await makeCertificate({ subject: { [OID_CN]: cn, [OID_O]: org }, issuer: rootName, subjectPublicKey: leafKeys.publicKey, issuerPrivateKey: otherKeys.privateKey, notBefore: nb, notAfter: na, serial: 2 });
+    certs = [leaf, root];
+  } else {
+    const selfName = { [OID_CN]: cn, [OID_O]: org };
+    certs = [await makeCertificate({ subject: selfName, issuer: selfName, subjectPublicKey: leafKeys.publicKey, issuerPrivateKey: leafKeys.privateKey, notBefore: nb, notAfter: na, serial: 1 })];
+  }
+
+  // Assertions first, so the claim can record their real hashes.
+  const assertionValues = [['c2pa.actions.v2', { actions }]];
+  const assertionBoxes = assertionValues.map(([label, value]) => jumb(UUID.cbor, label, [cborBox(value)]));
+  const hashes = [];
+  for (let i = 0; i < assertionBoxes.length; i++) {
+    hashes.push({ url: 'self#jumbf=c2pa.assertions/' + assertionValues[i][0], alg: 'sha256', hash: new Uint8Array(await subtle.digest('SHA-256', assertionBoxes[i])) });
+  }
+  if (tamper === 'assertion') {
+    // Swap the assertion after its hash was recorded.
+    assertionBoxes[0] = jumb(UUID.cbor, 'c2pa.actions.v2', [cborBox({ actions: [{ action: 'c2pa.created', digitalSourceType: 'http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture' }] })]);
+  }
+
+  const claim = { 'dc:title': 'asset', claim_generator: generator, claim_generator_info: [{ name: generator, version: '1.0' }], alg: 'sha256', assertions: hashes };
+  const claimRaw = CBOR.encode(claim);
+  const protectedHeader = CBOR.encode({ 1: -7 });
+  const sigStructure = CBOR.encode(['Signature1', protectedHeader, new Uint8Array(0), claimRaw]);
+  const signature = new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, leafKeys.privateKey, sigStructure));
+  if (tamper === 'signature') signature[0] ^= 0xff;
+
+  const cose = [protectedHeader, { 33: certs }, null, signature];
+  const children = [
+    jumb(UUID.assertions, 'c2pa.assertions', assertionBoxes),
+    jumb(UUID.claim, 'c2pa.claim', [box('cbor', claimRaw)]),
+    jumb(UUID.signature, 'c2pa.signature', [cborBox(cose)]),
+  ];
+  return jumb(UUID.store, 'c2pa', [jumb(UUID.manifest, 'urn:uuid:11111111-2222-3333-4444-555555555555', children)]);
+}
+
+module.exports = { makeKeyPair, makeCertificate, signedC2paManifest, der, derSeq, derOid, derName, derUtcTime, derBitString, derInt, isoBox, c2paUuidBox, mp4, concat, str, png, pngChunk, tEXt, iTXt, tiff, jpeg, jpegSegment, xmpPacket, app1Xmp, app1Exif, app11Jumbf, c2paManifest, jumb, box, cborBox, UUID, webp, webpChunk };

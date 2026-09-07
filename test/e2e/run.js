@@ -23,7 +23,7 @@ function loadPlaywright() {
   const EXT = path.resolve(__dirname, '..', '..');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'srl-e2e-'));
   const site = path.join(work, 'site');
-  build(site);
+  await build(site);
 
   const TYPES = { '.html': 'text/html', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4' };
   const server = http.createServer((req, res) => {
@@ -138,6 +138,24 @@ function loadPlaywright() {
     assert.equal(clip.metadata.c2pa.claimGenerator, 'Sora');
     const poster = (mediaResult.images.items || []).find((i) => i.kind === 'poster');
     assert.ok(poster && poster.verdict === 'ai-generated', 'poster frame inspected separately');
+
+    // Cryptographic verification runs inside the extension, not just in tests.
+    const creds = await ctx.newPage();
+    await creds.goto('http://localhost:' + port + '/signed.html');
+    await creds.waitForTimeout(3500);
+    const credResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith('/signed.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    const signed = (credResult.images.items || []).find((i) => i.url.endsWith('signed.png'));
+    const tampered = (credResult.images.items || []).find((i) => i.url.endsWith('tampered.png'));
+    assert.equal(signed.metadata.c2pa.verification.signature, 'valid', 'genuine signature verified in the browser');
+    assert.equal(signed.metadata.c2pa.verification.summary.ok, true);
+    assert.equal(signed.metadata.c2pa.verification.chain.linked, true);
+    assert.equal(signed.metadata.c2pa.verification.chain.anchored, false, 'never claims an anchored root');
+    assert.equal(tampered.metadata.c2pa.verification.signature, 'invalid', 'tampered signature rejected');
+    assert.equal(tampered.metadata.c2pa.verification.summary.broken, true);
+    assert.ok(tampered.signals.some((s) => s.id === 'c2pa-broken'), 'broken credentials surfaced as a signal');
 
     // Domain memory: a second visit accumulates counters locally.
     await page.reload();

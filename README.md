@@ -10,7 +10,7 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | --- | --- | --- |
 | **Site / code** | Fingerprints of AI site/app generators (Lovable, v0, Bolt.new, Base44, Manus, Durable, 10Web, Claude Artifacts); machine-readable disclosure hooks (`<meta name="ai-generated">` and similar, JSON-LD `digitalSourceType`, AI-generated flags, `data-ai-generated` attributes); HTML/JS comments that credit Copilot, Cursor, ChatGPT, Claude…; visible "this site was built with AI" statements; conventional builders (Wix, Framer, Squarespace…) as information only. Also "trust notes": placeholder phone numbers, e-mails, addresses, lorem ipsum and unfilled template variables. | Floating pill + panel, toolbar badge, popup card |
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
-| **Images, video, audio** | C2PA Content Credentials (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC, MP4/M4A/MOV (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
+| **Images, video, audio** | C2PA Content Credentials, cryptographically verified (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC, MP4/M4A/MOV (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
 ### Who is behind the site
 
@@ -50,6 +50,20 @@ Each identified vendor comes with a short list of documented **skews**: sycophan
 * **Keep a record**: copy the report as JSON, save it as a file, or save a shareable PNG receipt. Saved reports carry a SHA-256 digest of their own findings so you can show the file has not been edited since; that digest is self-attested by the extension, not notarised by a third party.
 * **Hidden-character reveal**: any flagged block whose popover contains invisible characters offers a view that names each one (ZWSP, TAG…, VS3, NNBSP) without touching the page, plus a "Copy cleaned text" button that strips them.
 
+### Verifying Content Credentials
+
+Reading a manifest and trusting it are different things, so the extension answers three separate questions and reports them separately.
+
+1. **Is the signature valid?** The COSE_Sign1 signature is checked with WebCrypto against the public key in the embedded leaf certificate, covering ES256/384/512, PS256/384/512, RS256/384/512 and Ed25519, with detached payloads reconstructed from the claim bytes. A valid signature proves the claim has not been altered since it was signed.
+2. **Do the assertions match the claim?** Each assertion's JUMBF box is re-hashed and compared with the hash the claim recorded. This is what stops someone swapping "made by a camera" for "made by AI" while leaving the signature intact. Producers differ over whether that hash covers the whole box or only its content, so both are tried; if neither reconciles, the result is reported as inconclusive rather than as tampering, because a false accusation would be worse than an unanswered question.
+3. **Does the certificate chain mean anything?** The chain is checked for internal consistency (each certificate actually signed by the next, verified cryptographically) and for validity dates.
+
+**This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
+
+Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up, and the manifest's claims should be treated as unreliable), and **caution** (the claim is authentic but its assertions could not be reconciled). Nothing here touches the network, and an unanswered question is never reported as a pass.
+
+The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then breaks exactly one thing at a time (the signature, one assertion, the chain linkage, the validity dates) to confirm each failure is caught and correctly distinguished. The end-to-end run does the same inside the browser.
+
 ### Video and audio
 
 Video and audio carry Content Credentials in the same JUMBF store as images, so they go through the same pipeline. The ISOBMFF reader walks the box tree rather than only the top level, so credentials nested in `moov/udta` are found, and MP4, M4A, MOV, AVIF and HEIC are all covered. Many MP4s put their index, and therefore their credentials, at the end of the file where a prefix fetch never reaches; when the head shows no index, the extension makes one suffix range request for the tail. Poster frames are inspected as separate images. Byte budgets for media are separate from images and default to 512 KB per fetch.
@@ -59,7 +73,7 @@ Verdict colours: red = AI-generated / strong indicators, orange = AI-edited or l
 ### What it cannot do (and says so)
 
 * **Invisible pixel or token watermarks** such as SynthID, Stable Signature or OpenAI's text watermark need the vendor's keys. They are not detected.
-* **C2PA signatures are parsed, not verified.** The extension reads who claims to have signed; it does not validate the certificate chain or the hashes. Treat the signer name as a claim.
+* **C2PA signatures are verified, but the signer is not vouched for.** See below.
 * **Metadata can be stripped or forged.** "No provenance signals" is not proof of human origin, and most social platforms strip metadata on upload.
 * **Stylometry is a heuristic.** It is capped so that it can never produce the strongest verdict on its own, and sensitivity is adjustable.
 * **Disclosures are self-reports.** A page that says "human-written" is only telling you what it says.
@@ -102,6 +116,8 @@ lib/history.js              local-only per-domain counters
 lib/legitimacy.js           trader identification, policies, identifiers, pressure patterns
 lib/image-metadata.js       JPEG/PNG/WebP/ISOBMFF parsing: EXIF, XMP, PNG text, C2PA/JUMBF
 lib/cbor.js                 minimal CBOR codec for C2PA claims and COSE
+lib/x509.js                 minimal DER / X.509 reader for signing certificates
+lib/c2pa-verify.js          COSE signature, assertion hashes and chain checks
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules
 lib/settings.js             defaults and storage
 background/service-worker.js  fetches image bytes cross-origin, caches, stores per-tab results, badge

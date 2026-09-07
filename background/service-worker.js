@@ -3,7 +3,7 @@
  * permissions the content script lacks), parses embedded provenance, stores
  * per-tab results for the popup and updates the toolbar badge.
  */
-importScripts('../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/image-metadata.js', '../lib/history.js');
+importScripts('../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/image-metadata.js', '../lib/history.js');
 
 const S = self.SRL;
 const results = new Map();          // tabId → page result
