@@ -2,7 +2,7 @@
 
 A Chromium (Manifest V3) extension that inspects the page you are looking at and shows, separately for the **site/code**, the **text** and the **images**, whether there are signs that the content was generated or assisted by AI, and whether that use is disclosed. It is meant as a reading aid in the context of the EU AI Act's transparency obligations (Regulation (EU) 2024/1689, Article 50), so you can decide how far to trust a page or whether to do business with its operator.
 
-Everything runs locally in the browser. No data leaves your machine except the image fetches to the sites you visit (made without cookies).
+Everything runs locally in the browser. No data leaves your machine except the media fetches to the sites you visit, made without cookies, and any reverse-image-lookup link you choose to click.
 
 ## What it looks at
 
@@ -12,11 +12,39 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
 | **Images, video, audio** | C2PA Content Credentials, cryptographically verified (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC, MP4/M4A/MOV (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
-### Publisher self-check
+### Verifying Content Credentials
 
-The same analysis, pointed at your own site. Open it from the popup and it shows what a reader running this extension actually sees on your page, then hands over paste-ready markup for the gaps: a machine-readable AI declaration, JSON-LD carrying the IPTC digital source type, a visible disclosure line, per-image marking, a build-pipeline note on keeping Content Credentials alive through re-encoding, and a footer linking the disclosures a visitor expects. It also lists your own files whose credentials are unsigned or fail to verify.
+Reading a manifest and trusting it are different things, so the extension answers three separate questions and reports them separately.
 
-Every row is labelled **legal duty** or **good practice**, because conflating them would be misleading. Article 50 puts the machine-readable marking duty on the *provider* of the generative model, not on you; as a *deployer* your duties are disclosing deepfakes and disclosing AI-generated text published to inform the public on matters of public interest, unless a human reviewed it and holds editorial responsibility. A marketing page about your own products is generally neither. The page says all of this plainly, and says it is not legal advice.
+1. **Is the signature valid?** The COSE_Sign1 signature is checked with WebCrypto against the public key in the embedded leaf certificate, covering ES256/384/512, PS256/384/512, RS256/384/512 and Ed25519, with detached payloads reconstructed from the claim bytes. A valid signature proves the claim has not been altered since it was signed.
+2. **Do the assertions match the claim?** Each assertion's JUMBF box is re-hashed and compared with the hash the claim recorded. This is what stops someone swapping "made by a camera" for "made by AI" while leaving the signature intact. Producers differ over whether that hash covers the whole box or only its content, so both are tried; if neither reconciles, the result is reported as inconclusive rather than as tampering, because a false accusation would be worse than an unanswered question.
+3. **Does the certificate chain mean anything?** The chain is checked for internal consistency (each certificate actually signed by the next, verified cryptographically) and for validity dates.
+
+**This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
+
+Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up, and the manifest's claims should be treated as unreliable), and **caution** (the claim is authentic but its assertions could not be reconciled). Nothing here touches the network, and an unanswered question is never reported as a pass.
+
+The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then breaks exactly one thing at a time (the signature, one assertion, the chain linkage, the validity dates) to confirm each failure is caught and correctly distinguished. The end-to-end run does the same inside the browser.
+
+### Video and audio
+
+Video and audio carry Content Credentials in the same JUMBF store as images, so they go through the same pipeline. The ISOBMFF reader walks the box tree rather than only the top level, so credentials nested in `moov/udta` are found, and MP4, M4A, MOV, AVIF and HEIC are all covered. Many MP4s put their index, and therefore their credentials, at the end of the file where a prefix fetch never reaches; when the head shows no index, the extension makes one suffix range request for the tail. Poster frames are inspected as separate images. Byte budgets for media are separate from images and default to 512 KB per fetch.
+
+
+### Which AI, and what it tends to do
+
+For every layer the extension also names the tool the evidence points to, with the strength of that attribution:
+
+* **confirmed** by embedded metadata or artefacts (C2PA claim generator and signer, XMP creator tool, Stable Diffusion parameters including the checkpoint name and front-end, ChatGPT citation markers, site-generator fingerprints);
+* **declared** on the page (a caption, disclosure or meta tag that names the tool);
+* **inferred** from hosting or style (weak, and labelled as a guess);
+* or **unidentified**, in which case the generic tendencies of LLMs, image generators or AI-built sites are shown instead.
+
+Each identified vendor comes with a short list of documented **skews**: sycophancy, measured political lean, content rules of the vendor's jurisdiction (for example PRC-aligned refusals in DeepSeek and Qwen), representation defaults of image generators, commercial grounding, provenance and litigation history, and the underlying model vendor behind site builders such as Lovable, Bolt, v0 and Replit Agent. Every note carries its basis and the catalogue carries a review date (`lib/attribution.js`, `REVIEWED`). These notes describe typical default behaviour reported publicly, not the specific page, and models change between versions.
+
+### Platform labels, where metadata dies
+
+Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, Pinterest and X strip embedded metadata on upload and add their own marker instead. The extension reads those markers ("Made with AI", "AI info", "Altered or synthetic content", "Creator labeled as AI-generated", "AI modified", "Made with Grok"), attributes each to the media in the same post, and treats it as a disclosure by the platform rather than as embedded provenance. Matching is by visible text and accessible name, not by CSS class, because platform class names rotate constantly. Informational markers such as "AI info" are surfaced without changing the verdict.
 
 ### Languages
 
@@ -37,55 +65,29 @@ Nothing is looked up. Identifiers are checked for format only, so a well-formed 
 
 Legal background: e-Commerce Directive 2000/31/EC Article 5 and the national imprint rules built on it, the Consumer Rights Directive for distance selling, the Digital Services Act Article 31 for traders on marketplaces, and the Unfair Commercial Practices Directive as amended by the Omnibus Directive.
 
-### Platform labels, where metadata dies
-
-Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, Pinterest and X strip embedded metadata on upload and add their own marker instead. The extension reads those markers ("Made with AI", "AI info", "Altered or synthetic content", "Creator labeled as AI-generated", "AI modified", "Made with Grok"), attributes each to the media in the same post, and treats it as a disclosure by the platform rather than as embedded provenance. Matching is by visible text and accessible name, not by CSS class, because platform class names rotate constantly. Informational markers such as "AI info" are surfaced without changing the verdict.
-
 ### Domain memory
 
 With `Remember what was found per domain` on, the extension keeps counters per hostname on this device only: pages seen, pages with AI markers, how many were disclosed, images with AI provenance, and which tools were named. No URLs and no page content are stored, nothing is uploaded, the store is capped at 400 domains by recency, and it can be cleared or switched off in settings. The Overview tab reads the pattern back, for example "AI markers on 14 of 20 pages you have opened here, none of them disclosed".
 
-### Which AI, and what it tends to do
-
-For every layer the extension also names the tool the evidence points to, with the strength of that attribution:
-
-* **confirmed** by embedded metadata or artefacts (C2PA claim generator and signer, XMP creator tool, Stable Diffusion parameters including the checkpoint name and front-end, ChatGPT citation markers, site-generator fingerprints);
-* **declared** on the page (a caption, disclosure or meta tag that names the tool);
-* **inferred** from hosting or style (weak, and labelled as a guess);
-* or **unidentified**, in which case the generic tendencies of LLMs, image generators or AI-built sites are shown instead.
-
-Each identified vendor comes with a short list of documented **skews**: sycophancy, measured political lean, content rules of the vendor's jurisdiction (for example PRC-aligned refusals in DeepSeek and Qwen), representation defaults of image generators, commercial grounding, provenance and litigation history, and the underlying model vendor behind site builders such as Lovable, Bolt, v0 and Replit Agent. Every note carries its basis and the catalogue carries a review date (`lib/attribution.js`, `REVIEWED`). These notes describe typical default behaviour reported publicly, not the specific page, and models change between versions.
-
 ### Display and accessibility
 
 * **Three display moods**, chosen in settings. *Quiet* keeps badges invisible until the cursor nears the item and lets the pill shrink to a dot. *Reader* is the default. *Forensic* widens the panels, sets evidence in monospace and expands hidden-character views.
-* **Colour-blind-safe palette** derived from the Okabe–Ito set, darkened so white badge text clears WCAG AA on every fill. Colour never carries meaning alone: each verdict has its own glyph (◆ generated, ◈ edited or likely, ✎ disclosed, ? weak, ● camera, ✋ declared human, ▦ algorithmic, ○ none, ⊘ not inspectable).
+* **Colour-blind-safe palette** derived from the Okabe–Ito set, darkened so white badge text clears WCAG AA on every fill. Colour never carries meaning alone: each verdict has its own glyph. Vermillion ◆ is AI-generated or a strong indicator, purple ◈ is AI-edited or likely AI, orange ✎ is disclosed as AI, gold ? is a weak signal, green ● is camera-capture provenance and ✋ a declared human origin, blue ▦ is algorithmic media or a conventional builder, slate ○ is no signal and ⊘ could not be inspected.
 * **Dark theme** for the in-page panel and popovers, following the reader's system setting.
 * **Toolbar icon changes state**, not just its count: the lens pupil takes the verdict colour, and resets to neutral on navigation.
 * **Right-click actions**: "Inspect this image for AI provenance" analyses any image on demand, ignoring the size floor and per-page cap; "Check selected text for AI signals" analyses a selection in place.
-* **Tabbed report** in the toolbar popup: a sticky verdict header over Overview, Site, Text, Images and Tools, each tab carrying a count badge.
+* **Tabbed report** in the toolbar popup: a sticky verdict header over Overview, Site, Text, Images, Trader and Tools, each tab carrying a count.
 * **Keep a record**: copy the report as JSON, save it as a file, or save a shareable PNG receipt. Saved reports carry a SHA-256 digest of their own findings so you can show the file has not been edited since; that digest is self-attested by the extension, not notarised by a third party.
 * **Hidden-character reveal**: any flagged block whose popover contains invisible characters offers a view that names each one (ZWSP, TAG…, VS3, NNBSP) without touching the page, plus a "Copy cleaned text" button that strips them.
+* **Keyboard throughout.** `Alt+Shift+A` toggles the in-page badges, rebindable at `chrome://extensions/shortcuts`. The popup is a proper tablist: arrow keys move between tabs, `Home` and `End` jump to the ends, and each panel is a labelled `tabpanel`. `Escape` closes the in-page panel and popovers.
+* **Reverse image lookup.** Links under a flagged image open Google Lens, TinEye or Bing with that image URL. They are links you choose to follow; nothing leaves the browser unless you click one.
+* **Pause per site.** One button in the popup stops analysis on the current hostname, and resumes it.
 
-### Verifying Content Credentials
+### Publisher self-check
 
-Reading a manifest and trusting it are different things, so the extension answers three separate questions and reports them separately.
+The same analysis, pointed at your own site. Open it from the popup and it shows what a reader running this extension actually sees on your page, then hands over paste-ready markup for the gaps: a machine-readable AI declaration, JSON-LD carrying the IPTC digital source type, a visible disclosure line, per-image marking, a build-pipeline note on keeping Content Credentials alive through re-encoding, and a footer linking the disclosures a visitor expects. It also lists your own files whose credentials are unsigned or fail to verify.
 
-1. **Is the signature valid?** The COSE_Sign1 signature is checked with WebCrypto against the public key in the embedded leaf certificate, covering ES256/384/512, PS256/384/512, RS256/384/512 and Ed25519, with detached payloads reconstructed from the claim bytes. A valid signature proves the claim has not been altered since it was signed.
-2. **Do the assertions match the claim?** Each assertion's JUMBF box is re-hashed and compared with the hash the claim recorded. This is what stops someone swapping "made by a camera" for "made by AI" while leaving the signature intact. Producers differ over whether that hash covers the whole box or only its content, so both are tried; if neither reconciles, the result is reported as inconclusive rather than as tampering, because a false accusation would be worse than an unanswered question.
-3. **Does the certificate chain mean anything?** The chain is checked for internal consistency (each certificate actually signed by the next, verified cryptographically) and for validity dates.
-
-**This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
-
-Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up, and the manifest's claims should be treated as unreliable), and **caution** (the claim is authentic but its assertions could not be reconciled). Nothing here touches the network, and an unanswered question is never reported as a pass.
-
-The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then breaks exactly one thing at a time (the signature, one assertion, the chain linkage, the validity dates) to confirm each failure is caught and correctly distinguished. The end-to-end run does the same inside the browser.
-
-### Video and audio
-
-Video and audio carry Content Credentials in the same JUMBF store as images, so they go through the same pipeline. The ISOBMFF reader walks the box tree rather than only the top level, so credentials nested in `moov/udta` are found, and MP4, M4A, MOV, AVIF and HEIC are all covered. Many MP4s put their index, and therefore their credentials, at the end of the file where a prefix fetch never reaches; when the head shows no index, the extension makes one suffix range request for the tail. Poster frames are inspected as separate images. Byte budgets for media are separate from images and default to 512 KB per fetch.
-
-Verdict colours: red = AI-generated / strong indicators, orange = AI-edited or likely AI, amber = disclosed as AI, yellow = weak signals, green = capture credentials or declared human, blue = algorithmic / conventional builder, grey = no signal.
+Every row is labelled **legal duty** or **good practice**, because conflating them would be misleading. Article 50 puts the machine-readable marking duty on the *provider* of the generative model, not on you; as a *deployer* your duties are disclosing deepfakes and disclosing AI-generated text published to inform the public on matters of public interest, unless a human reviewed it and holds editorial responsibility. A marketing page about your own products is generally neither. The page says all of this plainly, and says it is not legal advice.
 
 ### What it cannot do (and says so)
 
@@ -149,6 +151,21 @@ test/e2e/                   Playwright run against a fixture site with the exten
 ```
 
 Every `lib/*.js` file is a plain script in the extension and a CommonJS module under Node, so the analysers are unit-tested with synthetic fixtures (`test/helpers.js` builds PNG chunks, TIFF/EXIF blocks, XMP packets, JUMBF boxes and CBOR claims from scratch).
+
+## Permissions, and why each is needed
+
+| Permission | Why |
+| --- | --- |
+| `storage` | Settings (sync), per-tab results (session), and the local per-domain counters. |
+| `contextMenus` | The right-click entries for inspecting one image or a text selection. |
+| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials, are size-capped, and only ever target files the page already loaded. |
+
+The extension has no `tabs` permission, no analytics, no remote code and no
+`externally_connectable`, so a web page cannot talk to it. All rendering uses
+`textContent`, never `innerHTML`, so page-derived strings cannot become markup.
+The in-page interface lives in a closed shadow root and does not modify the
+page's own DOM, except for one attribute on flagged text blocks that draws
+their marker.
 
 ## Privacy
 

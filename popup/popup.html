@@ -13,17 +13,18 @@
       <div class="actions">
         <button id="rescan" title="Analyse the page again">Rescan</button>
         <button id="toggle" title="Show or hide in-page badges">Badges</button>
+        <button id="pause" title="Stop analysing this site">Pause</button>
         <button id="options" title="Settings" aria-label="Settings">⚙</button>
       </div>
     </div>
     <div id="overall" class="overall" role="status"></div>
-    <nav class="tabs" id="tabs" role="tablist">
-      <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
-      <button role="tab" data-tab="site" aria-selected="false">Site</button>
-      <button role="tab" data-tab="text" aria-selected="false">Text</button>
-      <button role="tab" data-tab="images" aria-selected="false">Images</button>
-      <button role="tab" data-tab="trader" aria-selected="false">Trader</button>
-      <button role="tab" data-tab="tools" aria-selected="false">Tools</button>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Report sections">
+      <button role="tab" data-tab="overview" id="tab-overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+      <button role="tab" data-tab="site" id="tab-site" aria-controls="panel-site" aria-selected="false">Site</button>
+      <button role="tab" data-tab="text" id="tab-text" aria-controls="panel-text" aria-selected="false">Text</button>
+      <button role="tab" data-tab="images" id="tab-images" aria-controls="panel-images" aria-selected="false">Images</button>
+      <button role="tab" data-tab="trader" id="tab-trader" aria-controls="panel-trader" aria-selected="false">Trader</button>
+      <button role="tab" data-tab="tools" id="tab-tools" aria-controls="panel-tools" aria-selected="false">Tools</button>
     </nav>
   </header>
   <main id="main">
@@ -37,6 +38,7 @@
       <p><b>Images</b>: C2PA Content Credentials (claim generator, actions, digital source type, signer), IPTC/XMP digital source type, EXIF software, and generator parameters embedded by Stable Diffusion, ComfyUI, NovelAI, Midjourney. C2PA signatures are cryptographically verified against the embedded certificate, and each assertion is re-hashed against the signed claim; the certificate chain is checked for internal consistency and validity dates, but this build ships no trust list, so a valid signature shows the manifest is intact rather than proving who signed it. Invisible pixel watermarks (SynthID and similar) need vendor keys and are not detected.</p>
       <p><b>Attribution and skews</b>: the tool named is the one the evidence points to (confirmed by embedded metadata, declared on the page, or inferred from hosting or style). Skew notes summarise publicly reported tendencies of that vendor's models and of LLMs or image generators in general, reviewed as of the date shown; they describe typical default behaviour, not this specific content.</p>
       <p><b>Trader</b>: whether the page identifies who runs it, as the e-Commerce Directive (2000/31/EC Art. 5) and national imprint rules require, plus terms, privacy, returns, contact, VAT and company-register identifiers, and marketplace trader details under the Digital Services Act. Identifiers are checked for format only; no lookups are made, so a well-formed number can still belong to nobody. Pressure patterns (countdowns, scarcity claims, very large discounts, blanket "no returns") are shown because the Unfair Commercial Practices Directive restricts them, not as proof anything is wrong.</p>
+      <p><b>Reverse image lookup</b>: the links under a flagged image open Google Lens, TinEye or Bing and hand that service the image URL. They are links you choose to follow; nothing is sent anywhere unless you click one.</p>
       <p><b>Platform labels</b>: Instagram, Facebook, TikTok, YouTube, LinkedIn and Pinterest strip embedded metadata on upload and add their own marker instead ("Made with AI", "AI info", "Altered or synthetic content"). Those markers are read from the page and treated as a disclosure by the platform, not as embedded provenance.</p>
       <p><b>Domain memory</b>: counters of what was found per domain are kept on this device only, never uploaded, and can be switched off or cleared in settings.</p>
       <p><b>EU AI Act (Regulation (EU) 2024/1689), Article 50</b>: providers must mark AI-generated audio, image, video and text in a machine-readable, detectable way; deployers must disclose deepfakes and AI-generated text published to inform the public on matters of public interest (unless a human has editorial responsibility). These obligations apply from 2 August 2026. The absence of signals is not proof of human origin, and a disclosure is a self-report.</p>
@@ -44,6 +46,7 @@
   </footer>
   <script src="../lib/lexicons.js"></script>
   <script src="../lib/signals.js"></script>
+  <script src="../lib/settings.js"></script>
   <script src="../lib/verdicts.js"></script>
   <script src="../lib/attribution.js"></script>
   <script src="../lib/history.js"></script>

@@ -69,5 +69,13 @@
         "<all_urls>"
       ]
     }
-  ]
+  ],
+  "commands": {
+    "toggle-overlay": {
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      },
+      "description": "Show or hide Selfreportle badges on this page"
+    }
+  }
 }

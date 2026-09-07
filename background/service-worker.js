@@ -19,6 +19,12 @@ chrome.runtime.onInstalled.addListener(() => {
   } catch (e) { /* already created */ }
 });
 
+chrome.commands && chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === 'toggle-overlay' && tab && tab.id != null) {
+    chrome.tabs.sendMessage(tab.id, { type: 'srl:toggle-overlay' }).catch(() => {});
+  }
+});
+
 chrome.contextMenus && chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab || tab.id == null) return;
   if (info.menuItemId === 'srl-inspect-image') chrome.tabs.sendMessage(tab.id, { type: 'srl:inspect-image', srcUrl: info.srcUrl }).catch(() => {});

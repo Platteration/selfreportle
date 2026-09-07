@@ -22,6 +22,25 @@
     setTimeout(load, 3000);
     setTimeout(() => { $('rescan').disabled = false; }, 700);
   });
+  const host = (() => { try { return new URL(tab.url).hostname; } catch (e) { return ''; } })();
+  const SET = S.settings;
+  async function refreshPause() {
+    if (!host) { $('pause').hidden = true; return; }
+    const s = await SET.load();
+    const paused = SET.isHostDisabled(s, host);
+    $('pause').textContent = paused ? 'Resume' : 'Pause';
+    $('pause').title = paused ? 'Analyse ' + host + ' again' : 'Stop analysing ' + host;
+    $('pause').setAttribute('aria-pressed', String(paused));
+  }
+  $('pause').addEventListener('click', async () => {
+    if (!host) return;
+    const s = await SET.load();
+    const paused = SET.isHostDisabled(s, host);
+    const next = paused ? s.disabledHosts.filter((h) => h !== host && !host.endsWith('.' + h)) : [...s.disabledHosts, host];
+    await SET.save({ disabledHosts: next });
+    await refreshPause();
+  });
+
   $('toggle').addEventListener('click', async () => {
     try { await chrome.tabs.sendMessage(tab.id, { type: 'srl:toggle-overlay' }); } catch (e) { /* ignore */ }
   });
@@ -29,10 +48,29 @@
     const b = e.target.closest('button[data-tab]');
     if (b) select(b.dataset.tab);
   });
+  /* Arrow keys move between tabs, Home and End jump to the ends: the
+   * behaviour a screen-reader user expects from a tablist. */
+  $('tabs').addEventListener('keydown', (e) => {
+    const tabs = [...$('tabs').querySelectorAll('button[data-tab]')];
+    const i = tabs.findIndex((b) => b.dataset.tab === active);
+    let next = null;
+    if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+    else if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+    else if (e.key === 'Home') next = tabs[0];
+    else if (e.key === 'End') next = tabs[tabs.length - 1];
+    if (!next) return;
+    e.preventDefault();
+    select(next.dataset.tab);
+    next.focus();
+  });
 
   function select(name) {
     active = name;
-    for (const b of $('tabs').querySelectorAll('button[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+    for (const b of $('tabs').querySelectorAll('button[data-tab]')) {
+      const on = b.dataset.tab === name;
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
     for (const sec of $('main').querySelectorAll('section')) sec.hidden = sec.dataset.tab !== name;
     $('main').scrollTop = 0;
   }
@@ -77,6 +115,10 @@
   function section(name, nodes) {
     const s = el('section');
     s.dataset.tab = name;
+    s.id = 'panel-' + name;
+    s.setAttribute('role', 'tabpanel');
+    s.setAttribute('aria-labelledby', 'tab-' + name);
+    s.tabIndex = 0;
     s.hidden = true;
     for (const n of [].concat(nodes)) if (n) s.appendChild(n);
     return s;
@@ -351,6 +393,8 @@
       // The verification box below says this in full; don't say it twice.
       const shown = (it.signals || []).filter((s) => s.id !== 'c2pa-verified' && s.id !== 'c2pa-unverified');
       for (const s of shown.slice(0, 5)) d.appendChild(sigRow(s));
+      const lookup = lookupLinks(it.url);
+      if (lookup) d.appendChild(lookup);
       if (it.metadata && it.metadata.c2pa) {
         const c2 = it.metadata.c2pa;
         d.appendChild(el('div', 'note', 'C2PA: ' + [c2.claimGenerator, (c2.actions || []).map((a) => a.action + (a.digitalSourceType ? ' (' + a.digitalSourceType.split('/').pop() + ')' : '')).join(', '), c2.signerNames && c2.signerNames.length ? 'signer ' + c2.signerNames.join(', ') : ''].filter(Boolean).join(' · ')));
@@ -449,6 +493,29 @@
     if (v.notes && v.notes.length) body.appendChild(el('div', 'basis', v.notes.join(' ')));
     det.appendChild(body);
     d.appendChild(det);
+    return d;
+  }
+
+  /* Reverse-image lookup. These are links the reader chooses to follow, never
+   * an automatic request: opening one hands the image URL to that service. */
+  function lookupLinks(url) {
+    if (!/^https?:\/\//i.test(url)) return null;
+    const targets = [
+      ['Google Lens', 'https://lens.google.com/uploadbyurl?url=' + encodeURIComponent(url)],
+      ['TinEye', 'https://tineye.com/search?url=' + encodeURIComponent(url)],
+      ['Bing', 'https://www.bing.com/images/search?view=detailv2&iss=sbi&q=imgurl:' + encodeURIComponent(url)],
+    ];
+    const d = el('div', 'lookup');
+    d.appendChild(el('span', 'lk', 'Look this image up elsewhere:'));
+    for (const [name, href] of targets) {
+      const a = document.createElement('a');
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noreferrer noopener';
+      a.textContent = name;
+      a.title = 'Opens ' + name + ' and sends it this image URL';
+      d.appendChild(a);
+    }
     return d;
   }
 
@@ -641,5 +708,6 @@
     render(result);
   }
 
+  await refreshPause();
   await load();
 })();
