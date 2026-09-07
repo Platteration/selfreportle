@@ -25,12 +25,27 @@ function loadPlaywright() {
   const site = path.join(work, 'site');
   build(site);
 
+  const TYPES = { '.html': 'text/html', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4' };
   const server = http.createServer((req, res) => {
     const f = path.join(site, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
     if (!fs.existsSync(f)) { res.statusCode = 404; return res.end('not found'); }
-    const ext = path.extname(f);
-    res.setHeader('content-type', { '.html': 'text/html', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp' }[ext] || 'application/octet-stream');
-    res.end(fs.readFileSync(f));
+    const body = fs.readFileSync(f);
+    res.setHeader('content-type', TYPES[path.extname(f)] || 'application/octet-stream');
+    res.setHeader('accept-ranges', 'bytes');
+    // Real byte-range support, including suffix ranges, so the tail fetch
+    // used for media files is exercised rather than stubbed.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (range) {
+      const [, rawStart, rawEnd] = range;
+      let start; let end;
+      if (rawStart === '') { start = Math.max(0, body.length - parseInt(rawEnd, 10)); end = body.length - 1; }
+      else { start = parseInt(rawStart, 10); end = rawEnd === '' ? body.length - 1 : Math.min(parseInt(rawEnd, 10), body.length - 1); }
+      if (start >= body.length || start > end) { res.statusCode = 416; return res.end(); }
+      res.statusCode = 206;
+      res.setHeader('content-range', 'bytes ' + start + '-' + end + '/' + body.length);
+      return res.end(body.subarray(start, end + 1));
+    }
+    res.end(body);
   }).listen(0);
   const port = server.address().port;
 
@@ -107,6 +122,22 @@ function loadPlaywright() {
     assert.ok(info, 'AI info marker read');
     assert.equal(info.verdict, 'no-signal', 'an informational marker does not inflate the verdict');
     assert.ok(!labelled.some((i) => /editorial team/.test(i.platformLabel.text)), 'long prose is not treated as a label');
+
+    // Video: credentials live past the prefix fetch, so the tail is requested.
+    const media = await ctx.newPage();
+    await media.goto('http://localhost:' + port + '/media.html');
+    await media.waitForTimeout(4000);
+    const mediaResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith('/media.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    const clip = (mediaResult.images.items || []).find((i) => i.url.endsWith('clip.mp4'));
+    assert.ok(clip, 'video inspected');
+    assert.equal(clip.kind, 'av');
+    assert.equal(clip.verdict, 'ai-generated', 'C2PA read from the end of the file');
+    assert.equal(clip.metadata.c2pa.claimGenerator, 'Sora');
+    const poster = (mediaResult.images.items || []).find((i) => i.kind === 'poster');
+    assert.ok(poster && poster.verdict === 'ai-generated', 'poster frame inspected separately');
 
     // Domain memory: a second visit accumulates counters locally.
     await page.reload();

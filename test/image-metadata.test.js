@@ -133,3 +133,36 @@ test('Truncated / garbage input does not throw', async () => {
     assert.ok(Array.isArray(r.signals));
   }
 });
+
+test('MP4 with C2PA nested in moov/udta is read as AI-generated video', async () => {
+  const manifest = H.c2paManifest({ generator: 'Sora', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }], signerCN: 'OpenAI' });
+  const { verdict, r } = await verdictOf(H.mp4(manifest));
+  assert.equal(r.format, 'isobmff-av');
+  assert.equal(verdict, 'ai-generated');
+  assert.equal(r.metadata.c2pa.claimGenerator, 'Sora');
+});
+
+test('M4A audio with C2PA is read', async () => {
+  const manifest = H.c2paManifest({ generator: 'ElevenLabs', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  const { verdict, r } = await verdictOf(H.mp4(manifest, { brand: 'M4A ' }));
+  assert.equal(r.format, 'isobmff-av');
+  assert.equal(verdict, 'ai-generated');
+});
+
+test('AVIF keeps its still-image format label', async () => {
+  const manifest = H.c2paManifest({ generator: 'Google Imagen', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  const { r } = await verdictOf(H.mp4(manifest, { brand: 'avif' }));
+  assert.equal(r.format, 'isobmff');
+});
+
+test('a file whose index sits at the end is reported as needing its tail', async () => {
+  const manifest = H.c2paManifest({ generator: 'Veo', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  const whole = H.mp4(manifest, { placement: 'tail', mdatSize: 8192 });
+  const head = whole.subarray(0, 2048);
+  assert.equal(M.isobmffNeedsTail(head), true, 'head alone is not enough');
+  assert.equal(M.isobmffNeedsTail(whole), false, 'the whole file has its index');
+  const headOnly = await M.analyzeImageBytes(head);
+  assert.equal(headOnly.metadata.c2pa, undefined, 'no credentials in the head');
+  const full = await verdictOf(whole);
+  assert.equal(full.verdict, 'ai-generated', 'credentials found once the tail is present');
+});

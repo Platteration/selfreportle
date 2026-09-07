@@ -120,4 +120,19 @@ function webpChunk(fourcc, data) {
   return concat([str(fourcc), u32le(data.length), data, pad]);
 }
 
-module.exports = { concat, str, png, pngChunk, tEXt, iTXt, tiff, jpeg, jpegSegment, xmpPacket, app1Xmp, app1Exif, app11Jumbf, c2paManifest, jumb, box, cborBox, UUID, webp, webpChunk };
+/* ---- ISOBMFF (MP4 / M4A / AVIF) ---- */
+function isoBox(type, payload) { return concat([u32be(8 + payload.length), str(type), payload]); }
+function c2paUuidBox(manifest) {
+  const uuid = Uint8Array.from('d8fec3d61b0e483c92975828877ec481'.match(/../g).map((h) => parseInt(h, 16)));
+  return isoBox('uuid', concat([uuid, u32be(0), manifest]));
+}
+/* placement: 'front' puts the index and credentials first; 'tail' puts a big
+ * mdat first and the moov (with the credentials inside udta) at the end. */
+function mp4(manifest, { brand = 'mp42', placement = 'front', mdatSize = 4096 } = {}) {
+  const ftyp = isoBox('ftyp', concat([str(brand), u32be(512), str('isomavc1')]));
+  const mdat = isoBox('mdat', new Uint8Array(mdatSize));
+  const moov = isoBox('moov', concat([isoBox('mvhd', new Uint8Array(100)), isoBox('udta', c2paUuidBox(manifest))]));
+  return placement === 'front' ? concat([ftyp, moov, mdat]) : concat([ftyp, mdat, moov]);
+}
+
+module.exports = { isoBox, c2paUuidBox, mp4, concat, str, png, pngChunk, tEXt, iTXt, tiff, jpeg, jpegSegment, xmpPacket, app1Xmp, app1Exif, app11Jumbf, c2paManifest, jumb, box, cborBox, UUID, webp, webpChunk };

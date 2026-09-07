@@ -121,19 +121,20 @@ function updateBadge(tabId, result) {
 
 async function analyzeImages(images, settings) {
   const maxBytes = Math.max(65536, settings.maxImageBytes || S.settings.DEFAULTS.maxImageBytes);
+  const maxMedia = Math.max(65536, settings.maxMediaBytes || S.settings.DEFAULTS.maxMediaBytes);
   const out = [];
   let i = 0;
   const workers = Array.from({ length: CONCURRENCY }, async () => {
     while (i < images.length) {
       const img = images[i++];
-      out.push(await analyzeOne(img, maxBytes));
+      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0));
     }
   });
   await Promise.all(workers);
   return { results: out };
 }
 
-async function analyzeOne(img, maxBytes) {
+async function analyzeOne(img, maxBytes, tailBytes) {
   const url = img.url || '';
   const base = { id: img.id, url };
   if (img.base64) {
@@ -155,12 +156,43 @@ async function analyzeOne(img, maxBytes) {
     const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes);
     const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated });
     outcome = { format: analysed.format, contentType, bytes: bytes.length, truncated, signals: analysed.signals, metadata: analysed.metadata };
+    /* Many MP4s put their index (and so the Content Credentials) at the end
+     * of the file, which a prefix fetch never sees. Ask for the tail once. */
+    if (tailBytes && truncated && !(analysed.metadata && analysed.metadata.c2pa) && /^isobmff/.test(analysed.format) && S.imageMeta.isobmffNeedsTail(bytes)) {
+      const tail = await fetchTail(url, tailBytes);
+      if (tail) {
+        const fromTail = await S.imageMeta.analyzeImageBytes(tail, { url, truncated: true });
+        if (fromTail.metadata && fromTail.metadata.c2pa) {
+          outcome.metadata = { ...outcome.metadata, ...fromTail.metadata };
+          outcome.signals = [...outcome.signals.filter((s) => s.id !== 'note'), ...fromTail.signals];
+          outcome.tailRead = tail.length;
+        }
+      }
+    }
   } catch (e) {
     outcome = { signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not fetch image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
   }
   if (imageCache.size >= IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
   imageCache.set(cacheKey, outcome);
   return { ...base, ...outcome };
+}
+
+/* A suffix range request. Servers that ignore Range return the whole body,
+ * so the result is only used when it actually parses as a credential store. */
+async function fetchTail(url, n) {
+  if (!/^https?:/i.test(url)) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', signal: controller.signal });
+    if (res.status !== 206) return null;
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf.byteLength > n ? buf.slice(buf.byteLength - n) : buf);
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function fromBase64(b64) {

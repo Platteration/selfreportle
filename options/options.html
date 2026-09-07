@@ -43,8 +43,10 @@
       <label class="row"><span>Badge images with no signals too<small>Shows a grey badge on inspected images that carry no provenance at all.</small></span><input type="checkbox" name="markUnflaggedImages"></label>
     </fieldset>
     <fieldset>
-      <legend>Images</legend>
+      <legend>Images, video and audio</legend>
       <label class="row"><span>Read embedded image metadata<small>Fetches image bytes (without cookies) to read C2PA, XMP, EXIF and PNG generator chunks. Turn off to analyse captions and URLs only.</small></span><input type="checkbox" name="fetchImages"></label>
+      <label class="row"><span>Inspect video and audio<small>Reads Content Credentials from MP4, M4A and similar files, including those whose index sits at the end of the file.</small></span><input type="checkbox" name="inspectMedia"></label>
+      <label class="row"><span>Bytes inspected per media file (KB)<small>Fetched twice at most: once from the start, once from the end.</small></span><input type="number" name="maxMediaKB" min="64" max="8192"></label>
       <label class="row"><span>Maximum images per page</span><input type="number" name="maxImages" min="0" max="500"></label>
       <label class="row"><span>Bytes inspected per image (KB)<small>Provenance metadata usually sits in the first few hundred KB.</small></span><input type="number" name="maxImageKB" min="64" max="32768"></label>
       <label class="row"><span>Minimum rendered size (px)<small>Smaller images (icons, trackers) are ignored.</small></span><input type="number" name="minImageSize" min="16" max="2000"></label>

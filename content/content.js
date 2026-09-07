@@ -17,7 +17,8 @@
 
   let settings = S.settings.DEFAULTS;
   let runId = 0;
-  let imageState = new Map();   // HTMLImageElement → state
+  let imageState = new Map();   // media element → state
+  let posterSeen = new Set();
   let textSeen = new WeakSet();
   let textCounter = 0;
   let imageCounter = 0;
@@ -125,6 +126,7 @@
     if (full) {
       S.overlay.clearMarkers();
       imageState = new Map();
+      posterSeen = new Set();
       textSeen = new WeakSet();
       textCounter = 0; imageCounter = 0; pendingImages = 0;
     }
@@ -143,7 +145,7 @@
       images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
     };
     refreshSummary();
-    const imgs = collectImages();
+    const imgs = [...collectImages(), ...collectMedia()];
     await processImages(imgs, id);
     applyPlatformLabels();
   }
@@ -317,6 +319,38 @@
     return a ? a.title.slice(0, 200) : '';
   }
 
+  /* Video and audio, plus any poster frame, alongside images. Media carries
+   * Content Credentials in the same JUMBF store, so it goes through the same
+   * pipeline; only the byte budget differs. */
+  function collectMedia() {
+    const out = [];
+    if (!settings.inspectMedia) return out;
+    for (const m of document.querySelectorAll('video, audio')) {
+      if (m.closest('[data-srl-ui]')) continue;
+      const src = m.currentSrc || m.getAttribute('src') || (m.querySelector('source[src]') || {}).src || '';
+      if (src && !imageStateHasUrl(m, src)) {
+        const r = m.getBoundingClientRect();
+        if (r.width >= 24 && r.height >= 24) {
+          out.push({ el: m, url: src, kind: 'av', alt: '', title: m.title || '', ariaLabel: m.getAttribute('aria-label') || '', caption: captionFor(m) });
+        }
+      }
+      const poster = m.tagName === 'VIDEO' ? m.getAttribute('poster') : null;
+      if (poster) {
+        const abs = new URL(poster, location.href).href;
+        if (!posterSeen.has(abs)) {
+          posterSeen.add(abs);
+          out.push({ el: m, url: abs, kind: 'poster', alt: '', title: '', ariaLabel: '', caption: captionFor(m) });
+        }
+      }
+    }
+    return out;
+  }
+
+  function imageStateHasUrl(el, url) {
+    const st = imageState.get(el);
+    return !!st && st.url === url;
+  }
+
   function collectImages() {
     const out = [];
     for (const img of document.images) {
@@ -342,11 +376,12 @@
     for (const item of list) {
       const key = 'i' + (++imageCounter);
       const hints = S.imageHints.analyzeImageHints(item);
-      const st = { key, el: item.el, url: item.url, hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
-      imageState.set(item.el, st);
+      const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
+      // A poster shares its element with the video, so it is tracked by key.
+      imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
       applyImageVerdict(st);
       const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && imageState.size <= settings.maxImages;
-      if (fetchable) toFetch.push({ st, msg: { id: key, url: item.url } });
+      if (fetchable) toFetch.push({ st, msg: { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' } });
       else st.done = true;
     }
     // blob: URLs are only reachable from the page itself: read them here and
@@ -420,7 +455,7 @@
       counts[st.verdict] = (counts[st.verdict] || 0) + 1;
       if (st.bytes) inspected++;
       if ((st.platformLabel || (st.verdict !== 'no-signal' && st.verdict !== 'unavailable')) && items.length < 100) {
-        items.push({ url: st.url.slice(0, 500), verdict: st.verdict, score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, platformLabel: st.platformLabel || null, attribution: st.attribution ? stripSkews(st.attribution) : null, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
+        items.push({ url: st.url.slice(0, 500), verdict: st.verdict, kind: st.kind || 'image', score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, platformLabel: st.platformLabel || null, attribution: st.attribution ? stripSkews(st.attribution) : null, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
       }
     }
     result.images = { total: imageState.size, inspected, pending: pendingImages, counts, items };
@@ -477,7 +512,7 @@
       clearTimeout(timer);
       timer = setTimeout(() => {
         const id = runId;
-        const imgs = collectImages();
+        const imgs = [...collectImages(), ...collectMedia()];
         if (imgs.length) processImages(imgs, id);
         applyPlatformLabels();
         const t = analyzeTextBlocks(true);

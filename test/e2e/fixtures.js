@@ -17,6 +17,10 @@ function build(out) {
   fs.writeFileSync(path.join(out, 'firefly.webp'), H.webp([H.webpChunk('XMP ', H.str(xml))]));
   fs.writeFileSync(path.join(out, 'index.html'), PAGE);
   fs.writeFileSync(path.join(out, 'feed.html'), FEED);
+  // Video whose index, and so its credentials, sits at the end of the file.
+  const videoManifest = H.c2paManifest({ generator: 'Sora', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }], signerCN: 'OpenAI' });
+  fs.writeFileSync(path.join(out, 'clip.mp4'), H.mp4(videoManifest, { placement: 'tail', mdatSize: 900 * 1024 }));
+  fs.writeFileSync(path.join(out, 'media.html'), MEDIA);
 }
 
 const PAGE = `<!doctype html>
@@ -77,6 +81,12 @@ const FEED = `<!doctype html>
   <img src="plain.png" alt="Post three">
   <p>We made this with AI tools and a lot of help from our editorial team over several weeks, so the caption is long.</p>
 </article>
+</body></html>`;
+
+const MEDIA = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Clip</title></head><body>
+<video src="clip.mp4" poster="sd.png" width="480" height="270" controls></video>
+<p>A short clip.</p>
 </body></html>`;
 
 module.exports = { build };

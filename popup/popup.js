@@ -332,6 +332,7 @@
       chip.appendChild(el('span', 'ic', info.icon));
       chip.appendChild(document.createTextNode(info.short));
       d.appendChild(chip);
+      if (it.kind && it.kind !== 'image') d.appendChild(tint(el('span', 'chip', it.kind === 'av' ? 'video / audio' : 'poster frame'), V.COLORS.blue));
       d.appendChild(el('div', 'u', it.url));
       if (it.platformLabel) d.appendChild(el('div', 'd', it.platformLabel.platform + ' label: “' + it.platformLabel.text + '”'));
       if (it.attribution) d.appendChild(el('div', 'd', 'Likely tool: ' + it.attribution.name + ' · ' + (A.CONFIDENCE_LABEL[it.attribution.confidence] || '') + (it.attribution.detail ? ' · ' + it.attribution.detail : '')));

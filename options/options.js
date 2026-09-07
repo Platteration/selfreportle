@@ -8,6 +8,7 @@
     for (const el of form.elements) {
       if (!el.name) continue;
       if (el.name === 'maxImageKB') el.value = Math.round(s.maxImageBytes / 1024);
+      else if (el.name === 'maxMediaKB') el.value = Math.round(s.maxMediaBytes / 1024);
       else if (el.name === 'disabledHosts') el.value = s.disabledHosts.join('\n');
       else if (el.type === 'checkbox') el.checked = !!s[el.name];
       else if (el.name in s) el.value = s[el.name];
@@ -19,6 +20,7 @@
     for (const el of form.elements) {
       if (!el.name) continue;
       if (el.name === 'maxImageKB') out.maxImageBytes = parseInt(el.value, 10) * 1024;
+      else if (el.name === 'maxMediaKB') out.maxMediaBytes = parseInt(el.value, 10) * 1024;
       else if (el.name === 'disabledHosts') out.disabledHosts = el.value.split(/\n+/).map((h) => h.trim()).filter(Boolean);
       else if (el.type === 'checkbox') out[el.name] = el.checked;
       else if (el.type === 'number') out[el.name] = parseInt(el.value, 10);
