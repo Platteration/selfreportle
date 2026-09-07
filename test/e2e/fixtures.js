@@ -27,6 +27,7 @@ async function build(out) {
   fs.writeFileSync(path.join(out, 'signed.png'), H.png([H.pngChunk('caBX', good)]));
   fs.writeFileSync(path.join(out, 'tampered.png'), H.png([H.pngChunk('caBX', bad)]));
   fs.writeFileSync(path.join(out, 'signed.html'), SIGNED);
+  fs.writeFileSync(path.join(out, 'de.html'), GERMAN);
 }
 
 const PAGE = `<!doctype html>
@@ -100,6 +101,17 @@ const SIGNED = `<!doctype html>
 <style>img{width:300px;height:200px;background:#ccc}</style></head><body>
 <figure><img src="signed.png" alt="Signed"><figcaption>Signed</figcaption></figure>
 <figure><img src="tampered.png" alt="Tampered"><figcaption>Tampered</figcaption></figure>
+</body></html>`;
+
+const GERMAN = `<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Dachdecker Berlin</title></head><body>
+<main>
+<h1>Willkommen bei Acme Dachdecker</h1>
+<p>In der heutigen schnelllebigen digitalen Welt ist es wichtig zu beachten, dass Hausbesitzer ganzheitliche Lösungen benötigen. Darüber hinaus spielt eine nahtlose Installation eine entscheidende Rolle. Zudem ist maßgeschneiderte Beratung unverzichtbar für den Erfolg. Zusammenfassend lässt sich sagen, dass bahnbrechende Materialien die Landschaft der Branche revolutionieren werden. Letztendlich ist ein facettenreicher Ansatz nicht nur sinnvoll, sondern auch notwendig für nachhaltiges Wachstum.</p>
+<p>Dieser Text wurde mit Hilfe von KI erstellt und redaktionell geprüft.</p>
+<p>Unsere Bildergalerie ist KI-generiert.</p>
+<p>Gestern hat der Transporter wieder gestreikt. Der Kollege hat die Leiter vergessen, und trotzdem sind beide Dächer fertig geworden. Niemand ist runtergefallen, das zählt hier als guter Tag.</p>
+</main>
 </body></html>`;
 
 module.exports = { build };

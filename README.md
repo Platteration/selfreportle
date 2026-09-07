@@ -12,6 +12,17 @@ Everything runs locally in the browser. No data leaves your machine except the i
 | **Text** | Visible disclosures ("AI-generated", "written with the help of ChatGPT", "100 % human-written"); hidden Unicode artefacts (Unicode tag characters and their decoded payload, zero-width steganographic runs, variation-selector runs, scattered zero-width characters, narrow no-break spaces outside French text); chat-transcript leakage ("As an AI language model", "Certainly! Here's…"); markdown and ChatGPT citation residue; stylometric heuristics (LLM lexicon density, sentence-length burstiness, dash density, tricolons, paragraph uniformity). | Coloured left bar + chip on each flagged block, whole-page verdict in pill and popup |
 | **Images, video, audio** | C2PA Content Credentials, cryptographically verified (claim generator, `c2pa.created` / `c2pa.edited` actions with IPTC digital source type, software agents, ingredients, signer certificate names); XMP/IPTC `DigitalSourceType`, `CreatorTool`, history agents, Midjourney prompt/job IDs; EXIF `Software`, `UserComment` with Stable Diffusion parameters, camera Make/Model; PNG text chunks written by Stable Diffusion WebUI, ComfyUI, NovelAI, InvokeAI, Fooocus; JPEG/SVG comments; plus DOM-side hints: captions and alt text, generator hostnames, file names. Formats: JPEG, PNG, WebP, AVIF/HEIC, MP4/M4A/MOV (C2PA + EXIF), SVG. | Badge in the corner of each image; click for the evidence |
 
+### Languages
+
+Detection is not English-only. Disclosure phrasing and LLM-typical wording are carried per language for **German, French, Spanish, Dutch, Italian, Portuguese and Polish** alongside English, in `lib/lexicons.js`. Two rules keep cross-language noise out:
+
+* Disclosure patterns for the page's language **and** English always run, because English disclosures turn up on pages in every language.
+* Stylometry runs only for the detected language. Applying the English lexicon to German prose would invent signals, so it never happens.
+
+The language is taken from the page's `lang` attribute when it names one we carry, and otherwise detected from function-word frequencies across the whole page; short or ambiguous text yields no guess rather than a wrong one. Per-language lexicons are smaller than the English one and therefore fire less often, which is the safer failure. The Text tab names which lexicon was used and how it was chosen.
+
+One cross-cutting fix came out of this: "created with the help of AI" trips both an assistance pattern and a generation pattern over the same words, so an overlapping generation match is now dropped rather than upgrading the verdict. Separate clauses still both count.
+
 ### Who is behind the site
 
 A separate **Trader** tab answers the question AI markers cannot: can the operator be identified? It reads the page for an imprint or legal notice, terms, privacy policy, returns or withdrawal policy, contact details, an about page, marketplace trader identification, a postal address, a telephone number, an e-mail address, VAT and company-register identifiers, and whether the page was served over HTTPS. VAT numbers are matched across EU formats plus the UK and Switzerland, tolerating the separators real imprints use; company numbers are matched per jurisdiction (UK company number, German HRB/HRA, Dutch KvK, French SIREN/SIRET, Italian REA, Spanish CIF/NIF, LEI, US EIN).
@@ -107,6 +118,7 @@ Layout:
 ```
 manifest.json               MV3 manifest
 lib/signals.js              pattern catalogue (tools, builders, disclosures, lexicon, hosts)
+lib/lexicons.js             per-language disclosure phrasing, LLM wording, language detection
 lib/text-analyzer.js        text signals
 lib/site-analyzer.js        site/code signals (works on a serialisable DOM snapshot)
 lib/image-hints.js          DOM-side image hints (captions, hosts, file names)

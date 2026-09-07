@@ -279,6 +279,9 @@
     out.push(verdictLine('text', text.verdict, text.score));
     const ab = attributionBox(text.attribution, 'text');
     if (ab) out.push(ab);
+    if (text.language && text.language.lexicon) {
+      out.push(el('div', 'note', 'Read with the ' + text.language.lexicon + ' lexicon (' + (text.language.source === 'declared' ? 'declared by the page' : text.language.source === 'detected' ? 'detected from the text' : 'default') + '). Non-English lexicons are smaller, so they report less rather than guessing.'));
+    }
     out.push(el('div', 'note', (text.blocks || 0) + ' text blocks, ' + (text.words || 0) + ' words analysed; ' + (text.flaggedBlocks || 0) + ' flagged.'));
     if (text.page && text.page.signals && text.page.signals.length) {
       const d = el('div');

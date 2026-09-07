@@ -26,6 +26,8 @@
   let postTimer = 0;
   let observer = null;
   let lastHref = location.href;
+  let pageLanguage = null;
+  let lastBodyText = '';
   let pendingImages = 0;
 
   /* ---- lifecycle -------------------------------------------------------- */
@@ -131,10 +133,12 @@
       textCounter = 0; imageCounter = 0; pendingImages = 0;
     }
     const snapshot = collectSnapshot();
+    lastBodyText = snapshot.bodyText;
+    pageLanguage = S.lexicons.detectLanguage(snapshot.bodyText, snapshot.lang);
     const site = S.siteAnalyzer.analyzeSite(snapshot);
     site.attribution = S.attribution.attributeSite(site, snapshot);
     const trader = S.legitimacy.analyzeLegitimacy({ url: snapshot.url, hostname: snapshot.hostname, bodyText: snapshot.bodyText, links: snapshot.anchors });
-    const disclosures = S.signals.findDisclosures(snapshot.bodyText, { max: 25 }).map(({ level, match, context, scope }) => ({ level, match, context, scope }));
+    const disclosures = S.signals.findDisclosures(snapshot.bodyText, { max: 25, lang: pageLanguage.code }).map(({ level, match, context, scope }) => ({ level, match, context, scope }));
     const text = analyzeTextBlocks();
     const metaText = snapshot.metas.filter((m) => /generator|ai/i.test(m.name || m.property || '')).map((m) => (m.name || m.property) + '=' + m.content).join(' | ');
     const textHints = { disclosures: disclosures.filter((d) => d.scope === 'text' || d.scope === 'general'), metaText };
@@ -261,8 +265,10 @@
   }
 
   function analyzeTextBlocks(onlyNew) {
-    const lang = document.documentElement.lang || '';
-    const opts = { lang, sensitivity: settings.sensitivity };
+    const declared = document.documentElement.lang || '';
+    // Detect once from the page as a whole; per-block samples are too short.
+    const language = pageLanguage || (pageLanguage = S.lexicons.detectLanguage(lastBodyText, declared));
+    const opts = { lang: declared, language, sensitivity: settings.sensitivity };
     const blocks = collectTextBlocks(onlyNew);
     const flagged = [];
     const verdicts = [];
@@ -304,6 +310,7 @@
       words: onlyNew && prev ? prev.words + words - (prev.words || 0) : words,
       blocks: (prev ? prev.blocks : 0) + blocks.length,
       flaggedBlocks: flaggedCount,
+      language: page ? page.language : (prev ? prev.language : null),
       page: page ? { verdict: page.verdict, score: page.score, words: page.words, signals: page.signals.slice(0, 8), stats: page.stylometry || null, hidden: page.hidden } : (prev ? prev.page : null),
       flagged: flagged.slice(0, 30),
     };

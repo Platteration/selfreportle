@@ -157,6 +157,23 @@ function loadPlaywright() {
     assert.equal(tampered.metadata.c2pa.verification.summary.broken, true);
     assert.ok(tampered.signals.some((s) => s.id === 'c2pa-broken'), 'broken credentials surfaced as a signal');
 
+    // Language awareness: a German page is read with the German lexicon.
+    const de = await ctx.newPage();
+    await de.goto('http://localhost:' + port + '/de.html');
+    await de.waitForTimeout(3000);
+    const deResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith('/de.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.equal(deResult.text.language.code, 'de', 'German page detected');
+    assert.equal(deResult.text.language.lexicon, 'German');
+    const deLevels = deResult.disclosures.map((d) => d.level);
+    assert.ok(deLevels.includes('assisted'), 'German assistance disclosure read');
+    assert.ok(deLevels.includes('generated'), 'German generation disclosure read');
+    const deVerdicts = deResult.text.flagged.map((f) => f.verdict);
+    assert.ok(deVerdicts.includes('ai-assisted-disclosed'), 'assistance clause not upgraded');
+    assert.ok(deResult.text.flagged.some((f) => f.signals.some((s) => s.id === 'lexicon')), 'German stylometry fired');
+
     // Domain memory: a second visit accumulates counters locally.
     await page.reload();
     await page.waitForTimeout(3000);

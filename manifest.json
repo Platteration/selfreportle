@@ -41,6 +41,7 @@
         "file:///*"
       ],
       "js": [
+        "lib/lexicons.js",
         "lib/signals.js",
         "lib/settings.js",
         "lib/verdicts.js",
