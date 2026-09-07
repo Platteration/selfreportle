@@ -152,6 +152,14 @@ test/e2e/                   Playwright run against a fixture site with the exten
 
 Every `lib/*.js` file is a plain script in the extension and a CommonJS module under Node, so the analysers are unit-tested with synthetic fixtures (`test/helpers.js` builds PNG chunks, TIFF/EXIF blocks, XMP packets, JUMBF boxes and CBOR claims from scratch).
 
+## Robustness
+
+The analysers are regular expressions run over whatever a page happens to contain, on the page's own thread. A pattern that backtracks quadratically is therefore a denial of service any site can trigger: one long run of the wrong character freezes the tab. Three shipped that way and were found by fuzzing — an unbounded compound-street prefix, an unbounded e-mail local part, and an unbounded word class in the three-item-list detector. Each was quadratic; at the 300 KB body-text cap the street one would have hung a tab for minutes.
+
+`test/redos.test.js` is the permanent guard. It scans every regex literal in `lib/`, runs each against nineteen input shapes designed to make a backtracking engine work hard, at 2 KB and again at 16 KB, and fails if any pattern exceeds a flat budget or grows superlinearly. A second test runs the whole text, legitimacy and site analysers over 300 KB bodies of hostile input and requires each to finish in under four seconds.
+
+The binary parsers were fuzzed separately with random bytes behind each container magic, a truncation sweep over every byte offset of valid files, and crafted structures: huge declared chunk lengths, zero-length box loops, six-hundred-deep nesting, twenty thousand empty JPEG segments, a TIFF claiming four hundred oversized entries, and an XML bomb. Nothing threw, and the slowest case was 20 ms.
+
 ## Permissions, and why each is needed
 
 | Permission | Why |

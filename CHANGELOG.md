@@ -49,6 +49,17 @@ development branch.
 - Images carrying a platform label are reported even when they show no other
   signal, so an informational marker is visible without inflating the verdict.
 
+### Fixed
+- **Three quadratic regexes that any page could have used to freeze a tab**,
+  found by fuzzing: the German compound-street prefix, the e-mail local part
+  and the three-item-list detector all had unbounded, unanchored quantifiers.
+  All quantifiers are now bounded and anchored, and `test/redos.test.js`
+  guards every pattern in `lib/` against the whole class.
+- Addresses were missed where they are commonest: "Musterstrasse" written with
+  a double s, non-ASCII city names such as Zürich and Köln, Dutch canal-street
+  compounds, Nordic street suffixes and the Swedish postcode format.
+- E-mail detection now sees internationalised domains (müller.de).
+
 ### Notes
 - Nothing in this changelog has shipped to a store. The extension is loaded
   unpacked.

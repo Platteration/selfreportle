@@ -92,3 +92,32 @@ test('trader checks expose the ids the publisher self-check labels', () => {
   }
   assert.ok('vat' in r.identifiers && 'registration' in r.identifiers);
 });
+
+test('addresses are recognised across European conventions', () => {
+  const should = [
+    'Hauptstraße 4, 20095 Hamburg', 'Musterstrasse 12, 10115 Berlin', 'Bahnhofsweg 12, 8000 Zürich',
+    'Marktplatz 3, 50667 Köln', '12 Baker Street, London NW1 6XE', 'Rue de la Paix 5, 75002 Paris',
+    'Calle Mayor 1, 28013 Madrid', 'Via Roma 2, 00184 Roma', 'Keizersgracht 10, 1015 CJ Amsterdam',
+    '1600 Pennsylvania Ave, Washington 20500', 'Drottninggatan 5, 111 51 Stockholm',
+  ];
+  for (const t of should) {
+    const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: t, links: [] });
+    assert.equal(status(r, 'address'), 'present', t);
+  }
+  for (const t of ['Just some prose about nothing', 'Order 12345 shipped today', 'We drove 300 km yesterday']) {
+    const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: t, links: [] });
+    assert.equal(status(r, 'address'), 'missing', t);
+  }
+});
+
+test('e-mail detection covers internationalised domains without false positives', () => {
+  for (const t of ['info@example.com', 'first.last+tag@sub.domain.co.uk', 'hello@müller.de', 'büro@österreich.at']) {
+    const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: 'Write to ' + t + ' today', links: [] });
+    assert.equal(status(r, 'email'), 'present', t);
+    assert.equal(r.checks.find((c) => c.id === 'email').detail, t);
+  }
+  for (const t of ['price @ 5 euros', 'follow @handle on social', 'no address here']) {
+    const r = L.analyzeLegitimacy({ url: 'https://a/', hostname: 'a', bodyText: t, links: [] });
+    assert.equal(status(r, 'email'), 'missing', t);
+  }
+});
