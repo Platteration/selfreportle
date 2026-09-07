@@ -132,7 +132,7 @@
   function systemsCard(systems) {
     const top = systems.slice().sort((a, b) => ({ confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[b.confidence] || 0) - ({ confirmed: 3, declared: 2, inferred: 1, unknown: 0 }[a.confidence] || 0));
     const named = top.filter((x) => x.id);
-    const { c, bd } = card('AI tools identified', 'site', 'no-signal', null, true, { label: named.length ? named.map((x) => x.vendor || x.name).join(', ') : 'unidentified', color: named.length ? V.COLORS.orange : V.COLORS.grey });
+    const { c, bd } = card('AI tools identified', 'site', 'no-signal', null, true, { label: named.length ? named.map((x) => x.vendor || x.name).join(', ') : 'unidentified', color: named.length ? V.COLORS.orange : V.COLORS.slate });
     for (const sys of top) {
       const it = el('div', 'item');
       const head = el('div');

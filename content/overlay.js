@@ -53,6 +53,35 @@
     .pop li span { color: #666; display: block; word-break: break-word; }
     .pop .meta { padding: 6px 10px 10px; color: #777; font-size: 11px; border-top: 1px solid #eee; }
     .pop .none { padding: 10px; color: #666; }
+    .pop .tools { display: flex; gap: 6px; padding: 0 10px 8px; flex-wrap: wrap; }
+    .pop .tools button { all: unset; cursor: pointer; font-size: 11px; padding: 3px 8px; border-radius: 6px; background: #eef0f4; color: #1f2430; }
+    .pop .tools button:hover { background: #e2e5ec; }
+    .reveal { margin: 0 10px 8px; padding: 8px; border-radius: 6px; background: #f4f5f8; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto; }
+    .reveal[hidden] { display: none; }
+    .reveal mark { background: #c43d0f; color: #fff; border-radius: 3px; padding: 0 2px; font-weight: 700; }
+
+    /* Quiet mood: badges stay out of the way until the element is hovered. */
+    :host([data-mood="quiet"]) .badge { opacity: 0; transition: opacity .15s ease; }
+    :host([data-mood="quiet"]) .badge.near, :host([data-mood="quiet"]) .badge:focus-visible { opacity: 1; }
+    :host([data-mood="quiet"]) .pill.dozing { padding: 6px; }
+    :host([data-mood="quiet"]) .pill.dozing .lbl, :host([data-mood="quiet"]) .pill.dozing .x { display: none; }
+
+    /* Forensic mood: denser, monospace evidence. */
+    :host([data-mood="forensic"]) .pop, :host([data-mood="forensic"]) .panel { width: 420px; }
+    :host([data-mood="forensic"]) .pop li span, :host([data-mood="forensic"]) .sig span { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+    :host([data-mood="forensic"]) .badge { font-size: 10px; }
+
+    @media (prefers-color-scheme: dark) {
+      .panel, .pop { background: #1b1f27; color: #e8eaf0; box-shadow: 0 8px 32px rgba(0,0,0,.6); }
+      .panel h2 small, .sig span, .foot, .pop .meta, .pop .none, .pop li span { color: #9aa3b2; }
+      .row, .foot, .pop .meta { border-color: #2e3440; }
+      .row .k, .sig { color: #c7ccd6; }
+      .pop .tools button { background: #2a3140; color: #e8eaf0; }
+      .pop .tools button:hover { background: #333c4e; }
+      .reveal { background: #12161d; }
+      .pill { background: #0f1218; }
+    }
   `;
 
   let host, shadow, layer, pill, panel, pop;
@@ -61,12 +90,24 @@
   let visible = true;
   let raf = 0;
   let summary = null;
+  let dozeTimer = 0;
+
+  /* Quiet mood: reveal the badge whose element is under or near the cursor. */
+  function onQuietHover(e) {
+    for (const m of markers.values()) {
+      if (!m.node || m.node.hidden) continue;
+      const r = m.el.getBoundingClientRect();
+      const near = e.clientX >= r.left - 24 && e.clientX <= r.right + 24 && e.clientY >= r.top - 24 && e.clientY <= r.bottom + 24;
+      m.node.classList.toggle('near', near);
+    }
+  }
 
   function init(s) {
     settings = s || {};
     if (host) return;
     host = document.createElement('srl-overlay');
     host.setAttribute('data-srl-ui', '1');
+    host.setAttribute('data-mood', settings.mood || 'reader');
     shadow = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = CSS;
@@ -79,8 +120,11 @@
     pill.hidden = !settings.showPill;
     pill.addEventListener('click', (e) => {
       if (e.target.classList.contains('x')) { pill.hidden = true; panel.hidden = true; return; }
+      pill.classList.remove('dozing');
+      clearTimeout(dozeTimer);
       panel.hidden = !panel.hidden;
     });
+    pill.addEventListener('mouseenter', () => { pill.classList.remove('dozing'); clearTimeout(dozeTimer); });
     shadow.appendChild(pill);
     panel = el('div', 'panel');
     panel.hidden = true;
@@ -90,6 +134,10 @@
     shadow.appendChild(pop);
     (document.documentElement || document.body).appendChild(host);
 
+    if ((settings.mood || 'reader') === 'quiet') {
+      document.addEventListener('mousemove', onQuietHover, { passive: true, capture: true });
+      dozeTimer = setTimeout(() => pill.classList.add('dozing'), 5000);
+    }
     window.addEventListener('scroll', schedule, { passive: true, capture: true });
     window.addEventListener('resize', schedule, { passive: true });
     setInterval(schedule, 1200);
@@ -166,6 +214,8 @@
   function showPopover(key, anchor) {
     const m = markers.get(key);
     if (!m) return;
+    anchor = anchor && anchor.getBoundingClientRect ? anchor : m.node;
+    if (!anchor) return;
     const info = V.info(m.kind, m.verdict);
     pop.innerHTML = '';
     pop.style.setProperty('--c', info.color);
@@ -188,6 +238,7 @@
     } else {
       const none = el('div', 'none'); none.textContent = 'No details available.'; pop.appendChild(none);
     }
+    if (m.raw && INVISIBLE_RE.test(m.raw)) pop.appendChild(revealTools(m.raw));
     const meta = el('div', 'meta');
     meta.textContent = m.meta || (m.kind === 'image' ? 'Embedded metadata can be stripped or forged; absence of signals is not proof of human origin.' : 'Stylometric signals are heuristics, not proof. Disclosures are self-reported.');
     pop.appendChild(meta);
@@ -199,6 +250,66 @@
     if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
     pop.style.left = left + 'px';
     pop.style.top = top + 'px';
+  }
+
+  /* Characters that render as nothing: zero-width family, Unicode tags,
+   * variation selectors, soft hyphen, narrow/no-break spaces. */
+  const INVISIBLE_RE = /[\u200B-\u200F\u2060-\u2064\u202A-\u202E\uFEFF\u180E\u00AD\u202F\u00A0\uFE00-\uFE0F]|[\u{E0000}-\u{E007F}]|[\u{E0100}-\u{E01EF}]/u;
+
+  const INVISIBLE_NAMES = {
+    0x200b: 'ZWSP', 0x200c: 'ZWNJ', 0x200d: 'ZWJ', 0x200e: 'LRM', 0x200f: 'RLM',
+    0x2060: 'WJ', 0x2061: 'FA', 0x2062: 'IT', 0x2063: 'IS', 0x2064: 'IP',
+    0xfeff: 'BOM', 0x180e: 'MVS', 0x00ad: 'SHY', 0x202f: 'NNBSP', 0x00a0: 'NBSP',
+    0x202a: 'LRE', 0x202b: 'RLE', 0x202c: 'PDF', 0x202d: 'LRO', 0x202e: 'RLO',
+  };
+
+  function nameOf(cp) {
+    if (INVISIBLE_NAMES[cp]) return INVISIBLE_NAMES[cp];
+    if (cp >= 0xe0000 && cp <= 0xe007f) return 'TAG' + (cp - 0xe0000).toString(16).toUpperCase();
+    if (cp >= 0xfe00 && cp <= 0xfe0f) return 'VS' + (cp - 0xfe00 + 1);
+    if (cp >= 0xe0100 && cp <= 0xe01ef) return 'VS' + (cp - 0xe0100 + 17);
+    return 'U+' + cp.toString(16).toUpperCase();
+  }
+
+  function stripInvisible(text) {
+    return Array.from(text).filter((ch) => !INVISIBLE_RE.test(ch)).join('');
+  }
+
+  /* Renders the block with every invisible character shown as a named chip,
+   * without touching the page's own DOM. */
+  function revealTools(raw) {
+    const wrap = el('div');
+    const tools = el('div', 'tools');
+    const view = el('div', 'reveal');
+    view.hidden = (settings.mood || 'reader') !== 'forensic';
+    const show = el('button');
+    show.type = 'button';
+    show.textContent = view.hidden ? 'Show hidden characters' : 'Hide hidden characters';
+    show.addEventListener('click', () => {
+      view.hidden = !view.hidden;
+      show.textContent = view.hidden ? 'Show hidden characters' : 'Hide hidden characters';
+    });
+    const copy = el('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy cleaned text';
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(stripInvisible(raw)); copy.textContent = 'Copied'; } catch (e) { copy.textContent = 'Copy blocked'; }
+      setTimeout(() => { copy.textContent = 'Copy cleaned text'; }, 1500);
+    });
+    tools.appendChild(show);
+    tools.appendChild(copy);
+    for (const ch of Array.from(raw.slice(0, 4000))) {
+      if (INVISIBLE_RE.test(ch)) {
+        const mk = document.createElement('mark');
+        mk.textContent = nameOf(ch.codePointAt(0));
+        view.appendChild(mk);
+      } else {
+        view.appendChild(document.createTextNode(ch));
+      }
+    }
+    wrap.appendChild(tools);
+    wrap.appendChild(view);
+    return wrap;
   }
 
   function setSummary(sum) {
@@ -308,6 +419,7 @@
   function applySettings(s) {
     settings = s || settings;
     if (!host) return;
+    host.setAttribute('data-mood', settings.mood || 'reader');
     pill.hidden = !visible || !settings.showPill;
     for (const m of [...markers.values()]) {
       if ((m.kind === 'image' && !settings.showImageBadges) || (m.kind === 'text' && !settings.showTextMarkers)) removeMarker(m.key);
@@ -317,5 +429,5 @@
   function togglePanel() { if (panel) panel.hidden = !panel.hidden; }
   function isVisible() { return visible; }
 
-  S.overlay = { init, upsertMarker, removeMarker, clearMarkers, setSummary, setVisible, isVisible, togglePanel, applySettings, reposition: schedule };
+  S.overlay = { init, upsertMarker, removeMarker, clearMarkers, setSummary, setVisible, isVisible, togglePanel, applySettings, showPopover, stripInvisible, reposition: schedule };
 })();

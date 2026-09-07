@@ -66,8 +66,57 @@
     }
     if (msg.type === 'srl:open-panel') { S.overlay.setVisible(true); S.overlay.togglePanel(); sendResponse({ ok: true }); return false; }
     if (msg.type === 'srl:get-page-result') { sendResponse(result); return false; }
+    if (msg.type === 'srl:inspect-image') { inspectImage(msg.srcUrl); sendResponse({ ok: true }); return false; }
+    if (msg.type === 'srl:inspect-selection') { inspectSelection(); sendResponse({ ok: true }); return false; }
     return false;
   });
+
+  /* Context menu: analyse one image on demand, ignoring the size floor and
+   * the per-page cap, then open its popover. */
+  async function inspectImage(srcUrl) {
+    S.overlay.setVisible(true);
+    let target = null;
+    for (const img of document.images) {
+      if ((img.currentSrc || img.src) === srcUrl) { target = img; break; }
+    }
+    if (!target) return;
+    const existing = imageState.get(target);
+    if (existing && existing.done) { S.overlay.showPopover(existing.key, existing.el); return; }
+    const item = { el: target, url: srcUrl, alt: target.alt || '', title: target.title || '', ariaLabel: target.getAttribute('aria-label') || '', caption: captionFor(target) };
+    imageState.delete(target);
+    const key = 'i' + (++imageCounter);
+    const hints = S.imageHints.analyzeImageHints(item);
+    const st = { key, el: target, url: srcUrl, hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false, forced: true };
+    imageState.set(target, st);
+    let resp = null;
+    try { resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: [{ id: key, url: srcUrl }], settings: { maxImageBytes: settings.maxImageBytes } }); } catch (e) { resp = null; }
+    const r = resp && resp.results && resp.results[0];
+    st.done = true;
+    if (r) { st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null }; st.signals = [...hints, ...(r.signals || [])]; }
+    applyImageVerdict(st, true);
+    refreshSummary();
+    S.overlay.showPopover(st.key, st.el);
+  }
+
+  /* Context menu: analyse whatever the user has selected. */
+  function inspectSelection() {
+    const sel = window.getSelection();
+    const text = sel ? String(sel) : '';
+    if (!text.trim()) return;
+    S.overlay.setVisible(true);
+    const r = S.textAnalyzer.analyzeText(text, { lang: document.documentElement.lang || '', sensitivity: settings.sensitivity, mode: 'block' });
+    const attr = S.attribution.attributeText({ verdict: r.verdict, disclosures: r.disclosures, page: { signals: r.signals } });
+    const details = r.signals.map((x) => ({ label: x.label, detail: x.detail }));
+    if (attr) details.unshift({ label: 'Likely tool: ' + attr.name, detail: S.attribution.CONFIDENCE_LABEL[attr.confidence] + (attr.evidence ? ' · ' + attr.evidence : '') });
+    if (!details.length) details.push({ label: 'No AI signals in the selection', detail: r.words + ' words analysed. Short selections carry little signal.' });
+    let anchor = sel.anchorNode;
+    while (anchor && anchor.nodeType !== 1) anchor = anchor.parentNode;
+    if (!anchor) return;
+    const key = 'sel' + (++textCounter);
+    S.overlay.upsertMarker({ key, el: anchor, kind: 'text', verdict: r.verdict, details, raw: text.slice(0, 4000) });
+    S.overlay.reposition();
+    setTimeout(() => S.overlay.showPopover(key, anchor), 60);
+  }
 
   /* ---- full analysis ---------------------------------------------------- */
 
@@ -196,7 +245,7 @@
         details.unshift({ label: 'Likely tool: ' + blockAttr.name, detail: S.attribution.CONFIDENCE_LABEL[blockAttr.confidence] + (blockAttr.evidence ? ' · ' + blockAttr.evidence : '') });
         for (const k of S.attribution.skewsFor(blockAttr, 'text').slice(0, 3)) details.push({ label: 'Skew · ' + k.area, detail: k.note });
       }
-      S.overlay.upsertMarker({ key, el: b.el, kind: 'text', verdict: r.verdict, details });
+      S.overlay.upsertMarker({ key, el: b.el, kind: 'text', verdict: r.verdict, details, raw: b.text.slice(0, 4000) });
       flagged.push({ verdict: r.verdict, score: r.score, words: r.words, excerpt: b.text.replace(/\s+/g, ' ').trim().slice(0, 160), signals: r.signals.slice(0, 6).map(({ id, kind, label, detail, weight }) => ({ id, kind, label, detail, weight })) });
     }
     let page = null;
@@ -305,11 +354,11 @@
     }
   }
 
-  function applyImageVerdict(st) {
+  function applyImageVerdict(st, force) {
     const c = V.combineImageSignals(st.signals);
     st.verdict = c.verdict; st.score = c.score;
     st.attribution = V.AI_IMAGE_VERDICTS.has(st.verdict) ? S.attribution.attributeImage(st.signals, st.bytes && st.bytes.metadata) : null;
-    const show = st.verdict !== 'no-signal' && st.verdict !== 'unavailable' ? true : settings.markUnflaggedImages && st.done;
+    const show = force || st.forced || (st.verdict !== 'no-signal' && st.verdict !== 'unavailable' ? true : settings.markUnflaggedImages && st.done);
     if (show) {
       const details = st.signals.filter((s) => s.label).map((s) => ({ label: s.label, detail: s.detail }));
       if (st.attribution) {

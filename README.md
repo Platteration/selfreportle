@@ -23,6 +23,15 @@ For every layer the extension also names the tool the evidence points to, with t
 
 Each identified vendor comes with a short list of documented **skews**: sycophancy, measured political lean, content rules of the vendor's jurisdiction (for example PRC-aligned refusals in DeepSeek and Qwen), representation defaults of image generators, commercial grounding, provenance and litigation history, and the underlying model vendor behind site builders such as Lovable, Bolt, v0 and Replit Agent. Every note carries its basis and the catalogue carries a review date (`lib/attribution.js`, `REVIEWED`). These notes describe typical default behaviour reported publicly, not the specific page, and models change between versions.
 
+### Display and accessibility
+
+* **Three display moods**, chosen in settings. *Quiet* keeps badges invisible until the cursor nears the item and lets the pill shrink to a dot. *Reader* is the default. *Forensic* widens the panels, sets evidence in monospace and expands hidden-character views.
+* **Colour-blind-safe palette** derived from the Okabe–Ito set, darkened so white badge text clears WCAG AA on every fill. Colour never carries meaning alone: each verdict has its own glyph (◆ generated, ◈ edited or likely, ✎ disclosed, ? weak, ● camera, ✋ declared human, ▦ algorithmic, ○ none, ⊘ not inspectable).
+* **Dark theme** for the in-page panel and popovers, following the reader's system setting.
+* **Toolbar icon changes state**, not just its count: the lens pupil takes the verdict colour, and resets to neutral on navigation.
+* **Right-click actions**: "Inspect this image for AI provenance" analyses any image on demand, ignoring the size floor and per-page cap; "Check selected text for AI signals" analyses a selection in place.
+* **Hidden-character reveal**: any flagged block whose popover contains invisible characters offers a view that names each one (ZWSP, TAG…, VS3, NNBSP) without touching the page, plus a "Copy cleaned text" button that strips them.
+
 Verdict colours: red = AI-generated / strong indicators, orange = AI-edited or likely AI, amber = disclosed as AI, yellow = weak signals, green = capture credentials or declared human, blue = algorithmic / conventional builder, grey = no signal.
 
 ### What it cannot do (and says so)

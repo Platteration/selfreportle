@@ -12,6 +12,19 @@ const IMAGE_CACHE_MAX = 400;
 const FETCH_TIMEOUT_MS = 20000;
 const CONCURRENCY = 4;
 
+chrome.runtime.onInstalled.addListener(() => {
+  try {
+    chrome.contextMenus.create({ id: 'srl-inspect-image', title: 'Inspect this image for AI provenance', contexts: ['image'] });
+    chrome.contextMenus.create({ id: 'srl-inspect-selection', title: 'Check selected text for AI signals', contexts: ['selection'] });
+  } catch (e) { /* already created */ }
+});
+
+chrome.contextMenus && chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (!tab || tab.id == null) return;
+  if (info.menuItemId === 'srl-inspect-image') chrome.tabs.sendMessage(tab.id, { type: 'srl:inspect-image', srcUrl: info.srcUrl }).catch(() => {});
+  if (info.menuItemId === 'srl-inspect-selection') chrome.tabs.sendMessage(tab.id, { type: 'srl:inspect-selection' }).catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return false;
   switch (msg.type) {
@@ -45,6 +58,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === 'loading') {
     results.delete(tabId);
     chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+    chrome.action.setIcon({ tabId, path: { 16: '/icons/icon16.png', 32: '/icons/icon32.png' } }).catch(() => {});
   }
 });
 
@@ -64,6 +78,8 @@ async function getResult(tabId) {
   }
 }
 
+const STATE_ICONS = ['undisclosed-ai', 'disclosed-ai', 'weak-ai', 'provenance', 'none'];
+
 function updateBadge(tabId, result) {
   const overall = S.verdicts.overall(result);
   const counts = (result.images && result.images.counts) || {};
@@ -76,6 +92,9 @@ function updateBadge(tabId, result) {
   chrome.action.setBadgeTextColor && chrome.action.setBadgeTextColor({ tabId, color: '#ffffff' }).catch(() => {});
   chrome.action.setBadgeText({ tabId, text: n > 0 ? String(Math.min(n, 99)) : (overall === 'provenance' ? '✓' : '') }).catch(() => {});
   chrome.action.setTitle({ tabId, title: 'Selfreportle: ' + S.verdicts.OVERALL[overall].label }).catch(() => {});
+  if (STATE_ICONS.includes(overall)) {
+    chrome.action.setIcon({ tabId, path: { 16: '/icons/state-' + overall + '-16.png', 32: '/icons/state-' + overall + '-32.png' } }).catch(() => {});
+  }
 }
 
 /* ---- image fetching ---------------------------------------------------- */

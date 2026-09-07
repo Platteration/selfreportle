@@ -27,7 +27,8 @@
     "service_worker": "background/service-worker.js"
   },
   "permissions": [
-    "storage"
+    "storage",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"

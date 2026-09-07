@@ -33,47 +33,59 @@ function png(size, pixel) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
 }
 
-/* Design: rounded blue square, white "eye" ring with a green pupil, and a
- * small amber check-mark notch — a "provenance lens". Anti-aliased by
- * 4x supersampling. */
-function shade(x, y, s) {
+/* Design: a rounded "provenance lens" — a white eye ring on a blue field
+ * with a coloured pupil. The pupil colour encodes the page verdict, so the
+ * toolbar icon reads as a state even before the badge count is parsed.
+ * Anti-aliased by 4x supersampling. */
+const STATES = {
+  neutral: { pupil: [90, 100, 114], field: [38, 96, 200] },        // slate pupil, idle
+  'undisclosed-ai': { pupil: [196, 61, 15], field: [58, 66, 82] },
+  'disclosed-ai': { pupil: [165, 98, 0], field: [58, 66, 82] },
+  'weak-ai': { pupil: [138, 109, 0], field: [58, 66, 82] },
+  provenance: { pupil: [11, 122, 91], field: [58, 66, 82] },
+  none: { pupil: [107, 114, 128], field: [58, 66, 82] },
+};
+
+function shade(x, y, s, state) {
   const cx = s / 2, cy = s / 2;
-  const R = s * 0.22; // corner radius
-  const inside = (px, py) => {
-    const dx = Math.max(Math.abs(px - cx) - (s / 2 - R), 0);
-    const dy = Math.max(Math.abs(py - cy) - (s / 2 - R), 0);
-    return Math.hypot(dx, dy) <= R - 0.5;
-  };
-  if (!inside(x, y)) return [0, 0, 0, 0];
+  const R = s * 0.22;
+  const dx = Math.max(Math.abs(x - cx) - (s / 2 - R), 0);
+  const dy = Math.max(Math.abs(y - cy) - (s / 2 - R), 0);
+  if (Math.hypot(dx, dy) > R - 0.5) return [0, 0, 0, 0];
   const d = Math.hypot(x - cx, y - cy) / s;
-  const ring = d > 0.22 && d < 0.30;
-  const pupil = d < 0.13;
-  const t = (y / s);
-  const base = [Math.round(38 + 20 * t), Math.round(96 + 30 * t), Math.round(200 + 10 * t)];
-  if (pupil) return [47, 158, 95, 255];
-  if (ring) return [255, 255, 255, 255];
-  // check notch bottom-right
-  const nx = x - s * 0.72, ny = y - s * 0.72;
-  if (Math.hypot(nx, ny) < s * 0.14) {
-    const onCheck = (Math.abs(ny - (-nx * 0.0)) < s * 0.03 && nx > -s * 0.06 && nx < s * 0.02) || (Math.abs((ny + s * 0.0) - (-nx * 1.4 + s * 0.03)) < s * 0.03 && nx >= s * 0.0 && nx < s * 0.07);
-    return onCheck ? [255, 255, 255, 255] : [201, 154, 0, 255];
-  }
-  return [base[0], base[1], base[2], 255];
+  if (d < 0.155) return [...state.pupil, 255];
+  if (d > 0.235 && d < 0.325) return [255, 255, 255, 255];
+  const t = y / s;
+  return [
+    Math.round(state.field[0] + 20 * t),
+    Math.round(state.field[1] + 26 * t),
+    Math.round(state.field[2] + 10 * t),
+    255,
+  ];
 }
-function pixel(x, y, s) {
-  let r = 0, g = 0, b = 0, a = 0;
-  const n = 4;
-  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-    const [pr, pg, pb, pa] = shade(x - 0.5 + (i + 0.5) / n, y - 0.5 + (j + 0.5) / n, s);
-    r += pr * pa; g += pg * pa; b += pb * pa; a += pa;
-  }
-  if (!a) return [0, 0, 0, 0];
-  return [Math.round(r / a), Math.round(g / a), Math.round(b / a), Math.round(a / (n * n))];
+
+function pixel(state) {
+  return (x, y, s) => {
+    let r = 0, g = 0, b = 0, a = 0;
+    const n = 4;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const [pr, pg, pb, pa] = shade(x - 0.5 + (i + 0.5) / n, y - 0.5 + (j + 0.5) / n, s, state);
+      r += pr * pa; g += pg * pa; b += pb * pa; a += pa;
+    }
+    if (!a) return [0, 0, 0, 0];
+    return [Math.round(r / a), Math.round(g / a), Math.round(b / a), Math.round(a / (n * n))];
+  };
 }
 
 const dir = path.join(__dirname, '..', 'icons');
 fs.mkdirSync(dir, { recursive: true });
 for (const size of [16, 32, 48, 128]) {
-  fs.writeFileSync(path.join(dir, 'icon' + size + '.png'), png(size, pixel));
-  console.log('wrote icons/icon' + size + '.png');
+  fs.writeFileSync(path.join(dir, 'icon' + size + '.png'), png(size, pixel(STATES.neutral)));
 }
+for (const [name, state] of Object.entries(STATES)) {
+  if (name === 'neutral') continue;
+  for (const size of [16, 32]) {
+    fs.writeFileSync(path.join(dir, 'state-' + name + '-' + size + '.png'), png(size, pixel(state)));
+  }
+}
+console.log('wrote ' + fs.readdirSync(dir).length + ' icons');
