@@ -74,6 +74,31 @@ development branch.
   the hashed range wrongly included the inner box header.
 
 ### Fixed
+- **The tool accused ordinary pages.** An AI-disclosure meta tag holding any
+  value other than a literal "false"/"no"/"none" was read as declaring AI
+  content — including an empty one, and including `content="no AI was used"`.
+  A JSON-LD author called Randall Cooper, Leonardo Rossi or Dallas Herald was
+  read as an AI system, because the generator pattern matched those fragments
+  unanchored. "Here is a summary of what our team achieved" scored the
+  strongest AI verdict on its own. An EXIF description reading "Flight test
+  parameters recorded at Cape Town" was attributed to Stable Diffusion with
+  *confirmed* confidence.
+- **Signals that could never fire.** A generator tag behind another one was
+  never matched, so a site declaring "Next.js" before "v0 by Vercel" read as
+  having no generator at all. `<html lang="DE">` dropped every German
+  disclosure because the language was not lower-cased. Whole-page paragraph
+  statistics were unreachable, since the text was flattened before the code
+  that measures paragraphs ran. A phrase repeated across a page used up the
+  disclosure budget before the patterns for a human-authorship claim were
+  reached.
+- **Curly apostrophes were invisible to the lexicon**, which is backwards:
+  U+2019 is exactly what text pasted out of a chat window contains. Quotes are
+  now normalised before matching.
+- An unprofiled AI site builder was attributed to Lovable by name.
+- Attribution confidence was chosen by sniffing rendered text for the word
+  "comment" instead of reading which signal matched.
+- Two tabs finishing at the same time could silently lose one domain's history
+  counters; writes are now serialised.
 - The floating pill could never be hidden: an author `display` beat the UA
   `[hidden]` rule, so its dismiss button, the "floating summary pill" setting
   and the Alt+Shift+A toggle all did nothing to it.
