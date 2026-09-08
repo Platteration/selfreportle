@@ -174,6 +174,58 @@ function loadPlaywright() {
     assert.ok(deVerdicts.includes('ai-assisted-disclosed'), 'assistance clause not upgraded');
     assert.ok(deResult.text.flagged.some((f) => f.signals.some((s) => s.id === 'lexicon')), 'German stylometry fired');
 
+    // The pill must actually be dismissible, and the badges toggleable.
+    const pillVisible = () => page.evaluate(() => {
+      const host = document.querySelector('srl-overlay');
+      // Closed shadow root: measure through the host's own painted area.
+      return host && host.getBoundingClientRect().height >= 0
+        ? window.getComputedStyle(host).display !== 'none' : false;
+    });
+    assert.ok(await pillVisible(), 'overlay present before toggling');
+    const beforeToggle = await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length);
+    assert.ok(beforeToggle > 0, 'text markers present');
+    await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith(':' + new URL(x.url).port + '/'));
+      await chrome.tabs.sendMessage(t.id, { type: 'srl:toggle-overlay' });
+    });
+    await page.waitForTimeout(400);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length), 0, 'toggling hides text markers');
+    await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith(':' + new URL(x.url).port + '/'));
+      await chrome.tabs.sendMessage(t.id, { type: 'srl:toggle-overlay' });
+    });
+    await page.waitForTimeout(400);
+    assert.ok(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length) > 0, 'toggling restores them');
+
+    // Pausing a host stops the work and clears what was stored for the tab.
+    await sw.evaluate(async () => chrome.storage.sync.set({ disabledHosts: ['localhost'] }));
+    await page.waitForTimeout(1200);
+    const afterPause = await sw.evaluate(async (p) => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url === 'http://localhost:' + p + '/');
+      return { stored: (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id] || null };
+    }, port);
+    assert.equal(afterPause.stored, null, 'a paused host leaves no stored report');
+    assert.equal(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length), 0, 'paused host has no markers');
+    await sw.evaluate(async () => chrome.storage.sync.set({ disabledHosts: [] }));
+    await page.waitForTimeout(1500);
+
+    /* Navigating a tab must not leave the previous page's report attached to
+     * it. Checked in the window right after navigation, before the new page
+     * has been analysed, which is exactly where a stale report would show. */
+    const navTabId = await sw.evaluate(async (p) => (await chrome.tabs.query({})).find((x) => x.url === 'http://localhost:' + p + '/').id, port);
+    const before = await sw.evaluate(async (id) => ((await chrome.storage.session.get('tab:' + id))['tab:' + id] || {}).url, navTabId);
+    assert.equal(before, 'http://localhost:' + port + '/', 'the tab has a report to go stale');
+    await page.goto('http://localhost:' + port + '/de.html');
+    await page.waitForTimeout(250);
+    const during = await sw.evaluate(async (id) => {
+      const r = (await chrome.storage.session.get('tab:' + id))['tab:' + id];
+      return r ? r.url : null;
+    }, navTabId);
+    assert.notEqual(during, 'http://localhost:' + port + '/', 'the previous page\'s report must not survive navigation');
+    await page.waitForTimeout(2500);
+    const after = await sw.evaluate(async (id) => ((await chrome.storage.session.get('tab:' + id))['tab:' + id] || {}).url, navTabId);
+    assert.equal(after, 'http://localhost:' + port + '/de.html', 'and the new page gets its own');
+
     // Domain memory: a second visit accumulates counters locally.
     await page.reload();
     await page.waitForTimeout(3000);

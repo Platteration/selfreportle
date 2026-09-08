@@ -74,6 +74,20 @@ development branch.
   the hashed range wrongly included the inner box header.
 
 ### Fixed
+- The floating pill could never be hidden: an author `display` beat the UA
+  `[hidden]` rule, so its dismiss button, the "floating summary pill" setting
+  and the Alt+Shift+A toggle all did nothing to it.
+- Pausing a site only hid the result. The extension kept fetching image bytes,
+  updating the toolbar badge and recording domain history for a site the
+  reader had asked to be left alone; it now stops the work and clears the tab.
+- Navigating a tab left the previous page's report attached to it, so the
+  popup could describe the page you had just left.
+- Switching to Quiet mood without reloading made every badge invisible,
+  because the listener that reveals them was only attached at startup.
+- The media byte budget was never sent to the worker, so the setting was inert.
+- A single timed-out image fetch pinned that URL to "could not fetch" for the
+  worker's lifetime, including on explicit right-click re-inspection.
+- Right-clicking an image that was still being inspected left two badges on it.
 - **Three quadratic regexes that any page could have used to freeze a tab**,
   found by fuzzing: the German compound-street prefix, the e-mail local part
   and the three-item-list detector all had unbounded, unanchored quantifiers.

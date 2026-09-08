@@ -25,6 +25,7 @@
   let result = null;
   let postTimer = 0;
   let observer = null;
+  let hrefTimer = 0;
   let lastHref = location.href;
   let pageLanguage = null;
   let lastBodyText = '';
@@ -34,11 +35,12 @@
 
   async function main() {
     settings = await S.settings.load();
-    if (!settings.enabled || S.settings.isHostDisabled(settings, location.hostname)) return;
+    if (!active()) return;
     S.overlay.init(settings);
     await analyze(true);
     observeMutations();
-    setInterval(() => {
+    hrefTimer = setInterval(() => {
+      if (!active()) return;
       if (location.href !== lastHref) { lastHref = location.href; analyze(true); }
     }, 1000);
   }
@@ -46,15 +48,36 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'sync') return;
     S.settings.load().then((s) => {
-      const wasEnabled = settings.enabled && !S.settings.isHostDisabled(settings, location.hostname);
+      const wasEnabled = active();
       settings = s;
-      const nowEnabled = s.enabled && !S.settings.isHostDisabled(s, location.hostname);
-      if (!nowEnabled) { S.overlay.clearMarkers(); S.overlay.setVisible(false); return; }
+      if (!active()) { stop(); return; }
       if (!wasEnabled) { S.overlay.init(s); S.overlay.setVisible(true); observeMutations(); }
       S.overlay.applySettings(s);
       analyze(true);
     });
   });
+
+  function active() {
+    return settings.enabled && !S.settings.isHostDisabled(settings, location.hostname);
+  }
+
+  /* Pausing a host has to stop the work, not just hide the result: no more
+   * fetching image bytes, no more badge updates, no more history for a site
+   * the reader asked to be left alone. */
+  function stop() {
+    runId++;
+    if (observer) { observer.disconnect(); observer = null; }
+    clearInterval(hrefTimer);
+    hrefTimer = 0;
+    clearTimeout(postTimer);
+    S.overlay.clearMarkers();
+    S.overlay.setVisible(false);
+    imageState = new Map();
+    posterSeen = new Set();
+    pendingImages = 0;
+    result = null;
+    try { chrome.runtime.sendMessage({ type: 'srl:paused' }).catch(() => {}); } catch (e) { /* context gone */ }
+  }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.type !== 'string') return false;
@@ -85,6 +108,7 @@
     if (!target) return;
     const existing = imageState.get(target);
     if (existing && existing.done) { S.overlay.showPopover(existing.key, existing.el); return; }
+    if (existing) S.overlay.removeMarker(existing.key);   // in flight: drop its badge first
     const item = { el: target, url: srcUrl, alt: target.alt || '', title: target.title || '', ariaLabel: target.getAttribute('aria-label') || '', caption: captionFor(target) };
     imageState.delete(target);
     const key = 'i' + (++imageCounter);
@@ -92,7 +116,7 @@
     const st = { key, el: target, url: srcUrl, hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false, forced: true };
     imageState.set(target, st);
     let resp = null;
-    try { resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: [{ id: key, url: srcUrl }], settings: { maxImageBytes: settings.maxImageBytes } }); } catch (e) { resp = null; }
+    try { resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: [{ id: key, url: srcUrl }], settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } }); } catch (e) { resp = null; }
     const r = resp && resp.results && resp.results[0];
     st.done = true;
     if (r) { st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null }; st.signals = [...hints, ...(r.signals || [])]; }
@@ -124,6 +148,7 @@
   /* ---- full analysis ---------------------------------------------------- */
 
   async function analyze(full) {
+    if (!active()) return;
     const id = ++runId;
     if (full) {
       S.overlay.clearMarkers();
@@ -409,7 +434,7 @@
       const batch = toFetch.slice(i, i + 6);
       let resp = null;
       try {
-        resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: batch.map((b) => b.msg), settings: { maxImageBytes: settings.maxImageBytes } });
+        resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: batch.map((b) => b.msg), settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } });
       } catch (e) { resp = null; }
       if (id !== runId) return;
       const byId = new Map(((resp && resp.results) || []).map((r) => [r.id, r]));
@@ -518,6 +543,7 @@
     observer = new MutationObserver(() => {
       clearTimeout(timer);
       timer = setTimeout(() => {
+        if (!active()) return;
         const id = runId;
         const imgs = [...collectImages(), ...collectMedia()];
         if (imgs.length) processImages(imgs, id);

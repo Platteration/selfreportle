@@ -43,6 +43,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
     }
+    case 'srl:paused': {
+      const tabId = sender.tab && sender.tab.id;
+      if (tabId != null) clearTab(tabId);
+      sendResponse({ ok: true });
+      return false;
+    }
     case 'srl:get-result':
       getResult(msg.tabId).then(sendResponse);
       return true;
@@ -66,11 +72,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove('tab:' + tabId).catch(() => {});
 });
 
+/* The stored copy has to go too, or the popup shows the previous page's
+ * report as though it belonged to the new one. */
+function clearTab(tabId) {
+  results.delete(tabId);
+  chrome.storage.session.remove('tab:' + tabId).catch(() => {});
+  chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+  chrome.action.setTitle({ tabId, title: 'Selfreportle' }).catch(() => {});
+  chrome.action.setIcon({ tabId, path: { 16: '/icons/icon16.png', 32: '/icons/icon32.png' } }).catch(() => {});
+}
+
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === 'loading') {
-    results.delete(tabId);
-    chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
-    chrome.action.setIcon({ tabId, path: { 16: '/icons/icon16.png', 32: '/icons/icon32.png' } }).catch(() => {});
+    clearTab(tabId);
   }
 });
 
@@ -178,8 +192,14 @@ async function analyzeOne(img, maxBytes, tailBytes) {
   } catch (e) {
     outcome = { signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not fetch image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
   }
-  if (imageCache.size >= IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
-  imageCache.set(cacheKey, outcome);
+  /* Failures are not cached: a single timeout would otherwise pin the URL to
+   * "could not fetch" for the worker's lifetime, including on an explicit
+   * right-click re-inspection. */
+  const failed = outcome.signals.length === 1 && outcome.signals[0].id === 'unavailable';
+  if (!failed) {
+    if (imageCache.size >= IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
+    imageCache.set(cacheKey, outcome);
+  }
   return { ...base, ...outcome };
 }
 

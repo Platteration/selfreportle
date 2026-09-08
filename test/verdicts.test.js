@@ -28,3 +28,18 @@ test('overall summary', () => {
   assert.equal(V.overall({ site: { verdict: 'no-signal' }, text: { verdict: 'no-signal' }, images: { counts: { captured: 2 } }, disclosures: [] }), 'provenance');
   assert.equal(V.overall({ site: {}, text: {}, images: {}, disclosures: [] }), 'none');
 });
+
+/* Broken provenance sits between an independent disclosure and the benign
+ * verdicts: a platform label is evidence in its own right, but a claim from
+ * the same untrustworthy manifest is not. */
+test('broken credentials outrank benign claims but not independent disclosures', () => {
+  const broken = { id: 'c2pa-broken', hard: true, verdict: 'suspected', strength: 0.7 };
+  const label = { id: 'platform-label', hard: false, verdict: 'ai-disclosed', strength: 0.9 };
+  const camera = { id: 'exif-camera', hard: false, verdict: 'captured', strength: 0.45 };
+  const generated = { id: 'png-sd', hard: true, verdict: 'ai-generated', strength: 0.98 };
+
+  assert.equal(V.combineImageSignals([broken]).verdict, 'suspected');
+  assert.equal(V.combineImageSignals([camera, broken]).verdict, 'suspected', 'a benign claim must not hide broken credentials');
+  assert.equal(V.combineImageSignals([label, broken]).verdict, 'ai-disclosed', 'an independent disclosure still stands');
+  assert.equal(V.combineImageSignals([generated, broken]).verdict, 'ai-generated');
+});

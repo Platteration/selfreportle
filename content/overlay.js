@@ -28,6 +28,9 @@
     .pill b { font-weight: 600; }
     .pill .x { margin-left: 4px; opacity: .6; font-size: 14px; line-height: 1; padding: 0 2px; }
     .pill .x:hover { opacity: 1; }
+    /* "all: unset" plus an author display beats the UA [hidden] rule, so the
+       dismiss button, the showPill setting and Alt+Shift+A all need this. */
+    .pill[hidden] { display: none; }
     .panel { position: fixed; right: 16px; bottom: 56px; z-index: 2147483646; pointer-events: auto; width: 360px; max-width: calc(100vw - 32px); max-height: min(70vh, 560px);
       overflow: auto; background: #fff; color: #1f2430; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.35); font-size: 13px; }
     .panel[hidden] { display: none; }
@@ -134,10 +137,7 @@
     shadow.appendChild(pop);
     (document.documentElement || document.body).appendChild(host);
 
-    if ((settings.mood || 'reader') === 'quiet') {
-      document.addEventListener('mousemove', onQuietHover, { passive: true, capture: true });
-      dozeTimer = setTimeout(() => pill.classList.add('dozing'), 5000);
-    }
+    applyMood();
     window.addEventListener('scroll', schedule, { passive: true, capture: true });
     window.addEventListener('resize', schedule, { passive: true });
     setInterval(schedule, 1200);
@@ -416,10 +416,27 @@
     if (v) schedule();
   }
 
+  /* Quiet mood hides badges until the cursor is near them, so it needs a
+   * mousemove listener. Switching into it at runtime must attach that listener,
+   * and switching out must drop it, or every badge stays invisible. */
+  function applyMood() {
+    const quiet = (settings.mood || 'reader') === 'quiet';
+    document.removeEventListener('mousemove', onQuietHover, { capture: true });
+    clearTimeout(dozeTimer);
+    if (quiet) {
+      document.addEventListener('mousemove', onQuietHover, { passive: true, capture: true });
+      dozeTimer = setTimeout(() => pill.classList.add('dozing'), 5000);
+    } else {
+      pill.classList.remove('dozing');
+      for (const m of markers.values()) if (m.node) m.node.classList.remove('near');
+    }
+  }
+
   function applySettings(s) {
     settings = s || settings;
     if (!host) return;
     host.setAttribute('data-mood', settings.mood || 'reader');
+    applyMood();
     pill.hidden = !visible || !settings.showPill;
     for (const m of [...markers.values()]) {
       if ((m.kind === 'image' && !settings.showImageBadges) || (m.kind === 'text' && !settings.showTextMarkers)) removeMarker(m.key);
