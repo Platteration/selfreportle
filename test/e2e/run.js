@@ -156,6 +156,28 @@ function loadPlaywright() {
     assert.equal(tampered.metadata.c2pa.verification.signature, 'invalid', 'tampered signature rejected');
     assert.equal(tampered.metadata.c2pa.verification.summary.broken, true);
     assert.ok(tampered.signals.some((s) => s.id === 'c2pa-broken'), 'broken credentials surfaced as a signal');
+    // The same signed manifest inside another picture: signature still valid,
+    // hard binding is what catches it.
+    const moved = (credResult.images.items || []).find((i) => i.url.endsWith('transplanted.png'));
+    assert.equal(moved.metadata.c2pa.verification.signature, 'valid', 'the transplanted signature really is genuine');
+    assert.equal(moved.metadata.c2pa.verification.binding.status, 'mismatch');
+    assert.equal(moved.metadata.c2pa.verification.summary.ok, false, 'a manifest from another file must never read as verified');
+    assert.equal(moved.metadata.c2pa.verification.summary.broken, true);
+    assert.notEqual(moved.verdict, 'captured');
+
+    /* A page cannot silence the extension with one bad attribute. */
+    const hostile = await ctx.newPage();
+    await hostile.goto('http://localhost:' + port + '/hostile.html');
+    await hostile.waitForTimeout(3500);
+    const hostileResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith('/hostile.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(hostileResult, 'a page full of malformed URLs is still analysed');
+    assert.ok(!hostileResult.error, 'and no analyser threw: ' + (hostileResult.error || ''));
+    assert.equal(hostileResult.text.verdict, 'ai', 'text analysis still ran');
+    const lighthouse = (hostileResult.images.items || []).find((i) => i.url.endsWith('sd.png'));
+    assert.ok(lighthouse && lighthouse.verdict === 'ai-generated', 'image analysis still ran past the broken tags');
 
     // Language awareness: a German page is read with the German lexicon.
     const de = await ctx.newPage();

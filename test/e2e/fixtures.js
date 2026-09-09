@@ -22,11 +22,18 @@ async function build(out) {
   fs.writeFileSync(path.join(out, 'clip.mp4'), H.mp4(videoManifest, { placement: 'tail', mdatSize: 900 * 1024 }));
   fs.writeFileSync(path.join(out, 'media.html'), MEDIA);
   // Genuinely signed credentials, and the same asset with the signature broken.
-  const good = await H.signedC2paManifest({ generator: 'Adobe Firefly', cn: 'Fixture Signer', chain: 'full', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  // `good` carries a real hard binding over its own bytes, which is what the
+  // extension has to recompute before it may call anything verified.
+  const good = await H.signedC2paAsset({ container: 'png', generator: 'Adobe Firefly', cn: 'Fixture Signer', chain: 'full', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
   const bad = await H.signedC2paManifest({ generator: 'Adobe Firefly', cn: 'Fixture Signer', tamper: 'signature', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
-  fs.writeFileSync(path.join(out, 'signed.png'), H.png([H.pngChunk('caBX', good)]));
+  // The same signed manifest, byte for byte, inside a different picture: every
+  // signature still verifies and the hard binding is the only thing that does not.
+  const transplanted = H.png([H.pngChunk('caBX', good.manifest), H.tEXt('Comment', 'a different picture entirely')]);
+  fs.writeFileSync(path.join(out, 'signed.png'), good.bytes);
   fs.writeFileSync(path.join(out, 'tampered.png'), H.png([H.pngChunk('caBX', bad)]));
+  fs.writeFileSync(path.join(out, 'transplanted.png'), transplanted);
   fs.writeFileSync(path.join(out, 'signed.html'), SIGNED);
+  fs.writeFileSync(path.join(out, 'hostile.html'), HOSTILE);
   fs.writeFileSync(path.join(out, 'de.html'), GERMAN);
 }
 
@@ -101,6 +108,24 @@ const SIGNED = `<!doctype html>
 <style>img{width:300px;height:200px;background:#ccc}</style></head><body>
 <figure><img src="signed.png" alt="Signed"><figcaption>Signed</figcaption></figure>
 <figure><img src="tampered.png" alt="Tampered"><figcaption>Tampered</figcaption></figure>
+<figure><img src="transplanted.png" alt="Transplanted"><figcaption>Transplanted</figcaption></figure>
+</body></html>`;
+
+/* Every input a hostile page can use to make an analyser throw, on one page.
+ * Each of these once aborted the whole content script: the malformed escape
+ * in an image URL, the unparseable video poster, and the Replit fingerprint
+ * that reached an undeclared variable. The summary still has to appear. */
+const HOSTILE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Hostile</title>
+<script src="https://replit.com/public/js/replit-dev-banner.js"></script>
+<style>img{width:200px;height:150px;background:#ccc}</style></head><body>
+<h1>Nothing to see</h1>
+<img src="/%" width="100" height="100" alt="Broken escape">
+<img src="/%E0%A4" width="100" height="100" alt="Truncated escape">
+<video poster="http://[" width="480" height="270"></video>
+<video poster="http://a b" width="480" height="270"></video>
+<figure><img src="sd.png" alt="Lighthouse"><figcaption>Our lighthouse project</figcaption></figure>
+<p>Certainly! Here's a 300-word description of our services. We fix roofs.</p>
 </body></html>`;
 
 const GERMAN = `<!doctype html>

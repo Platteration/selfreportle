@@ -14,23 +14,27 @@ Everything runs locally in the browser. No data leaves your machine except the m
 
 ### Verifying Content Credentials
 
-Reading a manifest and trusting it are different things, so the extension answers three separate questions and reports them separately.
+Reading a manifest and trusting it are different things, so the extension answers four separate questions and reports them separately.
 
 1. **Is the signature valid?** The COSE_Sign1 signature is checked with WebCrypto against the public key in the embedded leaf certificate, covering ES256/384/512, PS256/384/512, RS256/384/512 and Ed25519, with detached payloads reconstructed from the claim bytes. A valid signature proves the claim has not been altered since it was signed.
 2. **Do the assertions match the claim?** Each assertion's JUMBF box is re-hashed and compared with the hash the claim recorded. This is what stops someone swapping "made by a camera" for "made by AI" while leaving the signature intact. Producers differ over whether that hash covers the whole box or only its content, so both are tried; if neither reconciles, the result is reported as inconclusive rather than as tampering, because a false accusation would be worse than an unanswered question.
 3. **Does the certificate chain mean anything?** The chain is checked for internal consistency (each certificate actually signed by the next, verified cryptographically) and for validity dates.
+4. **Does the manifest describe *this* file?** A C2PA claim is only about an asset because it carries a hard binding: a digest over the asset's own bytes with the credential store excluded. That digest is recomputed here, over the fetched bytes, with the exclusion ranges the claim declares — and those ranges are refused unless they fall inside the credential store, because a claim that excludes the picture itself is hashing nothing. Without this check a genuine, fully verifying camera manifest can be lifted byte for byte out of a real photograph and dropped into a generated image: signature valid, assertions intact, chain consistent, and every word of it about a different file.
 
 **This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
 
-Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up), and **caution** (the claim is authentic but its assertions could not be fully reconciled, or the fetch was byte-capped before reaching them). Nothing here touches the network, and an unanswered question is never reported as a pass.
+Outcomes are three, kept visually distinct: **verified** (all four answers are yes), **broken** (the signature, an assertion hash, the chain or the hard binding verifiably does not add up, or the claim carries no hard binding at all), and **caution** (the claim is authentic but something could not be reconciled: its assertions, or the binding, because the fetch was byte-capped, the binding form is one this reader cannot recompute, or its exclusion ranges could not be accounted for). Nothing here touches the network, and an unanswered question is never reported as a pass. In particular, a binding that could not be recomputed is never treated as one that matched.
 
-Three rules keep a valid signature from vouching for the wrong thing:
+Four rules keep a valid signature from vouching for the wrong thing:
 
 * **The signature must cover the claim being reported.** A COSE payload carried inline is accepted only when it is byte-identical to the claim in the manifest. Without that check, a genuine signature can be lifted from one asset and attached beside an attacker's claim, and the reader shows their words under the real signer's name.
-* **Only assertions the signed claim references may speak for the asset.** An assertion box added afterwards disturbs no signature, so an unreferenced one is ignored; once hashes verify, only the assertions that matched are read.
+* **The claim must be bound to the file it arrived in.** Its hard binding is recomputed over the fetched bytes; a mismatch is a broken manifest, and a claim with no hard binding at all is invalid rather than merely unverified, because it describes no particular file.
+* **Only assertions the signed claim references may speak for the asset.** An assertion box added afterwards disturbs no signature, so an unreferenced one is ignored; once hashes verify, only the assertions that matched are read. That includes the hard binding: one nobody referenced binds nothing.
 * **A broken manifest stops speaking entirely.** No claim from it reaches the verdict, and the finding that it is broken outranks any benign claim inside it, so a tampered manifest can never produce a green camera-provenance result.
 
-The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then attacks them one change at a time — a tampered signature, a swapped assertion, a broken chain link, expired dates, a replayed signature over a forged claim, an injected unreferenced assertion, an assertion deleted after signing, an unreadable certificate in the chain — to confirm each is caught and correctly distinguished from the others. The end-to-end run does the same inside the browser.
+**An unverified manifest may not be exculpatory.** A claim that a camera or a human made the image is the one worth forging, and forging it costs nothing: a hand-written JUMBF box with no certificate and no key says "digitalCapture" just as loudly as a signed one. So capture, human-origin and algorithmic-origin claims only count when the manifest actually verified and bound; otherwise they are shown as what they are, an unverified assertion, and produce no camera badge and no page-level provenance tick. Claims of AI generation are read either way — a self-declaration against interest is not worth forging.
+
+The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures over assets whose hard bindings really do hash, and then attacks them one change at a time — a tampered signature, a swapped assertion, a broken chain link, expired dates, a replayed signature over a forged claim, an injected unreferenced assertion, an assertion deleted after signing, an unreadable certificate in the chain, a genuine manifest transplanted onto another picture, one changed byte of the asset, a claim with no hard binding, and a binding whose exclusions swallow the whole file — to confirm each is caught and correctly distinguished from the others. The end-to-end run does the same inside the browser.
 
 ### Video and audio
 
@@ -99,6 +103,7 @@ Every row is labelled **legal duty** or **good practice**, because conflating th
 
 * **Invisible pixel or token watermarks** such as SynthID, Stable Signature or OpenAI's text watermark need the vendor's keys. They are not detected.
 * **C2PA signatures are verified, but the signer is not vouched for.** See below.
+* **Some hard bindings cannot be recomputed here.** BMFF Merkle-tree and box-hash bindings are not implemented, and a byte-capped fetch cannot hash a file it has not fully read. Those manifests are reported as *caution*, never as verified: the extension will say the credentials could not be tied to the file rather than pretending they were.
 * **Metadata can be stripped or forged.** "No provenance signals" is not proof of human origin, and most social platforms strip metadata on upload.
 * **Stylometry is a heuristic.** It is capped so that it can never produce the strongest verdict on its own, and sensitivity is adjustable.
 * **Disclosures are self-reports.** A page that says "human-written" is only telling you what it says.

@@ -220,6 +220,9 @@
 
   function overviewPanel(r) {
     const out = [];
+    /* An analyser that stopped early leaves a partial report on screen. Say
+     * so, rather than letting the reader take the gaps for absence. */
+    if (r.error) out.push(el('div', 'note', r.error + ' The report below is incomplete.'));
     const sum = el('div');
     sum.appendChild(el('h3', null, 'Summary'));
     sum.appendChild(sumRow('Site', verdictLine('site', (r.site || {}).verdict), (r.site || {}).attribution));
@@ -468,10 +471,12 @@
   function verificationRow(v) {
     if (!v) return null;
     const sum = v.summary || {};
-    const state = sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
-      : sum.caution ? { icon: '!', color: V.COLORS.gold, word: 'Signed, assertions unreconciled' }
-        : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Signature verified' }
-          : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
+    const state = sum.bindingMismatch ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials describe a different file' }
+      : sum.bindingAbsent && sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials bound to no file' }
+        : sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
+          : sum.caution ? { icon: '!', color: V.COLORS.gold, word: sum.binding && sum.binding !== 'valid' ? 'Signed, not tied to this file' : 'Signed, assertions unreconciled' }
+            : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Verified and bound to this file' }
+              : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
     const d = el('div', 'attr');
     const t = tint(el('div', 'tag'), state.color);
     t.appendChild(el('span', 'ic', state.icon));
@@ -483,12 +488,13 @@
     det.appendChild(el('summary', null, 'What this does and does not prove'));
     const body = el('div', 'skew');
     body.appendChild(el('div', null, sum.ok
-      ? 'The manifest has not been altered since it was signed. It does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.'
+      ? 'The manifest has not been altered since it was signed, and the digest it records over the file matches this file\'s bytes, so these credentials are about this image and not another one. It does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.'
       : sum.broken
-        ? 'Something verifiably does not add up: the signature, an assertion hash or the certificate chain. Treat the claims inside the manifest as unreliable.'
+        ? 'Something verifiably does not add up: the signature, an assertion hash, the certificate chain, or the digest the claim records over the file. Treat the claims inside the manifest as unreliable.'
         : sum.caution
-          ? 'The claim is authentic but the assertions present do not hash to the values it recorded. Either an assertion was replaced after signing, or this reader does not know the hashing convention used.'
-          : 'No cryptographic check completed, so the manifest is being read as an unverified claim.'));
+          ? 'The claim is authentic, but something could not be reconciled: either the assertions do not hash to the values it recorded, or the digest tying it to this file could not be recomputed here. Until that is settled, the manifest is not read as provenance for this image.'
+          : 'No cryptographic check completed, so the manifest is being read as an unverified claim: whatever it says about how the image was made is only what someone wrote in it.'));
+    if (sum.bindingNote) body.appendChild(el('div', 'basis', sum.bindingNote));
     if (v.chain && v.chain.anchorNote) body.appendChild(el('div', 'basis', v.chain.anchorNote));
     if (v.notes && v.notes.length) body.appendChild(el('div', 'basis', v.notes.join(' ')));
     det.appendChild(body);

@@ -50,6 +50,23 @@ development branch.
   signal, so an informational marker is visible without inflating the verdict.
 
 ### Security
+- **Nothing tied a manifest to the file it arrived in.** Signature, assertion
+  hashes and chain were all checked, but not the hard binding, so a genuine and
+  fully verifying camera manifest could be lifted byte for byte out of a real
+  photograph and embedded in a generated image: every check still passed and the
+  reader was shown "signature verified" beside "original digital capture". The
+  claim's `c2pa.hash.data` binding is now recomputed over the file's own bytes.
+  A mismatch is a broken manifest; a claim with no hard binding at all is
+  invalid rather than unverified; and a binding that could not be recomputed —
+  a byte-capped fetch, a BMFF or box-hash form, exclusion ranges that reach
+  outside the credential store — is reported as caution, never as a pass.
+- **An unsigned manifest earned the same badge as a signed one.** A hand-written
+  JUMBF box with no certificate and no signature, declaring `digitalCapture`,
+  produced a hard "captured" verdict and the page-level provenance tick. Capture,
+  human-origin and algorithmic-origin claims now count only from a manifest that
+  verified and bound; unverified ones are shown as unverified assertions and
+  change no verdict. Claims of AI generation are still read either way, being
+  disclosures against interest.
 - **A genuine signature could be replayed over a forged claim.** The COSE
   payload was verified as the signed body while the claim and assertions
   reported to the reader came from a separate box, so an attacker's claim
@@ -74,6 +91,19 @@ development branch.
   the hashed range wrongly included the inner box header.
 
 ### Fixed
+- **One tag could silence the whole extension.** Three attacker-reachable
+  inputs each threw out of `analyze()` before any result existed, so nothing
+  was posted to the worker, the mutation observer and the SPA-navigation poller
+  never started, and the popup reported "nothing analysed yet" for the rest of
+  the page's life: a Replit fingerprint (by hostname *or* by the dev-banner
+  script src, which any page can add) reached an undeclared variable in
+  `attributeSite`; a malformed percent-escape in an image URL — `<img src="/%">`
+  — threw `URIError` out of `analyzeImageHints`; and an unparseable
+  `<video poster="http://[">` threw `TypeError` out of `new URL`. Each input is
+  fixed, page-supplied URLs now resolve through a helper that answers null
+  rather than throwing, and `analyze()` and the per-image loop are guarded so
+  the next such defect cannot do it either. The failure is reported in the
+  popup instead of being swallowed.
 - **The tool accused ordinary pages.** An AI-disclosure meta tag holding any
   value other than a literal "false"/"no"/"none" was read as declaring AI
   content — including an empty one, and including `content="no AI was used"`.

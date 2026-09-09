@@ -228,12 +228,18 @@ async function makeKeyPair() {
  * A manifest with a genuine COSE_Sign1 over the claim, real assertion hashes
  * and a real certificate chain. `tamper` lets a test break exactly one thing.
  */
-async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null } = {}) {
+/*
+ * Keys and certificates on their own. Building an asset with a real hard
+ * binding means assembling the same manifest more than once, and it has to
+ * come out byte-identical in length each time, so the signer is made once and
+ * handed in rather than regenerated per attempt (a DER certificate signature
+ * is 70–72 bytes depending on the values, which would move every offset).
+ */
+async function makeSigner({ cn = 'Test Signer', org = 'Test Org', chain = 'leaf', notBefore, notAfter } = {}) {
   const leafKeys = await makeKeyPair();
   const now = new Date();
   const nb = notBefore || new Date(now.getTime() - 86400000);
   const na = notAfter || new Date(now.getTime() + 86400000);
-
   let certs;
   if (chain === 'full') {
     const rootKeys = await makeKeyPair();
@@ -253,9 +259,18 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
     const selfName = { [OID_CN]: cn, [OID_O]: org };
     certs = [await makeCertificate({ subject: selfName, issuer: selfName, subjectPublicKey: leafKeys.publicKey, issuerPrivateKey: leafKeys.privateKey, notBefore: nb, notAfter: na, serial: 1 })];
   }
+  return { certs, leafKeys };
+}
 
-  // Assertions first, so the claim can record their real hashes.
+async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null, dataHash = null, signer = null } = {}) {
+  const made = signer || await makeSigner({ cn, org, chain, notBefore, notAfter });
+  const certs = made.certs;
+  const leafKeys = made.leafKeys;
+
+  /* The hard binding is an assertion like any other: the claim records its
+   * hash, so it cannot be added or edited after signing. */
   const assertionValues = [['c2pa.actions.v2', { actions }]];
+  if (dataHash) assertionValues.push(['c2pa.hash.data', { exclusions: dataHash.exclusions, name: 'jumbf manifest', alg: 'sha256', hash: dataHash.hash, pad: new Uint8Array(0) }]);
   const assertionBoxes = assertionValues.map(([label, value]) => jumb(UUID.cbor, label, [cborBox(value)]));
   const hashes = [];
   for (let i = 0; i < assertionBoxes.length; i++) {
@@ -265,6 +280,9 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
     // Swap the assertion after its hash was recorded.
     assertionBoxes[0] = jumb(UUID.cbor, 'c2pa.actions.v2', [cborBox({ actions: [{ action: 'c2pa.created', digitalSourceType: 'http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture' }] })]);
   }
+  // A producer whose hashing convention this reader does not know: every
+  // recorded hash is over something else, so nothing reconciles either way.
+  if (tamper === 'hashes') for (const h of hashes) h.hash = h.hash.map((x, i) => (i === 0 ? x ^ 0xff : x));
 
   const claim = { 'dc:title': 'asset', claim_generator: generator, claim_generator_info: [{ name: generator, version: '1.0' }], alg: 'sha256', assertions: hashes };
   const claimRaw = CBOR.encode(claim);
@@ -289,4 +307,87 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
   return jumb(UUID.store, 'c2pa', [jumb(UUID.manifest, 'urn:uuid:11111111-2222-3333-4444-555555555555', children)]);
 }
 
-module.exports = { makeKeyPair, makeCertificate, signedC2paManifest, der, derSeq, derOid, derName, derUtcTime, derBitString, derInt, isoBox, c2paUuidBox, mp4, concat, str, png, pngChunk, tEXt, iTXt, tiff, jpeg, jpegSegment, xmpPacket, app1Xmp, app1Exif, app11Jumbf, c2paManifest, jumb, box, cborBox, UUID, webp, webpChunk };
+/*
+ * A whole file whose manifest carries a real hard binding: the digest the
+ * claim records over the asset, with the credential store excluded, actually
+ * matches the bytes returned.
+ *
+ * This needs a fixed point. The exclusion range names where the store lands
+ * in the file, and writing that number changes the store's own size, which
+ * moves everything after it. So the manifest is assembled with a placeholder
+ * digest until the offsets stop moving; only then is the digest computed —
+ * over bytes that are all outside the store, and therefore already settled —
+ * and the manifest assembled once more at exactly the same size.
+ */
+function indexOfSub(hay, needle) {
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    let hit = true;
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) { hit = false; break; }
+    if (hit) return i;
+  }
+  return -1;
+}
+
+const CONTAINERS = {
+  png: {
+    wrap: (m) => png([pngChunk('caBX', m)]),
+    locate: (bytes, m) => { const i = indexOfSub(bytes, m); return i < 8 ? null : [{ start: i - 8, length: m.length + 12 }]; },
+  },
+  jpeg: {
+    // The store is a run of consecutive APP11 segments, right after SOI.
+    wrap: (m, o) => jpeg([app11Jumbf(m, o.segment)]),
+    locate: (bytes, m, o) => [{ start: 2, length: app11Jumbf(m, o.segment).length }],
+  },
+  webp: {
+    wrap: (m) => webp([webpChunk('C2PA', m)]),
+    locate: (bytes, m) => { const i = indexOfSub(bytes, m); return i < 8 ? null : [{ start: i - 8, length: 8 + m.length + (m.length & 1) }]; },
+  },
+  mp4: {
+    wrap: (m, o) => mp4(m, o.mp4 || {}),
+    // uuid box: 8 header + 16 UUID + 4 version/flags before the store.
+    locate: (bytes, m) => { const i = indexOfSub(bytes, m); return i < 28 ? null : [{ start: i - 28, length: 28 + m.length }]; },
+  },
+};
+
+function excluding(bytes, ranges) {
+  const keep = [];
+  let p = 0;
+  for (const r of [...ranges].sort((a, b) => a.start - b.start)) {
+    if (r.start > p) keep.push(bytes.subarray(p, r.start));
+    p = r.start + r.length;
+  }
+  if (p < bytes.length) keep.push(bytes.subarray(p));
+  return concat(keep);
+}
+
+function sameRanges(a, b) {
+  return a.length === b.length && a.every((r, i) => r.start === b[i].start && r.length === b[i].length);
+}
+
+async function signedC2paAsset(opts = {}) {
+  const { container = 'png', segment = 400 } = opts;
+  const c = CONTAINERS[container];
+  if (!c) throw new Error('unknown container ' + container);
+  const signer = opts.signer || await makeSigner({ cn: opts.cn, org: opts.org, chain: opts.chain, notBefore: opts.notBefore, notAfter: opts.notAfter });
+  const shape = { ...opts, signer };
+  const placeholder = new Uint8Array(32);
+  let exclusions = [{ start: 0, length: 1 }];
+  let manifest = null;
+  let bytes = null;
+  let settled = false;
+  for (let i = 0; i < 8 && !settled; i++) {
+    manifest = await signedC2paManifest({ ...shape, dataHash: { exclusions, hash: placeholder } });
+    bytes = c.wrap(manifest, { segment, ...opts });
+    const found = c.locate(bytes, manifest, { segment, ...opts });
+    if (!found) throw new Error('could not find the credential store in the fixture');
+    settled = sameRanges(found, exclusions);
+    exclusions = found;
+  }
+  if (!settled) throw new Error('exclusion ranges never settled');
+  const hash = new Uint8Array(await subtle.digest('SHA-256', excluding(bytes, exclusions)));
+  manifest = await signedC2paManifest({ ...shape, dataHash: { exclusions, hash } });
+  bytes = c.wrap(manifest, { segment, ...opts });
+  return { bytes, manifest, exclusions, signer };
+}
+
+module.exports = { makeKeyPair, makeCertificate, makeSigner, signedC2paManifest, signedC2paAsset, indexOfSub, der, derSeq, derOid, derName, derUtcTime, derBitString, derInt, isoBox, c2paUuidBox, mp4, concat, str, png, pngChunk, tEXt, iTXt, tiff, jpeg, jpegSegment, xmpPacket, app1Xmp, app1Exif, app11Jumbf, c2paManifest, jumb, box, cborBox, UUID, webp, webpChunk };

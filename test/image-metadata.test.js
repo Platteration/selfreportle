@@ -105,10 +105,47 @@ test('PNG caBX C2PA manifest with generative edit is AI-edited', async () => {
   assert.ok(r.signals.some((s) => s.id === 'c2pa-ai-edited'));
 });
 
-test('C2PA manifest from a camera is captured', async () => {
-  const manifest = H.c2paManifest({ generator: 'Leica M11-P', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] });
-  const { verdict } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+test('C2PA manifest from a camera is captured once it verifies and binds', async () => {
+  const { bytes } = await H.signedC2paAsset({
+    container: 'jpeg', segment: 400, chain: 'full', generator: 'Leica M11-P', cn: 'Leica Camera AG',
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+  });
+  const { verdict, r } = await verdictOf(bytes);
+  assert.equal(r.metadata.c2pa.verification.summary.ok, true);
   assert.equal(verdict, 'captured');
+  assert.ok(r.signals.some((s) => s.id === 'c2pa-capture' && s.hard));
+});
+
+/*
+ * The cheapest forgery of camera provenance is not a stolen key: it is a
+ * hand-written JUMBF box with no signature at all. Nothing may be exculpatory
+ * for free — a claim of capture has to be paid for cryptographically.
+ */
+test('an unsigned C2PA camera claim earns no capture verdict and no provenance badge', async () => {
+  const manifest = H.c2paManifest({ generator: 'Leica M11-P', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] });
+  const { verdict, r } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+  assert.equal(r.metadata.c2pa.verification.signature, 'absent');
+  assert.equal(r.metadata.c2pa.verification.summary.ok, false);
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes('c2pa-capture-unverified'), 'the claim is shown, saw ' + ids.join(','));
+  assert.ok(!r.signals.some((s) => s.hard && s.verdict === 'captured'), 'but never as a hard capture signal');
+  assert.notEqual(verdict, 'captured');
+  assert.equal(V.overall({ site: {}, text: {}, images: { counts: { [verdict]: 1 } }, disclosures: [] }), 'none', 'and no page-level provenance tick');
+});
+
+test('an unsigned C2PA "human made this" claim is not exculpatory either', async () => {
+  const manifest = H.c2paManifest({ generator: 'Scanner Co', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCreation' }] });
+  const { verdict, r } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+  assert.ok(!r.signals.some((s) => s.hard && (s.verdict === 'human-created' || s.verdict === 'captured')));
+  assert.notEqual(verdict, 'human-created');
+});
+
+/* A claim of AI generation is a disclosure against interest: nobody forges
+ * one to look better, so it is still read from an unsigned manifest. */
+test('an unsigned C2PA AI-generation claim is still read', async () => {
+  const manifest = H.c2paManifest({ generator: 'Anon Tool', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  const { verdict } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+  assert.equal(verdict, 'ai-generated');
 });
 
 test('WebP with C2PA chunk and EXIF', async () => {

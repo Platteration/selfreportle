@@ -359,14 +359,20 @@
       if (!v || !v.summary) continue;
       if (v.summary.ok) continue;
       const state = v.signature === 'absent' ? 'No signature in the manifest'
-        : v.summary.broken ? 'Does not verify'
-          : v.summary.caution ? 'Signed, but assertions could not be reconciled'
-            : 'Signature could not be checked';
+        : v.summary.bindingMismatch ? 'Signed, but the credentials describe different bytes'
+          : v.summary.bindingAbsent && v.summary.broken ? 'Signed, but bound to no file'
+            : v.summary.broken ? 'Does not verify'
+              : v.summary.caution ? 'Signed, but could not be fully reconciled'
+                : 'Signature could not be checked';
       const advice = v.signature === 'absent'
         ? 'A manifest without a signature carries no guarantee at all. Sign it, or readers have only your word for it.'
-        : v.summary.broken
-          ? 'Something verifiably does not add up. Check whether the file is re-encoded after signing.'
-          : '';
+        : v.summary.bindingMismatch
+          ? 'The file was changed after it was signed — almost always a re-encode, a resize or a metadata rewrite in the build. Attach credentials as the last step, after every transformation.'
+          : v.summary.bindingAbsent
+            ? 'The claim carries no hard binding, so it does not name any particular file. Whatever wrote it is not producing conformant credentials.'
+            : v.summary.broken
+              ? 'Something verifiably does not add up. Check whether the file is re-encoded after signing.'
+              : '';
       out.push({ url: it.url, state, detail: [v.summary.text, advice].filter(Boolean).join(' ') });
     }
     return out;

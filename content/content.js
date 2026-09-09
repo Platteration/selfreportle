@@ -147,7 +147,33 @@
 
   /* ---- full analysis ---------------------------------------------------- */
 
+  /*
+   * No single analyser defect may silently disable the content script. The
+   * page controls its own markup, so a malformed URL or attribute is an
+   * attacker-reachable input; without this guard one bad tag aborts main()
+   * before the mutation observer and the SPA poller ever start, and the
+   * reader is told nothing was analysed. The failure is recorded on the
+   * result instead, and reported.
+   */
   async function analyze(full) {
+    try {
+      await runAnalysis(full);
+    } catch (e) {
+      const message = (e && e.message) ? e.message : String(e);
+      if (!result) {
+        result = {
+          url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
+          site: { verdict: 'no-signal', signals: [] }, text: { verdict: 'no-signal', signals: [], flaggedBlocks: 0 },
+          trader: null, disclosures: [], textHints: { disclosures: [], metaText: '' },
+          images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
+        };
+      }
+      result.error = 'Analysis stopped early: ' + message.slice(0, 200);
+      try { refreshSummary(); } catch (e2) { /* nothing more to do */ }
+    }
+  }
+
+  async function runAnalysis(full) {
     if (!active()) return;
     const id = ++runId;
     if (full) {
@@ -368,8 +394,11 @@
       }
       const poster = m.tagName === 'VIDEO' ? m.getAttribute('poster') : null;
       if (poster) {
-        const abs = new URL(poster, location.href).href;
-        if (!posterSeen.has(abs)) {
+        // The page writes this attribute, and it need not be a URL at all;
+        // one unparseable one would otherwise stop the whole analysis for the
+        // page's life. resolveUrl answers null instead of throwing.
+        const abs = S.imageHints.resolveUrl(poster, location.href);
+        if (abs && !posterSeen.has(abs)) {
           posterSeen.add(abs);
           out.push({ el: m, url: abs, kind: 'poster', alt: '', title: '', ariaLabel: '', caption: captionFor(m) });
         }
@@ -406,15 +435,18 @@
   async function processImages(list, id) {
     const toFetch = [];
     for (const item of list) {
-      const key = 'i' + (++imageCounter);
-      const hints = S.imageHints.analyzeImageHints(item);
-      const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
-      // A poster shares its element with the video, so it is tracked by key.
-      imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
-      applyImageVerdict(st);
-      const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && imageState.size <= settings.maxImages;
-      if (fetchable) toFetch.push({ st, msg: { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' } });
-      else st.done = true;
+      // One unreadable item must not cost the page every later one.
+      try {
+        const key = 'i' + (++imageCounter);
+        const hints = S.imageHints.analyzeImageHints(item);
+        const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
+        // A poster shares its element with the video, so it is tracked by key.
+        imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
+        applyImageVerdict(st);
+        const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && imageState.size <= settings.maxImages;
+        if (fetchable) toFetch.push({ st, msg: { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' } });
+        else st.done = true;
+      } catch (e) { /* skip this item */ }
     }
     // blob: URLs are only reachable from the page itself: read them here and
     // hand the bytes (base64, capped) to the service worker.
