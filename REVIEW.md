@@ -156,7 +156,7 @@ content/content.js:42-45
 
 **Severity:** Medium · **Category:** security · **Effort:** small · **Where:** `lib/image-metadata.js:604`
 
-deriveSignals returns early only when the verification summary is `broken`. When it is merely not ok — including signature:'absent', i.e. a JUMBF store containing a claim and assertions with no COSE structure whatsoever — it pushes a 'c2pa-unverified' informational row and then falls through to the claim-reading branches, which emit c2pa-capture as a hard signal. Because trustedLabels() falls back to the claim's own referencedAssertions when verification produced no verified labels (lib/image-metadata.js:684-687), every assertion the attacker's unsigned claim names is allowed to speak. I confirmed end to end with the real modules: an unsigned manifest declaring c2pa.created with digitalSourceType=digitalCapture yields image verdict 'captured' at score 0.9 and page overall 'provenance', which background/service-worker.js:133 renders as a ✓ on the toolbar. So the cheapest forgery of camera provenance needs no certificate, no key and no crypto — it is a hand-written JUMBF box — which is both easier than SEC-4's transplant and in direct conflict with README:25 ('an unanswered question is never reported as a pass') and with the CHANGELOG entry claiming a tampered manifest can no longer produce 'a green camera-provenance result'. The popup's Images tab does show a 'Signature not verified' row beside it, which is why this is medium rather than high, but the toolbar badge and the Overview verdict — the only things most readers look at — say pass.
+deriveSignals returns early only when the verification summary is `broken`. When it is merely not ok — including signature:'absent', i.e. a JUMBF store containing a claim and assertions with no COSE structure whatsoever — it pushes a 'c2pa-unverified' informational row and then falls through to the claim-reading branches, which emit c2pa-capture as a hard signal. Because trustedLabels() falls back to the claim's own referencedAssertions when verification produced no verified labels (lib/image-metadata.js:683-688), every assertion the attacker's unsigned claim names is allowed to speak. I confirmed end to end with the real modules: an unsigned manifest declaring c2pa.created with digitalSourceType=digitalCapture yields image verdict 'captured' at score 0.9 and page overall 'provenance', which background/service-worker.js:133 renders as a ✓ on the toolbar. So the cheapest forgery of camera provenance needs no certificate, no key and no crypto — it is a hand-written JUMBF box — which is both easier than SEC-4's transplant and in direct conflict with README:25 ('an unanswered question is never reported as a pass') and with the CHANGELOG entry claiming a tampered manifest can no longer produce 'a green camera-provenance result'. The popup's Images tab does show a 'Signature not verified' row beside it, which is why this is medium rather than high, but the toolbar badge and the Overview verdict — the only things most readers look at — say pass.
 
 Evidence:
 
@@ -167,7 +167,7 @@ lib/image-metadata.js:596-606
       else if (vs && vs.ok) { push({ id: 'c2pa-verified', ... }) }
       else if (v) { push({ id: 'c2pa-unverified', ... 'Content Credentials signature not verified' ... }) }
       // falls through:
-lib/image-metadata.js:611  if (capture) push({ id: 'c2pa-capture', hard: true, verdict: 'captured', strength: capture.strength, ... })
+lib/image-metadata.js:614  if (capture) push({ id: 'c2pa-capture', hard: true, verdict: 'captured', strength: capture.strength, ... })
 lib/image-metadata.js:683-688  function trustedLabels(active) { ... if (active.referencedAssertions) return new Set(active.referencedAssertions); return null; }
 $ node -e "deriveSignals(meta with verification={signature:'absent'} and a digitalCapture c2pa.created action)"
   c2pa-unverified | hard=false | no-signal
@@ -362,7 +362,7 @@ lib/c2pa-verify.js:277-283
       out.checked++;
 lib/c2pa-verify.js:341  if (a && a.checked) { ... }        // whole assertion clause skipped when checked === 0
 lib/c2pa-verify.js:363  ok: v.signature === 'valid' && !broken && !caution,
-lib/image-metadata.js:684-687  if (v && v.trustedAssertionLabels && v.trustedAssertionLabels.length) return new Set(...); if (active.referencedAssertions) return new Set(active.referencedAssertions);
+lib/image-metadata.js:683-688  if (v && v.trustedAssertionLabels && v.trustedAssertionLabels.length) return new Set(...); if (active.referencedAssertions) return new Set(active.referencedAssertions);
 ```
 
 **Recommendation.** Count the reference before the type test and record it as inconclusive (or missing) rather than skipping it: `out.checked++; if (!(expected instanceof Uint8Array)) { out.inconclusive = true; continue; }`. Additionally, when refs.length > 0 but rows.length === 0, summarize should report caution rather than ok, so 'the claim named assertions and none of them could be checked' can never read as a pass.
