@@ -2,6 +2,20 @@
 
 Two independent reviewers read every first-party file in this repository; a third then re-read each security or bug claim against the code and tried to refute it. Only claims that survived that check are listed as findings; the ones that did not are recorded at the end so they are not re-raised.
 
+## Status — what has been fixed
+
+These findings are now fixed on `claude/repo-review-security-baiyud`, each with a regression test:
+
+- **SEC-4**
+- **BUG-1**
+- **BUG-2**
+- **MISSED-1**
+- **MISSED-2**
+
+The rest of this document is the review as written, and the fixed items are left in place so the reasoning behind each change stays with it.
+
+Repository hardening applied here as well: every GitHub Action is pinned to a commit rather than a floating tag, each workflow declares a least-privilege `permissions` block, and a Dependabot config, a licence and a security policy are in place.
+
 ## Summary
 
 Selfreportle is a dependency-free Chromium MV3 extension (about 8.7k lines of plain-script JS) that reads AI-provenance and disclosure signals from a page's code, text and media, cryptographically verifies C2PA Content Credentials in the browser, checks trader identification against EU consumer law, and offers a publisher self-check, all framed around EU AI Act Article 50. The core libraries are unusually well engineered for a side project: real-crypto test fixtures, a permanent ReDoS guard, fuzzed binary parsers, a false-positive regression suite and an honest changelog. The weaknesses are around the edges: one confirmed ReferenceError (attributeSite on ai-host sites) that aborts the whole page analysis and that a linter would have caught; a class of caption false positives from common-word tool names (imagen, runway, veo, sora); stale 'not verified' copy left over from before verification shipped; no LICENSE, privacy policy, packaging script, lint or type check; CI on unpinned actions with no permissions block; and a manifest that is Chrome-only where a few keys would make it load in Firefox. Headline recommendations: fix the attributeSite crash and caption false positives, add ESLint plus a LICENSE and PRIVACY.md, tighten the manifest for the Web Store (drop the fingerprintable web_accessible_resources, add Firefox keys, packaging script), and then invest in the two big product gaps the README itself names: a bundled C2PA trust list and hard-binding verification so a transplanted manifest cannot read as verified.
