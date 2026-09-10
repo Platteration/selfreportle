@@ -386,13 +386,15 @@
     for (const m of document.querySelectorAll('video, audio')) {
       if (m.closest('[data-srl-ui]')) continue;
       const src = m.currentSrc || m.getAttribute('src') || (m.querySelector('source[src]') || {}).src || '';
-      if (src && !imageStateHasUrl(m, src)) {
-        const r = m.getBoundingClientRect();
-        if (r.width >= 24 && r.height >= 24) {
-          out.push({ el: m, url: src, kind: 'av', alt: '', title: m.title || '', ariaLabel: m.getAttribute('aria-label') || '', caption: captionFor(m) });
-        }
+      const r = m.getBoundingClientRect();
+      const rendered = r.width >= 24 && r.height >= 24;
+      if (src && rendered && !imageStateHasUrl(m, src)) {
+        out.push({ el: m, url: src, kind: 'av', alt: '', title: m.title || '', ariaLabel: m.getAttribute('aria-label') || '', caption: captionFor(m) });
       }
-      const poster = m.tagName === 'VIDEO' ? m.getAttribute('poster') : null;
+      /* The same rendered-size floor as the video's own source. Without it a
+       * hidden <video poster="…"> was a URL the extension would fetch for a
+       * page that never displayed, let alone loaded, the poster itself. */
+      const poster = m.tagName === 'VIDEO' && rendered ? m.getAttribute('poster') : null;
       if (poster) {
         // The page writes this attribute, and it need not be a URL at all;
         // one unparseable one would otherwise stop the whole analysis for the

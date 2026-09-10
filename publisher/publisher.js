@@ -7,6 +7,12 @@
  */
 (async function () {
   'use strict';
+  /* This page reads a tab id out of its own query string and then asks for
+   * that tab's whole report. It is opened by the popup in a tab of its own;
+   * being inside a frame means someone else chose that tab id, so it does
+   * nothing at all. The manifest no longer offers the page to web content,
+   * which is what actually closes it — this is the belt to that braces. */
+  if (window.top !== window) return;
   const S = globalThis.SRL;
   const V = S.verdicts;
   const A = S.attribution;

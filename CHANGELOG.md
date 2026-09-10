@@ -50,6 +50,46 @@ development branch.
   signal, so an informational marker is visible without inflating the verdict.
 
 ### Security
+- **Any page could make the extension fetch a private address.** The worker
+  fetches image, video and audio URLs with `<all_urls>` host permissions, so
+  its requests are subject to neither the page's CSP, nor its mixed-content
+  blocking, nor Chrome's Private Network Access checks — and the only filter
+  was a scheme test. An ordinary HTTPS page could name `http://127.0.0.1:…`,
+  `http://192.168.1.1/` or `http://169.254.169.254/…` in an image attribute
+  and have the extension reach it from the reader's IP and inside the reader's
+  network. Fetches now follow the Private Network Access rule: a page may
+  reach its own address space or a less private one, never a more private one,
+  and a `file:` resource is read only for a page that is itself a local file.
+  Where a redirect landed is checked against the same rule. A `<video poster>`
+  also has to belong to a video the page actually displays, which it did not
+  before: the poster path had no rendered-size floor at all.
+- **The credentials cache could answer one image with another's provenance.**
+  URLs longer than 2000 characters were keyed on their first 2000 characters
+  plus their length, so two signed CDN URLs differing only in a trailing token
+  of the same length shared one entry — and the second image was reported with
+  the first one's format, metadata and verification result. The key is now a
+  SHA-256 digest of the whole URL.
+- **An assertion reference with no usable hash was skipped, not counted.** A
+  claim whose references carry the digest as text (or omit it) left the
+  assertion check at zero checked, which removed the whole assertion clause
+  from the summary and let the manifest pass on its signature and binding
+  alone, with the second of the three advertised checks silently not
+  performed. Such a reference is now counted and reported, and a claim that
+  names assertions none of which could be checked is caution, never a pass.
+- **Message handlers took the caller's word for which tab to report on.**
+  `srl:get-result` returned the full analysis of any tab id the caller named.
+  A content script now gets the tab it is running in; only an extension page
+  may name one, and the sender's extension id is checked.
+- **The worker trusted the byte caps it was handed.** `maxImageBytes` and
+  `maxMediaBytes` had a floor and no ceiling although the settings normaliser
+  that clamps them was already imported; the incoming object now goes through
+  it, and one message can no longer queue an unbounded number of fetches.
+- **The publisher page was offered to every website.** `publisher/publisher.html`
+  was declared web-accessible for `<all_urls>` although the popup opens it with
+  `chrome.tabs.create`, which needs no such declaration — so any site could
+  frame a privileged extension page with a tab id of its choosing, and its
+  buttons with it. The declaration is gone, and the page refuses to run inside
+  a frame.
 - **Nothing tied a manifest to the file it arrived in.** Signature, assertion
   hashes and chain were all checked, but not the hard binding, so a genuine and
   fully verifying camera manifest could be lifted byte for byte out of a real
@@ -91,6 +131,28 @@ development branch.
   the hashed range wrongly included the inner box header.
 
 ### Fixed
+- **The saved report said signatures were never verified.** Cryptographic
+  verification shipped, but three user-facing strings did not follow it: the
+  exported JSON report — the artefact the reader is told to keep as evidence,
+  carrying a SHA-256 digest of its own findings — the PNG receipt's footer and
+  the Overview tab's provenance hint all still said credentials were parsed
+  and not verified, while the same popup showed a green "Signature verified"
+  row. The sentence now lives once in `lib/verdicts.js`, says what is actually
+  checked and what is not (the root is never anchored), and the exported
+  report adds what the manifests on that particular page did.
+- **Trader analysis could stall the page on VAT context words.** `findVat`
+  compiled all twenty-nine country formats afresh for every VAT-context word
+  it found, and the "stop after six numbers" guard never fires on a page that
+  has the words and no number: a 300 KB body of "vat " repeated cost about
+  400 ms of the page's own main thread, repeatable roughly once a second
+  through the SPA-navigation poller. The formats are compiled once and the
+  scan is bounded by hit count as well.
+- **Domain memory was a timestamped visit log.** Records carried a
+  millisecond `lastSeen` and never expired, so the store was a
+  hostname-granularity reading log kept until 400 other domains displaced it.
+  Times are now kept to the day and records expire after 90 days. The file's
+  own header claimed the feature was off by default while the settings said
+  otherwise; the header now matches the code.
 - **One tag could silence the whole extension.** Three attacker-reachable
   inputs each threw out of `analyze()` before any result existed, so nothing
   was posted to the worker, the mutation observer and the SPA-navigation poller

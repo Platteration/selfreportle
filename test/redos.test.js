@@ -69,12 +69,28 @@ function adversarialInputs(n) {
   };
 }
 
+/*
+ * The fastest of three runs, not one run. A single measurement of a
+ * sub-millisecond match picks up whatever else the machine was doing — a GC
+ * pause or a scheduler slice lands entirely inside it — and a noisy small
+ * measurement is what the growth ratio divides by, so the suite reported
+ * linear patterns as superlinear on a loaded machine. The minimum is the run
+ * that was not interrupted. It does not weaken the guard: a pattern that
+ * really backtracks is slow on every run, which was confirmed by putting the
+ * historical unbounded three-item-list pattern back and watching it still be
+ * caught on every attempt.
+ */
 function timeRun(re, text) {
   // A fresh regex each time: a /g literal carries lastIndex between calls.
   const r = new RegExp(re.source, re.flags.replace('g', ''));
-  const t0 = process.hrtime.bigint();
-  r.test(text);
-  return Number(process.hrtime.bigint() - t0) / 1e6;
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    r.test(text);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (ms < best) best = ms;
+  }
+  return best;
 }
 
 const SMALL = 2000;
@@ -128,6 +144,11 @@ test('whole-page analysis stays fast on a hostile body of text', () => {
     'many short sentences': 'Ok. '.repeat(CAP / 4),
     'markup soup': '<a>'.repeat(CAP / 3),
     'invisible characters': '​'.repeat(CAP),
+    // Not backtracking: findVat used to compile 29 country formats for every
+    // one of these context words, which the growth-ratio check above cannot
+    // see. test/legitimacy.test.js holds the bound that actually catches it.
+    'VAT context words': 'vat '.repeat(CAP / 4),
+    'NIP context words': 'nip '.repeat(CAP / 4),
   };
   for (const [name, body] of Object.entries(bodies)) {
     for (const [label, run] of [

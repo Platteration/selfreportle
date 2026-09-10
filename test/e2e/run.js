@@ -165,6 +165,46 @@ function loadPlaywright() {
     assert.equal(moved.metadata.c2pa.verification.summary.broken, true);
     assert.notEqual(moved.verdict, 'captured');
 
+    /*
+     * SEC-3. The worker fetches with <all_urls> host permissions, so its
+     * requests are not subject to the page's CSP, its mixed-content rules or
+     * Chrome's Private Network Access checks. The fixture site is on
+     * localhost and reads its own images (asserted above, so the guard does
+     * not simply block everything); a page on the public internet must not
+     * be able to point the extension at the reader's own network.
+     */
+    const policy = await sw.evaluate(() => {
+      const p = self.SRL && self.SRL.fetchPolicy;
+      if (!p) return { loaded: false };
+      const from = 'https://news.example/article';
+      return {
+        loaded: true,
+        loopback: p.mayFetch('http://127.0.0.1:11434/api/tags', from).ok,
+        privateNet: p.mayFetch('http://192.168.1.1/', from).ok,
+        metadata: p.mayFetch('http://169.254.169.254/latest/meta-data/', from).ok,
+        mdns: p.mayFetch('http://nas.local/photo.jpg', from).ok,
+        localFile: p.mayFetch('file:///etc/passwd', from).ok,
+        publicImage: p.mayFetch('https://cdn.example/a.jpg', from).ok,
+        ownSpace: p.mayFetch('http://localhost:9/a.png', 'http://localhost:8/b.html').ok,
+      };
+    });
+    assert.ok(policy.loaded, 'the fetch policy is loaded in the service worker');
+    assert.equal(policy.loopback, false, 'a public page may not reach loopback');
+    assert.equal(policy.privateNet, false, 'nor a private network');
+    assert.equal(policy.metadata, false, 'nor the cloud metadata address');
+    assert.equal(policy.mdns, false, 'nor a .local name');
+    assert.equal(policy.localFile, false, 'nor a local file');
+    assert.equal(policy.publicImage, true, 'ordinary images still load');
+    assert.equal(policy.ownSpace, true, 'and a page may read its own address space');
+
+    /* SEC-1. No extension page is offered to web content any more, so a site
+     * cannot frame the publisher view with a tab id of its choosing. */
+    const extUrl = await sw.evaluate(() => chrome.runtime.getURL('publisher/publisher.html'));
+    const reachable = await page.evaluate(async (u) => {
+      try { const r = await fetch(u); return r.ok; } catch (e) { return false; }
+    }, extUrl);
+    assert.equal(reachable, false, 'publisher.html must not be reachable from a web page');
+
     /* A page cannot silence the extension with one bad attribute. */
     const hostile = await ctx.newPage();
     await hostile.goto('http://localhost:' + port + '/hostile.html');
@@ -178,6 +218,12 @@ function loadPlaywright() {
     assert.equal(hostileResult.text.verdict, 'ai', 'text analysis still ran');
     const lighthouse = (hostileResult.images.items || []).find((i) => i.url.endsWith('sd.png'));
     assert.ok(lighthouse && lighthouse.verdict === 'ai-generated', 'image analysis still ran past the broken tags');
+    /* The poster of a hidden video is an attribute, not a resource the page
+     * loaded. The video's own source has always had a rendered-size floor;
+     * the poster had none, which made `<video poster="…" style="display:none">`
+     * the cheapest way to hand the extension a URL to fetch. */
+    assert.ok(!(hostileResult.images.items || []).some((i) => i.url.endsWith('camera.jpg')),
+      'a poster on a hidden video is not fetched');
 
     // Language awareness: a German page is read with the German lexicon.
     const de = await ctx.newPage();

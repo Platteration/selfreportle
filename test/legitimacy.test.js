@@ -144,3 +144,63 @@ test('e-mail detection covers internationalised domains without false positives'
     assert.equal(status(r, 'email'), 'missing', t);
   }
 });
+
+/*
+ * BUG-4. findVat compiled all 29 country formats with `new RegExp` inside the
+ * per-hit loop, and the `out.length < 6` guard only stops the loop once six
+ * numbers have been found — never on a page that has context words and no
+ * number. A 300 KB body of "vat " repeated therefore spent about 400 ms of
+ * the page's own main thread here, repeatable once a second through the SPA
+ * href poll. The patterns are compiled once now and the scan is bounded by
+ * hit count as well as by findings.
+ */
+test('the VAT patterns are compiled once, not per context word', () => {
+  assert.equal(L.VAT_PATTERNS.length, Object.keys(L.VAT_FORMATS).length, 'one compiled pattern per format');
+  assert.ok(Object.isFrozen(L.VAT_PATTERNS), 'and shared, so nothing may edit them');
+  for (const p of L.VAT_PATTERNS) {
+    assert.ok(p.re instanceof RegExp);
+    assert.equal(p.re.global, false, 'a shared regex must not carry lastIndex between calls');
+    assert.ok(!p.re.source.includes('-?'), 'separators are stripped once, to match the stripped window');
+  }
+  // Reused across calls: a stateful regex would make the second call differ.
+  const once = L.findVat('VAT: GB123456789');
+  assert.deepEqual(L.findVat('VAT: GB123456789'), once);
+});
+
+test('a page of nothing but VAT context words does not scale with how many there are', () => {
+  const cap = L.MAX_VAT_CONTEXT_HITS;
+  // Both bodies have at least the cap of context hits, so both do the same
+  // bounded amount of work. The bound comes from the cap, not from a
+  // measured time on this machine, so it holds wherever the suite runs.
+  const atCap = 'vat '.repeat(cap);
+  const wellPast = 'vat '.repeat(cap * 20);
+  // The fastest of several runs: a single sub-millisecond measurement picks
+  // up whatever else the machine is doing, and it is the denominator here.
+  const time = (body) => {
+    let best = Infinity;
+    for (let i = 0; i < 7; i++) {
+      const t0 = process.hrtime.bigint();
+      L.findVat(body);
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (ms < best) best = ms;
+    }
+    return best;
+  };
+  time(atCap); time(wellPast);   // warm up
+  const a = Math.max(time(atCap), 0.1);
+  const b = time(wellPast);
+  assert.ok(b / a < 6, 'twenty times the context words took ' + (b / a).toFixed(1) + 'x the time (' + a.toFixed(1) + 'ms → ' + b.toFixed(1) + 'ms)');
+});
+
+test('bounding the scan does not lose the numbers that are actually there', () => {
+  assert.deepEqual(L.findVat('USt-IdNr.: DE 123 456 789'), [{ country: 'DE', value: 'DE123456789' }]);
+  assert.deepEqual(L.findVat('NIP: PL 123-456-78-90'), [{ country: 'PL', value: 'PL1234567890' }]);
+  // One 60-character window can hold two numbers; the first format that
+  // matches wins, which is the order VAT_FORMATS is written in.
+  assert.deepEqual(L.findVat('VAT GB123456789').map((v) => v.country), ['GB']);
+  assert.deepEqual(L.findVat('BTW-nummer NL123456789B01').map((v) => v.country), ['NL']);
+  // A number after a wall of empty context words is beyond the bound, and
+  // that is the deliberate trade: the page still gets analysed either way.
+  const found = L.findVat('vat '.repeat(4) + 'USt-IdNr.: DE123456789');
+  assert.deepEqual(found, [{ country: 'DE', value: 'DE123456789' }]);
+});

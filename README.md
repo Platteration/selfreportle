@@ -151,6 +151,7 @@ lib/x509.js                 minimal DER / X.509 reader for signing certificates
 lib/c2pa-verify.js          COSE signature, assertion hashes and chain checks
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules
 lib/settings.js             defaults and storage
+lib/fetch-policy.js         which URLs the worker may fetch for a page, and how they are cached
 background/service-worker.js  fetches image bytes cross-origin, caches, stores per-tab results, badge
 content/content.js          orchestrates the analyses on the page and reports results
 content/overlay.js          shadow-DOM pill, panel, badges and popovers
@@ -177,7 +178,7 @@ The binary parsers were fuzzed separately with random bytes behind each containe
 | --- | --- |
 | `storage` | Settings (sync), per-tab results (session), and the local per-domain counters. |
 | `contextMenus` | The right-click entries for inspecting one image or a text selection. |
-| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials, are size-capped, and only ever target files the page already loaded. |
+| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials and are size-capped. They are also refused when the target sits on a more private network than the page itself — a page on the public internet cannot have the extension read `127.0.0.1`, `10.0.0.0/8`, `169.254.169.254` or a `.local` name on the reader's behalf — and a `file:` resource is read only for a page that is itself a local file. |
 
 The extension has no `tabs` permission, no analytics, no remote code and no
 `externally_connectable`, so a web page cannot talk to it. All rendering uses
@@ -192,4 +193,4 @@ their marker.
 * Image bytes are fetched from the page's own sources with `credentials: 'omit'`, limited to the first few MB (configurable), and cached in memory only.
 * Results are kept in `chrome.storage.session` per tab and discarded when the tab closes.
 * Hosts can be excluded in the settings.
-* Domain memory holds counters per hostname, never URLs or page content, on this device only. It is capped, clearable and can be switched off.
+* Domain memory holds counters per hostname, never URLs or page content, on this device only. Its timestamps are kept only to the day, records expire after 90 days, and it is capped, clearable and can be switched off.

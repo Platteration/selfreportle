@@ -419,3 +419,45 @@ test('an unsigned manifest never earns the badge a signed and bound one does', a
   assert.equal(unsignedR.metadata.c2pa.verification.signature, 'absent');
   assert.notEqual(V.combineImageSignals(unsignedR.signals).verdict, 'captured');
 });
+
+/*
+ * MISSED-3. checkAssertions used to `continue` past any reference whose hash
+ * was not a byte string *before* incrementing `checked`, so a claim whose
+ * hashed_uri entries carry the digest as text left checked at 0. summarize's
+ * whole assertion clause is gated on `checked`, so it said nothing about
+ * assertions and the result passed on the signature and binding alone — the
+ * second of the three advertised checks silently not performed. C2PA requires
+ * a hash on every assertion reference and requires validation to fail when
+ * one cannot be checked, so the reference is counted and reported instead.
+ */
+test('an assertion reference with no usable hash is counted, not skipped', async () => {
+  const { v, ids } = await analyse({ tamper: 'text-hashes' });
+  assert.equal(v.signature, 'valid', 'the claim itself is genuine');
+  assert.equal(v.binding.status, 'valid', 'and it really is bound to these bytes');
+  assert.equal(v.assertions.checked, 2, 'both references are counted');
+  assert.equal(v.assertions.matched, 0);
+  assert.deepEqual(v.assertions.mismatched, []);
+  assert.deepEqual(v.assertions.unhashed.sort(), ['c2pa.actions.v2', 'c2pa.hash.data']);
+  assert.equal(v.assertions.inconclusive, true);
+  const s = CV.summarize(v);
+  assert.equal(s.ok, false, 'a claim whose assertions could not be checked must never read as verified');
+  assert.equal(s.broken, false, 'and it is not an accusation either');
+  assert.equal(s.caution, true);
+  assert.match(s.text, /no hash this reader can use/);
+  assert.ok(!ids.includes('c2pa-verified'), 'no green verification signal');
+  assert.ok(ids.includes('c2pa-caution'));
+});
+
+test('an unhashed reference is reported alongside a real mismatch, not instead of it', () => {
+  const v = {
+    signature: 'valid', algorithm: 'ES256',
+    assertions: { checked: 3, matched: 1, mismatched: ['c2pa.actions.v2'], missing: [], unhashed: ['c2pa.thumbnail'], inconclusive: true, truncated: false, convention: 'whole JUMBF box', note: null, trustedLabels: [] },
+    binding: { status: 'valid', kind: 'c2pa.hash.data', reason: 'ok' },
+    chain: null,
+  };
+  const s = CV.summarize(v);
+  assert.match(s.text, /1 assertion\(s\) do not match the signed claim/);
+  assert.match(s.text, /1 assertion\(s\) record no hash/);
+  assert.equal(s.broken, true, 'the mismatch still decides the outcome');
+  assert.equal(s.ok, false);
+});

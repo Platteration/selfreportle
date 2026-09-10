@@ -124,6 +124,9 @@ const HOSTILE = `<!doctype html>
 <img src="/%E0%A4" width="100" height="100" alt="Truncated escape">
 <video poster="http://[" width="480" height="270"></video>
 <video poster="http://a b" width="480" height="270"></video>
+<!-- A poster on a video the page never shows: an attribute nobody loaded is
+     not a URL the extension fetches on the page's behalf. -->
+<video poster="camera.jpg" style="display:none"></video>
 <figure><img src="sd.png" alt="Lighthouse"><figcaption>Our lighthouse project</figcaption></figure>
 <p>Certainly! Here's a 300-word description of our services. We fix roofs.</p>
 </body></html>`;

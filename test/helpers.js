@@ -283,6 +283,10 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
   // A producer whose hashing convention this reader does not know: every
   // recorded hash is over something else, so nothing reconciles either way.
   if (tamper === 'hashes') for (const h of hashes) h.hash = h.hash.map((x, i) => (i === 0 ? x ^ 0xff : x));
+  // Every recorded hash as a text string instead of a byte string: a shape
+  // C2PA forbids, and one that used to make the reader skip the assertion
+  // check entirely rather than report that it could not be done.
+  if (tamper === 'text-hashes') for (const h of hashes) h.hash = [...h.hash].map((x) => x.toString(16).padStart(2, '0')).join('');
 
   const claim = { 'dc:title': 'asset', claim_generator: generator, claim_generator_info: [{ name: generator, version: '1.0' }], alg: 'sha256', assertions: hashes };
   const claimRaw = CBOR.encode(claim);

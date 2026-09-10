@@ -3,12 +3,13 @@
  * permissions the content script lacks), parses embedded provenance, stores
  * per-tab results for the popup and updates the toolbar badge.
  */
-importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/image-metadata.js', '../lib/history.js');
+importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/image-metadata.js', '../lib/history.js', '../lib/fetch-policy.js');
 
 const S = self.SRL;
 const results = new Map();          // tabId → page result
 const imageCache = new Map();       // url → { signals, metadata, format }
 const IMAGE_CACHE_MAX = 400;
+const MAX_IMAGES_PER_MESSAGE = 32;   // the content script sends six
 const FETCH_TIMEOUT_MS = 20000;
 const CONCURRENCY = 4;
 
@@ -31,26 +32,39 @@ chrome.contextMenus && chrome.contextMenus.onClicked.addListener((info, tab) => 
   if (info.menuItemId === 'srl-inspect-selection') chrome.tabs.sendMessage(tab.id, { type: 'srl:inspect-selection' }).catch(() => {});
 });
 
+/*
+ * Only this extension's own content scripts and pages can reach onMessage —
+ * there is no externally_connectable — but a handler that acts on whatever
+ * tab id or host the caller names is still the wrong shape: srl:get-result
+ * is the one that hands back another tab's whole report. A content script
+ * gets the tab it is actually running in; only an extension page (the popup
+ * and the publisher view, which have no sender.tab) may name one.
+ */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return false;
+  if (sender.id !== chrome.runtime.id) return false;
+  const fromTab = sender.tab && sender.tab.id != null ? sender.tab.id : null;
   switch (msg.type) {
     case 'srl:analyze-images':
-      analyzeImages(msg.images || [], msg.settings || {}).then(sendResponse, (e) => sendResponse({ error: String(e) }));
+      /* Fetching happens on a page's behalf, so there has to be a page: the
+       * content script is the only sender, and its URL decides which address
+       * spaces the fetches may reach. */
+      if (fromTab == null) { sendResponse({ error: 'no sender tab' }); return false; }
+      analyzeImages(msg.images || [], msg.settings || {}, sender.url || sender.tab.url || '')
+        .then(sendResponse, (e) => sendResponse({ error: String(e) }));
       return true;
     case 'srl:page-result': {
-      const tabId = sender.tab && sender.tab.id;
-      if (tabId != null) storeResult(tabId, msg.result);
+      if (fromTab != null) storeResult(fromTab, msg.result);
       sendResponse({ ok: true });
       return false;
     }
     case 'srl:paused': {
-      const tabId = sender.tab && sender.tab.id;
-      if (tabId != null) clearTab(tabId);
+      if (fromTab != null) clearTab(fromTab);
       sendResponse({ ok: true });
       return false;
     }
     case 'srl:get-result':
-      getResult(msg.tabId).then(sendResponse);
+      getResult(fromTab != null ? fromTab : msg.tabId).then(sendResponse);
       return true;
     case 'srl:get-history':
       S.history.get(msg.host).then((rec) => sendResponse({ record: rec, summary: S.history.summarize(rec) }));
@@ -139,22 +153,27 @@ function updateBadge(tabId, result) {
 
 /* ---- image fetching ---------------------------------------------------- */
 
-async function analyzeImages(images, settings) {
-  const maxBytes = Math.max(65536, settings.maxImageBytes || S.settings.DEFAULTS.maxImageBytes);
-  const maxMedia = Math.max(65536, settings.maxMediaBytes || S.settings.DEFAULTS.maxMediaBytes);
+/* The caller's numbers go through the same normaliser the settings page
+ * uses, which is where the ceilings live: a byte cap taken on trust is a cap
+ * of whatever the caller felt like, and fetchBytes buffers to it. */
+async function analyzeImages(images, settings, pageUrl) {
+  const s = S.settings.normalize(settings || {});
+  const maxBytes = s.maxImageBytes;
+  const maxMedia = s.maxMediaBytes;
+  const list = (Array.isArray(images) ? images : []).slice(0, MAX_IMAGES_PER_MESSAGE);
   const out = [];
   let i = 0;
   const workers = Array.from({ length: CONCURRENCY }, async () => {
-    while (i < images.length) {
-      const img = images[i++];
-      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0));
+    while (i < list.length) {
+      const img = list[i++];
+      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0, pageUrl));
     }
   });
   await Promise.all(workers);
   return { results: out };
 }
 
-async function analyzeOne(img, maxBytes, tailBytes) {
+async function analyzeOne(img, maxBytes, tailBytes, pageUrl) {
   const url = img.url || '';
   const base = { id: img.id, url };
   if (img.base64) {
@@ -166,20 +185,21 @@ async function analyzeOne(img, maxBytes, tailBytes) {
       return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not parse image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
     }
   }
-  if (!/^(https?|data|file):/i.test(url)) {
-    return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Cannot fetch this image type', detail: url.slice(0, 12) + '…' }] };
+  const allowed = S.fetchPolicy.mayFetch(url, pageUrl);
+  if (!allowed.ok) {
+    return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Not fetched', detail: allowed.reason }] };
   }
-  const cacheKey = url.length > 2000 ? url.slice(0, 2000) + '#' + url.length : url;
-  if (imageCache.has(cacheKey)) return { ...base, ...imageCache.get(cacheKey), cached: true };
+  const cacheKey = await S.fetchPolicy.cacheKey(url);
+  if (cacheKey !== null && imageCache.has(cacheKey)) return { ...base, ...imageCache.get(cacheKey), cached: true };
   let outcome;
   try {
-    const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes);
+    const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes, pageUrl);
     const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated });
     outcome = { format: analysed.format, contentType, bytes: bytes.length, truncated, signals: analysed.signals, metadata: analysed.metadata };
     /* Many MP4s put their index (and so the Content Credentials) at the end
      * of the file, which a prefix fetch never sees. Ask for the tail once. */
     if (tailBytes && truncated && !(analysed.metadata && analysed.metadata.c2pa) && /^isobmff/.test(analysed.format) && S.imageMeta.isobmffNeedsTail(bytes)) {
-      const tail = await fetchTail(url, tailBytes);
+      const tail = await fetchTail(url, tailBytes, pageUrl);
       if (tail) {
         const fromTail = await S.imageMeta.analyzeImageBytes(tail, { url, truncated: true });
         if (fromTail.metadata && fromTail.metadata.c2pa) {
@@ -196,7 +216,7 @@ async function analyzeOne(img, maxBytes, tailBytes) {
    * "could not fetch" for the worker's lifetime, including on an explicit
    * right-click re-inspection. */
   const failed = outcome.signals.length === 1 && outcome.signals[0].id === 'unavailable';
-  if (!failed) {
+  if (!failed && cacheKey !== null) {
     if (imageCache.size >= IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
     imageCache.set(cacheKey, outcome);
   }
@@ -205,13 +225,15 @@ async function analyzeOne(img, maxBytes, tailBytes) {
 
 /* A suffix range request. Servers that ignore Range return the whole body,
  * so the result is only used when it actually parses as a credential store. */
-async function fetchTail(url, n) {
+async function fetchTail(url, n, pageUrl) {
   if (!/^https?:/i.test(url)) return null;
+  if (!S.fetchPolicy.mayFetch(url, pageUrl).ok) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', signal: controller.signal });
     if (res.status !== 206) return null;
+    if (!landedSomewhereAllowed(res, url, pageUrl)) return null;
     const buf = await res.arrayBuffer();
     return new Uint8Array(buf.byteLength > n ? buf.slice(buf.byteLength - n) : buf);
   } catch (e) {
@@ -228,13 +250,27 @@ function fromBase64(b64) {
   return out;
 }
 
-async function fetchBytes(url, maxBytes) {
+/*
+ * Where the request actually ended up. A worker fetch cannot follow
+ * redirects by hand — redirect:'manual' yields an opaque response with no
+ * Location to read — so the hops themselves are invisible; what is visible
+ * is res.url, the URL the bytes came from. Checking it stops a public
+ * redirector being used to reach an address the first check refused.
+ */
+function landedSomewhereAllowed(res, url, pageUrl) {
+  const finalUrl = res.url || url;
+  if (finalUrl === url) return true;
+  return S.fetchPolicy.mayFetch(finalUrl, pageUrl).ok;
+}
+
+async function fetchBytes(url, maxBytes, pageUrl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const headers = /^https?:/i.test(url) ? { Range: 'bytes=0-' + (maxBytes - 1) } : {};
     const res = await fetch(url, { headers, credentials: 'omit', redirect: 'follow', signal: controller.signal });
     if (!res.ok && res.status !== 206) throw new Error('HTTP ' + res.status);
+    if (!landedSomewhereAllowed(res, url, pageUrl)) throw new Error('redirected to an address this page may not reach');
     const contentType = res.headers.get('content-type') || '';
     const reader = res.body.getReader();
     const chunks = [];

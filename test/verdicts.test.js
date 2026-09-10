@@ -43,3 +43,62 @@ test('broken credentials outrank benign claims but not independent disclosures',
   assert.equal(V.combineImageSignals([label, broken]).verdict, 'ai-disclosed', 'an independent disclosure still stands');
   assert.equal(V.combineImageSignals([generated, broken]).verdict, 'ai-generated');
 });
+
+/*
+ * SEC-6. Cryptographic verification shipped, but the caveat text did not
+ * follow it: the exported JSON report — the artefact the README tells the
+ * reader to keep as evidence, complete with a SHA-256 digest of its own
+ * findings — still said "C2PA signatures are parsed, not cryptographically
+ * verified", as did the PNG receipt's footer and the Overview tab's hint for
+ * the 'provenance' verdict, while the same popup showed a green "Signature
+ * verified" row and popup.html said the opposite. One exported sentence now,
+ * so the four copies cannot drift again.
+ */
+const fs = require('fs');
+const path = require('path');
+const root = (...p) => path.join(__dirname, '..', ...p);
+
+test('the credential caveat says what is actually checked, in both directions', () => {
+  const c = V.CREDENTIAL_CAVEAT;
+  assert.match(c, /cryptographically verified/, 'signatures are verified, and the report must say so');
+  assert.ok(!/parsed, not cryptographically verified/.test(c));
+  assert.match(c, /hard binding is recomputed/, 'and the binding is checked');
+  assert.match(c, /never anchored|no trust list|No trust list/, 'but the root is not anchored, and that must not be dropped');
+  assert.match(V.CREDENTIAL_CAVEAT_SHORT, /not anchored/);
+});
+
+test('the caveat list is derived from the manifests the page actually carried', () => {
+  const withSummary = (summary) => ({ metadata: { c2pa: { verification: { summary } } } });
+  const none = V.credentialCaveats({ images: { items: [{ metadata: null }, { metadata: { exif: {} } }] } });
+  assert.deepEqual(none, [V.CREDENTIAL_CAVEAT], 'nothing to add when the page carried no credentials at all');
+  // A manifest that produced no verification summary is an unchecked one,
+  // not an absent one: it still has to be reported.
+  assert.equal(V.credentialCaveats({ images: { items: [withSummary(null)] } }).length, 2);
+
+  const mixed = V.credentialCaveats({
+    images: {
+      items: [
+        withSummary({ ok: true }), withSummary({ ok: true }),
+        withSummary({ broken: true }),
+        withSummary({ caution: true }),
+        withSummary({}),
+      ],
+    },
+  });
+  assert.equal(mixed[0], V.CREDENTIAL_CAVEAT);
+  assert.ok(mixed.some((s) => /^2 manifest\(s\) verified and are bound/.test(s)));
+  assert.ok(mixed.some((s) => /^1 manifest\(s\) did not verify/.test(s)));
+  assert.ok(mixed.some((s) => /^1 manifest\(s\) carry a valid signature but could not be fully reconciled/.test(s)));
+  assert.ok(mixed.some((s) => /^1 manifest\(s\) could not be checked cryptographically/.test(s)));
+  assert.deepEqual(V.credentialCaveats(null), [V.CREDENTIAL_CAVEAT], 'and it survives an empty result');
+});
+
+test('no user-facing copy still claims signatures go unverified', () => {
+  const stale = /(?:parsed|signatures parsed),\s*not\s*(?:cryptographically\s*)?verified/i;
+  for (const f of ['popup/popup.js', 'popup/popup.html', 'lib/image-metadata.js', 'lib/verdicts.js', 'publisher/publisher.js', 'content/overlay.js', 'README.md']) {
+    assert.ok(!stale.test(fs.readFileSync(root(f), 'utf8')), f + ' still carries the stale caveat');
+  }
+  const popup = fs.readFileSync(root('popup/popup.js'), 'utf8');
+  assert.match(popup, /V\.credentialCaveats\(r\)/, 'the exported report derives its caveats');
+  assert.match(popup, /V\.CREDENTIAL_CAVEAT_SHORT/, 'and the receipt footer uses the shared sentence');
+});

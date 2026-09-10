@@ -149,7 +149,7 @@
       case 'undisclosed-ai': return 'AI-generation markers were found but no disclosure statement. Verify the operator before relying on this content or doing business.';
       case 'disclosed-ai': return 'AI use is declared on the page or in metadata. Decide whether that is acceptable for your purpose.';
       case 'weak-ai': return 'Only heuristic or indirect signals. Treat as a prompt to look closer, not a verdict.';
-      case 'provenance': return 'Some content carries capture or human-creation credentials. Credentials were parsed, not cryptographically verified.';
+      case 'provenance': return 'Some content carries capture or human-creation credentials that verified and that bind to the file they arrived in. The signer is not checked against any trust list.';
       default: return 'No markers found. Many AI systems still emit nothing detectable, so this is not proof of human origin.';
     }
   }
@@ -612,7 +612,7 @@
       savedAt: new Date().toISOString(),
       integrity: { algorithm: 'SHA-256', digest, covers: 'the findings object as serialised by JSON.stringify', attestedBy: 'this extension only; not a third-party notarisation' },
       caveats: [
-        'C2PA signatures are parsed, not cryptographically verified.',
+        ...V.credentialCaveats(r),
         'Absence of signals is not proof of human origin; metadata is routinely stripped on upload.',
         'Stylometric text signals are heuristics and are capped below the strongest verdict.',
         'Attribution confidence is one of confirmed, declared, inferred or unknown; only "confirmed" rests on embedded evidence.',
@@ -672,7 +672,7 @@
     }
 
     font(13, 400); g.fillStyle = '#79818e';
-    g.fillText('Saved ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC · signals only, not proof of authorship · signatures parsed, not verified', P, H - P + 10);
+    g.fillText(clip(g, 'Saved ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC · signals only, not proof of authorship · ' + V.CREDENTIAL_CAVEAT_SHORT, W - P * 2), P, H - P + 10);
     return new Promise((res) => cv.toBlob(res, 'image/png'));
   }
 
