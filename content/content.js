@@ -15,6 +15,14 @@
   const BLOCK_SEL = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd, dt, figcaption, td, th, pre, summary';
   const SKIP_SEL = 'srl-overlay, [data-srl-ui], script, style, noscript, template, textarea, [contenteditable="true"], svg';
 
+  /* location.hostname keeps a trailing dot when the page was reached by its
+   * fully qualified name ("example.com."). It is the same host, but it
+   * matches no rule written against the name — the reader's paused-host
+   * list, the platform-label hosts, the builder fingerprints — so the host
+   * is canonicalised once, here, and that form is what everything downstream
+   * sees. lib/fetch-policy.js does the same for the worker's fetches. */
+  const pageHost = () => S.settings.canonicalHost(location.hostname);
+
   let settings = S.settings.DEFAULTS;
   let runId = 0;
   let imageState = new Map();   // media element → state
@@ -58,7 +66,7 @@
   });
 
   function active() {
-    return settings.enabled && !S.settings.isHostDisabled(settings, location.hostname);
+    return settings.enabled && !S.settings.isHostDisabled(settings, pageHost());
   }
 
   /* Pausing a host has to stop the work, not just hide the result: no more
@@ -162,7 +170,7 @@
       const message = (e && e.message) ? e.message : String(e);
       if (!result) {
         result = {
-          url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
+          url: location.href, hostname: pageHost(), title: document.title, at: Date.now(),
           site: { verdict: 'no-signal', signals: [] }, text: { verdict: 'no-signal', signals: [], flaggedBlocks: 0 },
           trader: null, disclosures: [], textHints: { disclosures: [], metaText: '' },
           images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
@@ -195,7 +203,7 @@
     const textHints = { disclosures: disclosures.filter((d) => d.scope === 'text' || d.scope === 'general'), metaText };
     text.attribution = S.attribution.attributeText(text, textHints);
     result = {
-      url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
+      url: location.href, hostname: pageHost(), title: document.title, at: Date.now(),
       site, text, trader, disclosures, textHints,
       images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
     };
@@ -212,7 +220,7 @@
   function applyPlatformLabels() {
     if (!settings.platformLabels) return;
     let labels = [];
-    try { labels = S.platformLabels.scanLabels(location.hostname, document); } catch (e) { return; }
+    try { labels = S.platformLabels.scanLabels(pageHost(), document); } catch (e) { return; }
     if (!labels.length) return;
     for (const label of labels) {
       const signal = S.platformLabels.toImageSignal(label);
@@ -257,7 +265,7 @@
     let bodyText = '';
     try { bodyText = document.body ? document.body.innerText.slice(0, 300000) : ''; } catch (e) { bodyText = ''; }
     return {
-      url: location.href, hostname: location.hostname, lang: document.documentElement.lang || '', title: document.title,
+      url: location.href, hostname: pageHost(), lang: document.documentElement.lang || '', title: document.title,
       metas, scripts, inlineScripts, jsonLd, links, anchors, comments, attrNames: [...attrs], bodyText,
     };
   }

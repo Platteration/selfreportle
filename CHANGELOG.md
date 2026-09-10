@@ -60,9 +60,18 @@ development branch.
   network. Fetches now follow the Private Network Access rule: a page may
   reach its own address space or a less private one, never a more private one,
   and a `file:` resource is read only for a page that is itself a local file.
-  Where a redirect landed is checked against the same rule. A `<video poster>`
-  also has to belong to a video the page actually displays, which it did not
-  before: the poster path had no rendered-size floor at all.
+  The rule is matched against the host as a resolver reads it, so writing a
+  name fully qualified (`http://localhost.:11434/…`, `http://nas.local./…`)
+  does not walk past it. A redirect is not followed on such a page's behalf
+  at all: the worker fetches with `redirect: 'manual'`, which does not perform
+  the hop, because checking where a fetch landed happens after the fact and
+  can only refuse the read — the request to the private address would already
+  have been delivered. The cost is deliberate: an image behind a redirect is
+  reported as not fetched. A page that is itself local (a `file:` album, a
+  localhost fixture) still follows redirects, since the policy already lets it
+  reach every address space. A `<video poster>` also has to belong to a video
+  the page actually displays, which it did not before: the poster path had no
+  rendered-size floor at all.
 - **The credentials cache could answer one image with another's provenance.**
   URLs longer than 2000 characters were keyed on their first 2000 characters
   plus their length, so two signed CDN URLs differing only in a trailing token

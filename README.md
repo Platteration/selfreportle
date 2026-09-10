@@ -178,7 +178,7 @@ The binary parsers were fuzzed separately with random bytes behind each containe
 | --- | --- |
 | `storage` | Settings (sync), per-tab results (session), and the local per-domain counters. |
 | `contextMenus` | The right-click entries for inspecting one image or a text selection. |
-| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials and are size-capped. They are also refused when the target sits on a more private network than the page itself — a page on the public internet cannot have the extension read `127.0.0.1`, `10.0.0.0/8`, `169.254.169.254` or a `.local` name on the reader's behalf — and a `file:` resource is read only for a page that is itself a local file. |
+| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials and are size-capped. They are also refused when the target sits on a more private network than the page itself — a page on the public internet cannot have the extension read `127.0.0.1`, `10.0.0.0/8`, `169.254.169.254` or a `.local` name on the reader's behalf, however the name is spelled — and a `file:` resource is read only for a page that is itself a local file. Nor is a redirect followed for such a page, since where it leads cannot be checked before it is taken: an image behind a redirect is reported as not fetched. |
 
 The extension has no `tabs` permission, no analytics, no remote code and no
 `externally_connectable`, so a web page cannot talk to it. All rendering uses

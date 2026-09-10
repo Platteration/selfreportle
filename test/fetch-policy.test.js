@@ -42,6 +42,95 @@ test('address spaces are classified from the literal host', () => {
   }
 });
 
+/*
+ * A trailing dot is the fully qualified spelling of the same name: the
+ * resolver sends `localhost.` to loopback and `router.local.` to the same
+ * mDNS responder, and Blink keeps the dot in the URL the page hands the
+ * worker. `new URL` keeps it too — only an IPv4 literal is canonicalised by
+ * the parser — so every rule written against a name was walked past by that
+ * one character, and `<img src="http://localhost.:11434/api/tags">` on a
+ * public page reached the reader's own machine exactly as before the policy
+ * existed. One case per rule, so no rule can be left behind again.
+ */
+test('a trailing dot is the same host, and gets past no name rule', () => {
+  const sameHost = [
+    ['http://localhost.:11434/api/tags', 'http://localhost:11434/api/tags'],
+    ['http://ip6-localhost./x', 'http://ip6-localhost/x'],
+    ['http://ip6-loopback./x', 'http://ip6-loopback/x'],
+    ['http://api.localhost./x', 'http://api.localhost/x'],
+    ['http://printer.local./x', 'http://printer.local/x'],
+    ['http://box.home.arpa./x', 'http://box.home.arpa/x'],
+    ['http://intra.internal./x', 'http://intra.internal/x'],
+    ['http://foo.LOCAL./x', 'http://foo.LOCAL/x'],
+    ['http://localhost../x', 'http://localhost/x'],
+  ];
+  for (const [dotted, plain] of sameHost) {
+    assert.equal(P.addressSpace(plain), 'local', plain);
+    assert.equal(P.addressSpace(dotted), 'local', dotted + ' names the same host as ' + plain);
+    const r = P.mayFetch(dotted, PUBLIC_PAGE);
+    assert.equal(r.ok, false, dotted + ' must be refused for a public page');
+    assert.match(r.reason, /page is public/);
+  }
+  assert.equal(P.canonicalHost('LOCALHOST..'), 'localhost', 'the host is lower-cased and de-dotted once');
+  // The IP half was never affected — the URL parser canonicalises a literal —
+  // and an ordinary public name is not blocked for carrying a dot either.
+  assert.equal(P.addressSpace('http://127.0.0.1./x'), 'local');
+  assert.equal(P.addressSpace('http://192.168.1.1./x'), 'private');
+  assert.equal(P.addressSpace('https://cdn.example./a.jpg'), 'public');
+  assert.equal(P.mayFetch('https://cdn.example./a.jpg', PUBLIC_PAGE).ok, true, 'and it is still fetched');
+});
+
+/*
+ * The fetch gate is not the only rule keyed on a hostname, and the dot gets
+ * past a name rule wherever one is written: the reader's paused-host list,
+ * the platform whose labels are read, the builder fingerprints, the image
+ * host patterns. A host reached by its fully qualified name is the same
+ * host, so all of them have to see the same canonical form.
+ */
+test('the same dot gets past no other rule keyed on a hostname either', () => {
+  const settings = require('../lib/settings.js');
+  const s = settings.normalize({ disabledHosts: ['Example.com.'] });
+  assert.deepEqual(s.disabledHosts, ['example.com'], 'a stored host is canonicalised on the way in');
+  assert.equal(settings.isHostDisabled(s, 'example.com.'), true, 'a paused host stays paused when named fully qualified');
+  assert.equal(settings.isHostDisabled(s, 'www.example.com.'), true, 'subdomains included');
+  assert.equal(settings.isHostDisabled(s, 'notexample.com'), false, 'and the suffix match is still a label boundary');
+
+  const labels = require('../lib/platform-labels.js');
+  assert.equal((labels.platformFor('www.tiktok.com.') || {}).name, 'TikTok', 'a platform is recognised either way');
+
+  const site = require('../lib/site-analyzer.js');
+  const fingerprints = (host) => site.analyzeSite({ hostname: host, metas: [], scripts: [], comments: [], attrNames: [], inlineScripts: [] })
+    .signals.map((x) => x.id);
+  assert.ok(fingerprints('demo.bolt.host').length, 'the host fingerprint really does fire');
+  assert.deepEqual(fingerprints('demo.bolt.host.'), fingerprints('demo.bolt.host'));
+
+  const hints = require('../lib/image-hints.js');
+  const hostSignal = (u) => (hints.analyzeImageHints({ url: u }).find((x) => x.id === 'host') || {}).label;
+  assert.equal(hostSignal('https://cdn.midjourney.com/a.png'), 'Served from Midjourney CDN');
+  assert.equal(hostSignal('https://cdn.midjourney.com./a.png'), 'Served from Midjourney CDN');
+
+  /* The page's own host reaches all of those from one place. */
+  const content = fs.readFileSync(path.join(__dirname, '..', 'content', 'content.js'), 'utf8');
+  assert.match(content, /const pageHost = \(\) => S\.settings\.canonicalHost\(location\.hostname\)/);
+  const code = content.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.equal((code.match(/location\.hostname/g) || []).length, 1, 'and nothing else reads it raw');
+});
+
+/* The rule is 192.0.0.0/24 (IETF protocol assignments) plus 192.0.2.0/24
+ * (TEST-NET-1). Testing the first two octets alone swept up the whole of
+ * 192.0.0.0/16, which is allocated, routed space — an image served from a
+ * bare IP literal there was reported 'Not fetched' for no reason. */
+test('the 192.0 rule covers the two reserved /24s, not the whole /16', () => {
+  for (const url of ['http://192.0.0.1/x', 'http://192.0.0.170/x', 'http://192.0.2.5/x']) {
+    assert.equal(P.addressSpace(url), 'private', url + ' is reserved');
+  }
+  for (const url of ['http://192.0.1.1/x', 'http://192.0.66.5/x', 'http://192.0.255.255/x']) {
+    assert.equal(P.addressSpace(url), 'public', url + ' is ordinary routed space');
+    assert.equal(P.mayFetch(url, PUBLIC_PAGE).ok, true, url + ' must still be fetched');
+  }
+  assert.equal(P.addressSpace('http://192.1.0.1/x'), 'public', 'and the neighbouring /16 is untouched');
+});
+
 test('a public page may not have the extension read a private or local address', () => {
   for (const url of ['http://127.0.0.1:11434/api/tags', 'http://192.168.1.1/', 'http://10.0.0.5/x.png',
     'http://169.254.169.254/latest/meta-data/', 'http://[::1]/x', 'http://nas.local/photo.jpg']) {
@@ -123,6 +212,33 @@ test('the service worker routes every fetch through the policy', () => {
   assert.match(SW, /landedSomewhereAllowed\(res, url, pageUrl\)/, 'and where a redirect landed is checked too');
   assert.match(SW, /S\.fetchPolicy\.cacheKey\(url\)/, 'the cache key is the digest, not a prefix');
   assert.ok(!/url\.slice\(0, 2000\)/.test(SW), 'the truncating cache key is gone');
+});
+
+/*
+ * SEC-3, second half. Checking where a fetch landed runs after the fetch has
+ * settled, so with redirect:'follow' the request to the private address has
+ * already been delivered and only the read of the body is refused — a page
+ * naming a redirector it controls still reaches loopback. What the request is
+ * or is not made is decided by the redirect mode: 'manual' does not perform
+ * the hop at all, and yields an opaque response there is nothing to read in,
+ * so it is refused. Following is kept only for a page that is itself in the
+ * most private space, which the policy lets reach every space anyway.
+ *
+ * This is a source check because the mode is the browser's behaviour, not
+ * ours; test/e2e/run.js points the worker at a real redirector on a public
+ * host and asserts the loopback URL behind it is never requested.
+ */
+test('a redirect is not followed on a public page\'s behalf', () => {
+  const SW = fs.readFileSync(path.join(__dirname, '..', 'background', 'service-worker.js'), 'utf8');
+  /* Comments out: the mode they describe is not the mode the code passes. */
+  const code = SW.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/redirect: 'follow'/.test(code), 'no fetch follows redirects unconditionally any more');
+  assert.equal((code.match(/redirect: redirectMode\(pageUrl\)/g) || []).length, 2,
+    'both the head fetch and the tail fetch choose the mode from the page');
+  assert.match(code, /function redirectMode\(pageUrl\) \{\s*return S\.fetchPolicy\.addressSpace\(pageUrl\) === 'local' \? 'follow' : 'manual';/,
+    'and only a page already in the most private space may follow');
+  assert.equal((code.match(/res\.type === 'opaqueredirect'/g) || []).length, 2,
+    'a redirect that was not followed is refused, not read as an empty body');
 });
 
 /*

@@ -231,7 +231,8 @@ async function fetchTail(url, n, pageUrl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', signal: controller.signal });
+    const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', redirect: redirectMode(pageUrl), signal: controller.signal });
+    if (res.type === 'opaqueredirect') return null;
     if (res.status !== 206) return null;
     if (!landedSomewhereAllowed(res, url, pageUrl)) return null;
     const buf = await res.arrayBuffer();
@@ -251,11 +252,37 @@ function fromBase64(b64) {
 }
 
 /*
- * Where the request actually ended up. A worker fetch cannot follow
- * redirects by hand — redirect:'manual' yields an opaque response with no
- * Location to read — so the hops themselves are invisible; what is visible
- * is res.url, the URL the bytes came from. Checking it stops a public
- * redirector being used to reach an address the first check refused.
+ * Redirects.
+ *
+ * `redirect: 'follow'` has the user agent perform every hop before the fetch
+ * settles, so checking where it landed afterwards can only refuse the read:
+ * the GET has already been delivered. A page that names a redirector it
+ * controls would still get the request made to loopback or to a router on
+ * the reader's network, which is the capability this policy exists to
+ * remove, not merely to keep the bytes from.
+ *
+ * `redirect: 'manual'` does not perform the redirect at all — the fetch
+ * settles as an opaque-redirect response, with no status, headers or
+ * Location to read. Where it would have gone therefore cannot be checked,
+ * so it is refused: an image behind a redirect is reported as not fetched
+ * rather than followed blind. That is the trade, and it is the reason the
+ * mode is chosen per page rather than globally.
+ *
+ * The one page that still follows is one already sitting in the most private
+ * space there is — a local page, `file:` included — because the policy lets
+ * such a page reach every space anyway, so a redirect can take the worker
+ * nowhere the page could not have named outright. That is what keeps a
+ * file:// album and a localhost fixture reading their own images.
+ */
+function redirectMode(pageUrl) {
+  return S.fetchPolicy.addressSpace(pageUrl) === 'local' ? 'follow' : 'manual';
+}
+
+/*
+ * Where the request actually ended up, for the one case that still follows.
+ * `res.url` is the URL the bytes came from, so it catches a hop the first
+ * check never saw; it is a check on what was read, and the mode above is
+ * what decides whether a private address is reached at all.
  */
 function landedSomewhereAllowed(res, url, pageUrl) {
   const finalUrl = res.url || url;
@@ -268,7 +295,8 @@ async function fetchBytes(url, maxBytes, pageUrl) {
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const headers = /^https?:/i.test(url) ? { Range: 'bytes=0-' + (maxBytes - 1) } : {};
-    const res = await fetch(url, { headers, credentials: 'omit', redirect: 'follow', signal: controller.signal });
+    const res = await fetch(url, { headers, credentials: 'omit', redirect: redirectMode(pageUrl), signal: controller.signal });
+    if (res.type === 'opaqueredirect') throw new Error('the URL redirects, and a redirect is not followed for this page');
     if (!res.ok && res.status !== 206) throw new Error('HTTP ' + res.status);
     if (!landedSomewhereAllowed(res, url, pageUrl)) throw new Error('redirected to an address this page may not reach');
     const contentType = res.headers.get('content-type') || '';

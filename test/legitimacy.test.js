@@ -199,8 +199,29 @@ test('bounding the scan does not lose the numbers that are actually there', () =
   // matches wins, which is the order VAT_FORMATS is written in.
   assert.deepEqual(L.findVat('VAT GB123456789').map((v) => v.country), ['GB']);
   assert.deepEqual(L.findVat('BTW-nummer NL123456789B01').map((v) => v.country), ['NL']);
-  // A number after a wall of empty context words is beyond the bound, and
-  // that is the deliberate trade: the page still gets analysed either way.
+  // Four context words is nowhere near the bound, so a number behind them is
+  // still found: bounding the scan costs an ordinary page nothing. What it
+  // does cost is the test below.
   const found = L.findVat('vat '.repeat(4) + 'USt-IdNr.: DE123456789');
   assert.deepEqual(found, [{ country: 'DE', value: 'DE123456789' }]);
+});
+
+/*
+ * What the bound actually costs, pinned so it cannot change unnoticed. A
+ * genuine number that only turns up after MAX_VAT_CONTEXT_HITS context words
+ * is no longer reported, and findVat feeds checks.vat in analyzeLegitimacy,
+ * so such a page reads as having no VAT number at all. The pair below is the
+ * same page either side of the cap, so it is the cap that makes the
+ * difference and not the filler: without the bound both are found.
+ */
+test('a number that only appears past the context-hit cap is given up on', () => {
+  const cap = L.MAX_VAT_CONTEXT_HITS;
+  const number = 'USt-IdNr.: DE123456789';
+  // Each counted context word is read together with the 60 characters after
+  // it, so the number has to sit clear of the last counted window to be lost.
+  const filler = 'x'.repeat(100) + ' ';
+  assert.deepEqual(L.findVat('vat '.repeat(cap - 1) + filler + number), [{ country: 'DE', value: 'DE123456789' }],
+    'one context word short of the cap, the number is still reported');
+  assert.deepEqual(L.findVat('vat '.repeat(cap + 1) + filler + number), [],
+    'one past it, it is not — that is the trade for bounding the scan');
 });

@@ -26,7 +26,23 @@ function loadPlaywright() {
   await build(site);
 
   const TYPES = { '.html': 'text/html', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4' };
+  /* SEC-3: a redirector, and the loopback URL behind it. Requests to each are
+   * counted so the test can say whether the worker made the hop, rather than
+   * whether it read what came back. */
+  const hits = { redirector: 0, loopback: 0 };
   const server = http.createServer((req, res) => {
+    const requested = req.url.split('?')[0];
+    if (requested === '/redirect-to-loopback.png') {
+      hits.redirector++;
+      res.statusCode = 302;
+      res.setHeader('location', 'http://127.0.0.1:' + server.address().port + '/loopback-probe.png');
+      return res.end();
+    }
+    if (requested === '/loopback-probe.png') {
+      hits.loopback++;
+      res.statusCode = 404;
+      return res.end('probe');
+    }
     const f = path.join(site, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
     if (!fs.existsSync(f)) { res.statusCode = 404; return res.end('not found'); }
     const body = fs.readFileSync(f);
@@ -183,6 +199,10 @@ function loadPlaywright() {
         privateNet: p.mayFetch('http://192.168.1.1/', from).ok,
         metadata: p.mayFetch('http://169.254.169.254/latest/meta-data/', from).ok,
         mdns: p.mayFetch('http://nas.local/photo.jpg', from).ok,
+        /* The same two hosts named fully qualified: one trailing dot used to
+         * be past every rule written against a name. */
+        dottedLoopback: p.mayFetch('http://localhost.:11434/api/tags', from).ok,
+        dottedMdns: p.mayFetch('http://nas.local./photo.jpg', from).ok,
         localFile: p.mayFetch('file:///etc/passwd', from).ok,
         publicImage: p.mayFetch('https://cdn.example/a.jpg', from).ok,
         ownSpace: p.mayFetch('http://localhost:9/a.png', 'http://localhost:8/b.html').ok,
@@ -193,9 +213,32 @@ function loadPlaywright() {
     assert.equal(policy.privateNet, false, 'nor a private network');
     assert.equal(policy.metadata, false, 'nor the cloud metadata address');
     assert.equal(policy.mdns, false, 'nor a .local name');
+    assert.equal(policy.dottedLoopback, false, 'nor loopback written as a fully qualified name');
+    assert.equal(policy.dottedMdns, false, 'nor a .local name written the same way');
     assert.equal(policy.localFile, false, 'nor a local file');
     assert.equal(policy.publicImage, true, 'ordinary images still load');
     assert.equal(policy.ownSpace, true, 'and a page may read its own address space');
+
+    /*
+     * SEC-3, second half. Refusing to read what a redirect returned is not
+     * the same as not making the request: with redirect:'follow' the browser
+     * performs every hop before the fetch settles, so a page naming a
+     * redirector it controls still gets the GET delivered to loopback. The
+     * URL below is a public name (www.instagram.com resolves to this server)
+     * whose response is a 302 to 127.0.0.1, asked for on behalf of a public
+     * page — the redirector must be reached and the address behind it must
+     * not be.
+     */
+    const hitsBefore = { ...hits };
+    const redirected = await sw.evaluate(async (u) => {
+      const r = await analyzeImages([{ id: 'redir', url: u }], {}, 'https://news.example/article');
+      return r.results[0];
+    }, 'http://www.instagram.com/redirect-to-loopback.png');
+    assert.equal(hits.redirector, hitsBefore.redirector + 1, 'the redirector itself was fetched');
+    assert.equal(hits.loopback, hitsBefore.loopback, 'but the loopback address behind it was never requested');
+    const refusal = (redirected.signals || []).find((s) => s.id === 'unavailable');
+    assert.ok(refusal, 'and the image is reported as not fetched');
+    assert.match(refusal.detail, /redirects/, 'for the redirect, not for whatever the address behind it answered');
 
     /* SEC-1. No extension page is offered to web content any more, so a site
      * cannot frame the publisher view with a tab id of its choosing. */

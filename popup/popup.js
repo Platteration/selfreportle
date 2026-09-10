@@ -22,7 +22,7 @@
     setTimeout(load, 3000);
     setTimeout(() => { $('rescan').disabled = false; }, 700);
   });
-  const host = (() => { try { return new URL(tab.url).hostname; } catch (e) { return ''; } })();
+  const host = (() => { try { return S.settings.canonicalHost(new URL(tab.url).hostname); } catch (e) { return ''; } })();
   const SET = S.settings;
   async function refreshPause() {
     if (!host) { $('pause').hidden = true; return; }
