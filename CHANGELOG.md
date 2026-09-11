@@ -50,6 +50,108 @@ development branch.
   signal, so an informational marker is visible without inflating the verdict.
 
 ### Security
+- **A self-signed certificate earned the green "camera capture" badge.** Every
+  question the verifier asked — signature, assertion hashes, chain
+  consistency, hard binding — was answered yes by a certificate minted in five
+  seconds with "Leica Camera AG" typed into its subject, because nothing
+  checked the root against anything. An exculpatory claim now needs three
+  things, not one: a manifest that verified and bound, a chain reaching a
+  certificate this build knows (`TRUST_ANCHORS` in `lib/c2pa-verify.js`, empty
+  here, filled by `setTrustAnchors`), and bytes the page itself loaded. Until
+  a trust list ships, a capture or human-origin claim is shown as the
+  unverified assertion it is and produces no camera badge, no page-level
+  provenance tick and no green toolbar ✓; the popup says "signed by an
+  unvouched signer" rather than "verified". The page-level tick also stopped
+  resting on the `captured` count, which camera EXIF and an XMP
+  `DigitalSourceType` attribute — fields anyone can type — also produce.
+- **A forgeable text attribute earned the same green badge as a signed
+  manifest.** Closing the C2PA path above raised the price of a camera badge to
+  an anchored, bound, page-loaded manifest — and left a shorter path open at
+  the old price: an `Iptc4xmpExt:DigitalSourceType` of `digitalCapture` is one
+  line of XML, and camera EXIF is a `Make` string, and either produced the
+  green "Camera-capture provenance" badge on its own. (`captured` and
+  `algorithmic` also needed no *hard* signal to win, which `human-created`
+  already did, so even a soft EXIF reading reached it.) An exculpatory verdict
+  now requires a hard signal, which only a manifest meeting all four conditions
+  produces; everything else lands in a new neutral tier, "Origin claimed by the
+  file, not verified" — slate, ranked no higher than no evidence at all, and
+  worded as the file's own claim. It is a tier rather than silence on purpose:
+  the claim is real evidence, and an unverified Content Credentials claim used
+  to disappear from the report altogether, which is the wrong half of the
+  problem to fix. The page-level tick lost its last free route too: a sentence
+  declaring human authorship is a disclosure, not a credential.
+- **What was verified was not what was displayed.** The worker re-fetched each
+  URL itself: no cookies, a `Range` header, no `Referer`. A server that tells
+  the two requests apart could hand the reader an AI picture and the extension
+  a signed photograph, and the badge landed on the picture nobody hashed. The
+  content script now reads the response the browser already holds
+  (`cache: 'only-if-cached'`, which makes no request of its own and sends no
+  cookies) and hands those bytes over; where it cannot — an opaque
+  cross-origin response — the worker's fetch still runs but its credentials
+  are not read as provenance for the picture on the page. As a side effect an
+  image-heavy page is now fetched once rather than twice.
+- **A declared length decided where the credential store ended.** The hard
+  binding is a digest over the file with the store excluded, and the reader
+  took the store's extent from length fields that no hash and no signature
+  covers. Overwriting the outer JUMBF box's own length made the declared store
+  swallow the picture: the binding hashed 41 bytes of 1728, reported "valid",
+  and one manifest minted once validated unchanged in front of any number of
+  different pictures. A store found by byte-scan now supplies no exclusion
+  range at all — nothing attests its extent — and a PNG chunk, WebP chunk,
+  JPEG APP11 run or ISOBMFF box is used only when it ends inside the file and
+  holds nothing but the JUMBF boxes that parsed. The badge line also says how
+  much of the file was hashed.
+- **A claim that referenced no assertions switched off the rule that only
+  referenced assertions speak.** An empty reference list was read as "no basis
+  to restrict", so every box in the manifest was admitted — including a hard
+  binding the claim never named — and the summary said nothing about
+  assertions at all. An empty list now admits nothing, and the manifest is
+  reported as bound to no file.
+- **Two assertion boxes sharing a label.** C2PA requires a label to be unique
+  within a manifest; the reader hashed whichever box a `Map` kept and then read
+  both, so a smuggled "digital capture" action nobody hashed was reported under
+  "all 2 assertions match the signed claim". A repeated label now breaks the
+  manifest.
+- **Two denial-of-service bombs in the shared service worker.** A PNG `zTXt`
+  or `iTXt` chunk inflated without any output ceiling: 512 KB of deflate became
+  536 MB, four at a time, and a hostile page could retrigger it on every
+  navigation until Chrome killed the worker and every tab's analysis with it.
+  Decompression is now bounded per chunk and per image, and an over-cap chunk
+  is reported as too large to inspect rather than failing the parse. Separately,
+  `xmpValue` built its element regex with `new RegExp` — invisible to the
+  literal ReDoS scanner — and its lazy middle rescanned to the end of the
+  packet from every unclosed opening tag: 29 s for a 1 MB XMP packet, past
+  Chrome's worker watchdog at the 4 MB fetch cap. Element extraction is now
+  linear, every XMP packet is bounded before parsing, and the SVG comment scan
+  uses `indexOf` rather than a lazy global regex. `test/redos.test.js` now
+  loads `lib/image-metadata.js` with both shapes as fixtures.
+- **IPv6 transition prefixes and LAN name suffixes walked past the address
+  policy.** NAT64 (`64:ff9b::/96`), 6to4, Teredo, the IPv4-translated
+  `::ffff:0:0/96` form and site-local `fec0::/10` were classified public, so a
+  literal carrying `192.168.1.1` inside it was fetched on a network running
+  the matching mechanism; so were `.lan`, `.intranet`, `.corp` and single-label
+  intranet names. Each is now classified by the address it actually carries,
+  and anything outside `2000::/3` fails closed. A page served from a `.local`,
+  `.home.arpa` or `.internal` name is ranked where it sits — on the LAN — so a
+  machine on the reader's Wi-Fi can no longer claim an mDNS name and be handed
+  the reader's own loopback and redirect-following.
+- **Nothing bounded how much one page could make the worker fetch.** The
+  per-page cap counted live `<img>` elements, so rewriting `src` re-armed it
+  forever, and the worker metered the caller not at all: twenty ordinary
+  content-script batches from one tab pulled 640 requests and 2.6 GB with the
+  reader's IP on them. The page-side cap is now a budget spent on URLs handed
+  over, which a same-document navigation does not refill, and the worker holds
+  a per-tab request and byte budget over a rolling minute, released when the
+  tab navigates or closes. Only a URL the page's own loader actually fetched
+  is handed over at all, which is what the address policy cannot check: it
+  reads the URL's text and cannot resolve a name whose owner points it at
+  127.0.0.1.
+- **The saved report claimed more than it could show.** Its SHA-256 digest was
+  called "integrity" and described as proof the file had not been edited since
+  it was saved. It is unkeyed and stored inside the report, so anyone changing
+  a finding can recompute it. The field is now `checksum` and says it catches
+  accidental corruption and nothing else, from one exported sentence beside
+  the credential caveat.
 - **Any page could make the extension fetch a private address.** The worker
   fetches image, video and audio URLs with `<all_urls>` host permissions, so
   its requests are subject to neither the page's CSP, nor its mixed-content

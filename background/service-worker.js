@@ -13,6 +13,43 @@ const MAX_IMAGES_PER_MESSAGE = 32;   // the content script sends six
 const FETCH_TIMEOUT_MS = 20000;
 const CONCURRENCY = 4;
 
+/*
+ * What one tab may spend.
+ *
+ * The content script's own cap counts URLs it has handed over, which bounds
+ * an honest page; it does not bound a page that reloads the content script,
+ * and nothing in here bounded the caller at all. Twenty ordinary batches from
+ * one tab pulled 640 requests and 2.6 GB with the reader's IP address on
+ * them. The budget is charged where the fetch is issued and where its bytes
+ * are read, refilled only by the clock, and reset when the tab navigates or
+ * closes — the two places a page stops being the same page.
+ */
+const BUDGET_WINDOW_MS = 60000;
+const BUDGET_REQUESTS = 200;
+const BUDGET_BYTES = 64 * 1024 * 1024;
+const budgets = new Map();          // tabId → { start, requests, bytes }
+
+function budgetFor(tabId) {
+  const now = Date.now();
+  let b = budgets.get(tabId);
+  if (!b || now - b.start > BUDGET_WINDOW_MS) { b = { start: now, requests: 0, bytes: 0 }; budgets.set(tabId, b); }
+  return b;
+}
+
+/* True when there is room for one more fetch, which it then charges for. */
+function chargeRequest(tabId) {
+  if (tabId == null) return true;
+  const b = budgetFor(tabId);
+  if (b.requests >= BUDGET_REQUESTS || b.bytes >= BUDGET_BYTES) return false;
+  b.requests++;
+  return true;
+}
+
+function chargeBytes(tabId, n) {
+  if (tabId == null) return;
+  budgetFor(tabId).bytes += n;
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   try {
     chrome.contextMenus.create({ id: 'srl-inspect-image', title: 'Inspect this image for AI provenance', contexts: ['image'] });
@@ -50,7 +87,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
        * content script is the only sender, and its URL decides which address
        * spaces the fetches may reach. */
       if (fromTab == null) { sendResponse({ error: 'no sender tab' }); return false; }
-      analyzeImages(msg.images || [], msg.settings || {}, sender.url || sender.tab.url || '')
+      analyzeImages(msg.images || [], msg.settings || {}, sender.url || sender.tab.url || '', fromTab)
         .then(sendResponse, (e) => sendResponse({ error: String(e) }));
       return true;
     case 'srl:page-result': {
@@ -83,6 +120,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   results.delete(tabId);
+  budgets.delete(tabId);
   chrome.storage.session.remove('tab:' + tabId).catch(() => {});
 });
 
@@ -90,6 +128,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
  * report as though it belonged to the new one. */
 function clearTab(tabId) {
   results.delete(tabId);
+  budgets.delete(tabId);
   chrome.storage.session.remove('tab:' + tabId).catch(() => {});
   chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
   chrome.action.setTitle({ tabId, title: 'Selfreportle' }).catch(() => {});
@@ -156,7 +195,7 @@ function updateBadge(tabId, result) {
 /* The caller's numbers go through the same normaliser the settings page
  * uses, which is where the ceilings live: a byte cap taken on trust is a cap
  * of whatever the caller felt like, and fetchBytes buffers to it. */
-async function analyzeImages(images, settings, pageUrl) {
+async function analyzeImages(images, settings, pageUrl, tabId) {
   const s = S.settings.normalize(settings || {});
   const maxBytes = s.maxImageBytes;
   const maxMedia = s.maxMediaBytes;
@@ -166,20 +205,23 @@ async function analyzeImages(images, settings, pageUrl) {
   const workers = Array.from({ length: CONCURRENCY }, async () => {
     while (i < list.length) {
       const img = list[i++];
-      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0, pageUrl));
+      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0, pageUrl, tabId));
     }
   });
   await Promise.all(workers);
   return { results: out };
 }
 
-async function analyzeOne(img, maxBytes, tailBytes, pageUrl) {
+async function analyzeOne(img, maxBytes, tailBytes, pageUrl, tabId) {
   const url = img.url || '';
   const base = { id: img.id, url };
   if (img.base64) {
     try {
       const bytes = fromBase64(img.base64);
-      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated });
+      /* The page read these out of its own cache, so they are the bytes it
+       * rendered — which is the only basis on which a provenance claim may
+       * be read as being about the picture the reader is looking at. */
+      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated, rendered: !!img.rendered });
       return { ...base, format: analysed.format, bytes: bytes.length, truncated: !!img.truncated, signals: analysed.signals, metadata: analysed.metadata };
     } catch (e) {
       return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not parse image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
@@ -191,15 +233,18 @@ async function analyzeOne(img, maxBytes, tailBytes, pageUrl) {
   }
   const cacheKey = await S.fetchPolicy.cacheKey(url);
   if (cacheKey !== null && imageCache.has(cacheKey)) return { ...base, ...imageCache.get(cacheKey), cached: true };
+  if (!chargeRequest(tabId)) {
+    return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Not fetched', detail: 'this page has already had the extension fetch its share of media for the minute' }] };
+  }
   let outcome;
   try {
-    const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes, pageUrl);
+    const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes, pageUrl, tabId);
     const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated });
     outcome = { format: analysed.format, contentType, bytes: bytes.length, truncated, signals: analysed.signals, metadata: analysed.metadata };
     /* Many MP4s put their index (and so the Content Credentials) at the end
      * of the file, which a prefix fetch never sees. Ask for the tail once. */
     if (tailBytes && truncated && !(analysed.metadata && analysed.metadata.c2pa) && /^isobmff/.test(analysed.format) && S.imageMeta.isobmffNeedsTail(bytes)) {
-      const tail = await fetchTail(url, tailBytes, pageUrl);
+      const tail = chargeRequest(tabId) ? await fetchTail(url, tailBytes, pageUrl, tabId) : null;
       if (tail) {
         const fromTail = await S.imageMeta.analyzeImageBytes(tail, { url, truncated: true });
         if (fromTail.metadata && fromTail.metadata.c2pa) {
@@ -225,7 +270,7 @@ async function analyzeOne(img, maxBytes, tailBytes, pageUrl) {
 
 /* A suffix range request. Servers that ignore Range return the whole body,
  * so the result is only used when it actually parses as a credential store. */
-async function fetchTail(url, n, pageUrl) {
+async function fetchTail(url, n, pageUrl, tabId) {
   if (!/^https?:/i.test(url)) return null;
   if (!S.fetchPolicy.mayFetch(url, pageUrl).ok) return null;
   const controller = new AbortController();
@@ -236,6 +281,7 @@ async function fetchTail(url, n, pageUrl) {
     if (res.status !== 206) return null;
     if (!landedSomewhereAllowed(res, url, pageUrl)) return null;
     const buf = await res.arrayBuffer();
+    chargeBytes(tabId, buf.byteLength);
     return new Uint8Array(buf.byteLength > n ? buf.slice(buf.byteLength - n) : buf);
   } catch (e) {
     return null;
@@ -275,7 +321,7 @@ function fromBase64(b64) {
  * file:// album and a localhost fixture reading their own images.
  */
 function redirectMode(pageUrl) {
-  return S.fetchPolicy.addressSpace(pageUrl) === 'local' ? 'follow' : 'manual';
+  return S.fetchPolicy.callerSpace(pageUrl) === 'local' ? 'follow' : 'manual';
 }
 
 /*
@@ -290,7 +336,7 @@ function landedSomewhereAllowed(res, url, pageUrl) {
   return S.fetchPolicy.mayFetch(finalUrl, pageUrl).ok;
 }
 
-async function fetchBytes(url, maxBytes, pageUrl) {
+async function fetchBytes(url, maxBytes, pageUrl, tabId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -309,6 +355,7 @@ async function fetchBytes(url, maxBytes, pageUrl) {
       if (done) break;
       if (total + value.length > maxBytes) {
         chunks.push(value.subarray(0, maxBytes - total));
+        chargeBytes(tabId, maxBytes - total);
         total = maxBytes;
         truncated = true;
         try { await reader.cancel(); } catch (e) { /* ignore */ }
@@ -316,6 +363,7 @@ async function fetchBytes(url, maxBytes, pageUrl) {
       }
       chunks.push(value);
       total += value.length;
+      chargeBytes(tabId, value.length);
     }
     const lenHeader = res.headers.get('content-range');
     if (lenHeader) {

@@ -232,7 +232,7 @@
     const imgLine = el('div');
     imgLine.appendChild(verdictLine('image', worst));
     const chips = el('div');
-    for (const k of ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'no-signal']) {
+    for (const k of ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'self-claimed', 'no-signal']) {
       if (!c[k]) continue;
       const chip = tint(el('span', 'chip'), V.IMAGE[k].color);
       chip.appendChild(el('span', 'ic', V.IMAGE[k].icon));
@@ -372,7 +372,7 @@
     const verdicts = Object.keys(counts).filter((k) => counts[k] > 0);
     out.push(verdictLine('image', V.worst('image', verdicts.length ? verdicts : ['no-signal'])));
     const line = el('div');
-    for (const k of ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'no-signal', 'unavailable']) {
+    for (const k of ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'self-claimed', 'no-signal', 'unavailable']) {
       if (!counts[k]) continue;
       const chip = tint(el('span', 'chip'), V.IMAGE[k].color);
       chip.appendChild(el('span', 'ic', V.IMAGE[k].icon));
@@ -475,8 +475,12 @@
       : sum.bindingAbsent && sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials bound to no file' }
         : sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
           : sum.caution ? { icon: '!', color: V.COLORS.gold, word: sum.binding && sum.binding !== 'valid' ? 'Signed, not tied to this file' : 'Signed, assertions unreconciled' }
-            : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Verified and bound to this file' }
-              : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
+            /* A green tick for a signature nobody vouches for is the whole
+             * forgery: mint a certificate saying "Leica Camera AG", sign your
+             * own claim, and every question below answers yes. */
+            : sum.ok && sum.anchored ? { icon: '✓', color: V.COLORS.green, word: 'Verified and bound to this file' }
+              : sum.ok ? { icon: '!', color: V.COLORS.gold, word: 'Signed by an unvouched signer, bound to this file' }
+                : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
     const d = el('div', 'attr');
     const t = tint(el('div', 'tag'), state.color);
     t.appendChild(el('span', 'ic', state.icon));
@@ -487,13 +491,15 @@
     const det = el('details');
     det.appendChild(el('summary', null, 'What this does and does not prove'));
     const body = el('div', 'skew');
-    body.appendChild(el('div', null, sum.ok
-      ? 'The manifest has not been altered since it was signed, and the digest it records over the file matches this file\'s bytes, so these credentials are about this image and not another one. It does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.'
-      : sum.broken
-        ? 'Something verifiably does not add up: the signature, an assertion hash, the certificate chain, or the digest the claim records over the file. Treat the claims inside the manifest as unreliable.'
-        : sum.caution
-          ? 'The claim is authentic, but something could not be reconciled: either the assertions do not hash to the values it recorded, or the digest tying it to this file could not be recomputed here. Until that is settled, the manifest is not read as provenance for this image.'
-          : 'No cryptographic check completed, so the manifest is being read as an unverified claim: whatever it says about how the image was made is only what someone wrote in it.'));
+    body.appendChild(el('div', null, sum.ok && sum.anchored
+      ? 'The manifest has not been altered since it was signed, the digest it records over the file matches this file\'s bytes, and the chain reaches a signer this build knows — so these credentials are about this image, not another one, and the name on the certificate has someone behind it.'
+      : sum.ok
+        ? 'The manifest has not been altered since it was signed and the digest it records matches the bytes inspected here. But no certificate on its chain is a signer this build knows, so whatever name it carries vouches for nothing: anyone can mint a certificate in any name and sign their own claim with it. The claim is shown; it is not read as provenance for this image.'
+        : sum.broken
+          ? 'Something verifiably does not add up: the signature, an assertion hash, the certificate chain, or the digest the claim records over the file. Treat the claims inside the manifest as unreliable.'
+          : sum.caution
+            ? 'The claim is authentic, but something could not be reconciled: either the assertions do not hash to the values it recorded, or the digest tying it to this file could not be recomputed here. Until that is settled, the manifest is not read as provenance for this image.'
+            : 'No cryptographic check completed, so the manifest is being read as an unverified claim: whatever it says about how the image was made is only what someone wrote in it.'));
     if (sum.bindingNote) body.appendChild(el('div', 'basis', sum.bindingNote));
     if (v.chain && v.chain.anchorNote) body.appendChild(el('div', 'basis', v.chain.anchorNote));
     if (v.notes && v.notes.length) body.appendChild(el('div', 'basis', v.notes.join(' ')));
@@ -571,7 +577,7 @@
       flash(b, 'Saved');
     }));
     d.appendChild(row);
-    d.appendChild(el('div', 'note', 'The report carries a SHA-256 digest of its own findings so you can show it has not been edited since you saved it. It is self-attested by this extension, not notarised by a third party.'));
+    d.appendChild(el('div', 'note', V.REPORT_CHECKSUM_NOTE));
     return d;
   }
 
@@ -610,7 +616,7 @@
       tool: 'Selfreportle ' + chrome.runtime.getManifest().version,
       skewCatalogueReviewed: A.REVIEWED,
       savedAt: new Date().toISOString(),
-      integrity: { algorithm: 'SHA-256', digest, covers: 'the findings object as serialised by JSON.stringify', attestedBy: 'this extension only; not a third-party notarisation' },
+      checksum: { algorithm: 'SHA-256', digest, covers: 'the findings object as serialised by JSON.stringify', proves: V.REPORT_CHECKSUM_NOTE },
       caveats: [
         ...V.credentialCaveats(r),
         'Absence of signals is not proof of human origin; metadata is routinely stripped on upload.',

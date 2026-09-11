@@ -101,7 +101,11 @@ function loadPlaywright() {
     const blob = result.images.items.find((i) => i.url.startsWith('blob:'));
     assert.equal(byName['sd.png'], 'ai-generated');
     assert.equal(byName['c2pa.jpg'], 'ai-generated');
-    assert.equal(byName['camera.jpg'], 'captured');
+    /* Camera EXIF and nothing else: the file's own claim, shown as one. The
+     * green capture badge is what an anchored, bound, page-loaded manifest
+     * earns, and no build ships a trust list, so nothing here may reach it. */
+    assert.equal(byName['camera.jpg'], 'self-claimed');
+    assert.ok(!Object.values(byName).includes('captured'), 'nothing on this page earned a verified capture badge');
     assert.equal(byName['firefly.webp'], 'ai-edited');
     assert.equal(byName['0_0.png'], 'ai-disclosed');
     assert.ok(blob && blob.verdict === 'ai-generated', 'blob: image inspected via content script');

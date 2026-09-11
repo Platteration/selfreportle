@@ -235,7 +235,10 @@ test('a redirect is not followed on a public page\'s behalf', () => {
   assert.ok(!/redirect: 'follow'/.test(code), 'no fetch follows redirects unconditionally any more');
   assert.equal((code.match(/redirect: redirectMode\(pageUrl\)/g) || []).length, 2,
     'both the head fetch and the tail fetch choose the mode from the page');
-  assert.match(code, /function redirectMode\(pageUrl\) \{\s*return S\.fetchPolicy\.addressSpace\(pageUrl\) === 'local' \? 'follow' : 'manual';/,
+  /* callerSpace, not addressSpace: a .local name is filed as loopback when it
+   * is the target (conservative) and as the LAN when it is the caller, and it
+   * is the caller that this grants a privilege to. */
+  assert.match(code, /function redirectMode\(pageUrl\) \{\s*return S\.fetchPolicy\.callerSpace\(pageUrl\) === 'local' \? 'follow' : 'manual';/,
     'and only a page already in the most private space may follow');
   assert.equal((code.match(/res\.type === 'opaqueredirect'/g) || []).length, 2,
     'a redirect that was not followed is refused, not read as an empty body');
@@ -290,4 +293,106 @@ test('no extension page is offered to web content', () => {
   assert.equal(manifest.externally_connectable, undefined);
   const pub = fs.readFileSync(path.join(__dirname, '..', 'publisher', 'publisher.js'), 'utf8');
   assert.match(pub, /window\.top !== window/, 'and the page refuses to run in a frame anyway');
+});
+
+/*
+ * L3-2. Several IPv6 forms carry an IPv4 address inside them, and on a network
+ * that runs the matching transition mechanism the packet is delivered to that
+ * IPv4 address: a NAT64/DNS64 network — ordinary on mobile carriers and on
+ * IPv6-only corporate and cloud networks — turns [64:ff9b::c0a8:101] into
+ * 192.168.1.1. Every one of these was classified public and fetched, while
+ * the spellings the function already knew were correctly refused.
+ */
+test('IPv6 forms that carry an IPv4 address inside them are classified by that address', () => {
+  // The embedded address is written as the same literal the v4 rules already
+  // refuse, so the expectation comes from those rules, not from a table here.
+  const cases = [
+    ['NAT64 well-known prefix', (v) => '[64:ff9b::' + v + ']'],
+    ['6to4', (v) => '[2002:' + v + '::]'],
+    ['IPv4-translated ::ffff:0:0/96', (v) => '[::ffff:0:' + v + ']'],
+    ['IPv4-mapped', (v) => '[::ffff:' + v + ']'],
+  ];
+  const addresses = [['7f00:1', '127.0.0.1'], ['c0a8:101', '192.168.1.1'], ['a9fe:a9fe', '169.254.169.254'], ['0a00:1', '10.0.0.1']];
+  for (const [name, wrap] of cases) {
+    for (const [hex, dotted] of addresses) {
+      const want = P.addressSpace('http://' + dotted + '/x');
+      assert.equal(P.addressSpace('http://' + wrap(hex) + '/x'), want, name + ' carrying ' + dotted);
+    }
+  }
+  // Teredo hides the client's IPv4 as its ones-complement.
+  const flip = (a, b) => (((a << 8) | b) ^ 0xffff).toString(16);
+  assert.equal(P.addressSpace('http://[2001:0:1:2:3:4:' + flip(192, 168) + ':' + flip(1, 1) + ']/x'), 'private', 'Teredo carrying 192.168.1.1');
+  assert.equal(P.addressSpace('http://[64:ff9b:1::1]/x'), 'private', '64:ff9b:1::/48 is the local-use NAT64 prefix');
+  assert.equal(P.addressSpace('http://[fec0::1]/x'), 'private', 'deprecated site-local');
+  // And the default fails closed: only 2000::/3 is globally routable unicast.
+  assert.equal(P.addressSpace('http://[0100::1]/x'), 'private', 'an unallocated prefix is not assumed public');
+  assert.equal(P.addressSpace('http://[4000::1]/x'), 'private');
+  assert.equal(P.addressSpace('http://[2606:4700::1111]/x'), 'public', 'but ordinary global unicast still is');
+  for (const url of ['http://[64:ff9b::7f00:1]/x', 'http://[2002:c0a8:101::]/x', 'http://[fec0::1]/x']) {
+    assert.equal(P.mayFetch(url, PUBLIC_PAGE).ok, false, url + ' from a public page');
+  }
+});
+
+/*
+ * L3-1. A name is not resolved here and cannot be, so the ones that only ever
+ * resolve on a local network are the ones this file can still answer for:
+ * .lan, .corp, an intranet search-domain single label. A public name pointed
+ * at 127.0.0.1 by its own owner is not in that set, which is why
+ * content/content.js only hands over URLs the page's own loader already
+ * fetched — see test/content-script.test.js.
+ */
+test('names that only resolve on a local network are not public', () => {
+  for (const url of ['http://nas.lan/x', 'http://wiki/x', 'http://intranet.corp/x', 'http://host.intranet/x',
+    'http://box.private/x', 'http://nas.home/x', 'http://thing.internal/x']) {
+    assert.notEqual(P.addressSpace(url), 'public', url);
+    assert.equal(P.mayFetch(url, PUBLIC_PAGE).ok, false, url + ' from a public page');
+  }
+  assert.equal(P.addressSpace('http://example.com/x'), 'public', 'an ordinary name still is');
+});
+
+/*
+ * L3-3. The tier a page is granted is the address space it actually occupies.
+ * mDNS is unauthenticated — any host on the segment can answer for any .local
+ * name it likes — and a .local name resolves to a LAN address, not to
+ * loopback. Ranking such a page 'local' handed a machine on the reader's
+ * Wi-Fi the one space a LAN page is supposed to be refused: the reader's own
+ * 127.0.0.1, plus redirect-following that every other non-loopback page is
+ * denied. As a target the name stays conservative; as the caller it does not.
+ */
+test('a page on a LAN name is ranked on the LAN, not in the loopback tier', () => {
+  for (const page of ['http://printer.local/ui', 'http://box.home.arpa/ui', 'http://nas.lan/ui', 'http://thing.internal/ui']) {
+    assert.equal(P.callerSpace(page), 'private', page);
+    // The same device by its address is refused loopback; by its name it must be too.
+    assert.equal(P.mayFetch('http://127.0.0.1:11434/api/tags', page).ok, P.mayFetch('http://127.0.0.1:11434/api/tags', PRIVATE_PAGE).ok, page);
+    assert.equal(P.mayFetch('http://127.0.0.1:11434/api/tags', page).ok, false);
+    assert.equal(P.addressSpace(page), 'local', 'but as a target it stays in the conservative tier');
+  }
+  // A real loopback caller keeps what it had: the fixtures and file:// albums.
+  assert.equal(P.callerSpace(LOCAL_PAGE), 'local');
+  assert.equal(P.callerSpace('http://127.0.0.1:8080/x'), 'local');
+  assert.equal(P.callerSpace('file:///home/a/album.html'), 'local');
+  assert.equal(P.mayFetch('http://127.0.0.1:8080/a.jpg', LOCAL_PAGE).ok, true);
+  assert.equal(P.callerSpace(PUBLIC_PAGE), 'public');
+});
+
+/*
+ * L3-4. The per-page cap counted live <img> elements, so rewriting src on the
+ * same sixty re-armed it forever, and nothing in the worker metered the
+ * caller at all: twenty ordinary content-script batches from one tab pulled
+ * 640 requests and 2.6 GB with the reader's IP on them.
+ */
+test('the worker meters what one tab may fetch', () => {
+  const SW = fs.readFileSync(path.join(__dirname, '..', 'background', 'service-worker.js'), 'utf8');
+  const code = SW.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(code, /const BUDGET_REQUESTS = \d+;/, 'a request ceiling per tab');
+  assert.match(code, /const BUDGET_BYTES = [\d *]+;/, 'and a byte ceiling');
+  assert.match(code, /if \(!chargeRequest\(tabId\)\)/, 'charged before the fetch is issued, not after');
+  // Three call sites, plus the definition: the streamed chunk, the last
+  // partial chunk at the cap, and the tail range request.
+  assert.equal((code.match(/(?<!function )chargeBytes\(tabId, /g) || []).length, 3, 'and charged for every byte read, head and tail');
+  // Spent budget is released by navigating or closing, the two places a page
+  // stops being the same page — not by sending another message.
+  assert.match(code, /function clearTab\(tabId\) \{[\s\S]*?budgets\.delete\(tabId\)/);
+  assert.match(code, /onRemoved\.addListener\(\(tabId\) => \{[\s\S]*?budgets\.delete\(tabId\)/);
+  assert.ok(!/budgets\.clear\(\)/.test(code), 'nothing refills every tab at once');
 });

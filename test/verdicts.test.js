@@ -25,8 +25,54 @@ test('overall summary', () => {
   assert.equal(V.overall({ site: { verdict: 'no-signal' }, text: { verdict: 'no-signal' }, images: { counts: { 'ai-generated': 2 } }, disclosures: [{ level: 'generated', scope: 'general' }] }), 'disclosed-ai');
   assert.equal(V.overall({ site: { verdict: 'no-signal' }, text: { verdict: 'ai-assisted-disclosed' }, images: { counts: {} }, disclosures: [] }), 'disclosed-ai');
   assert.equal(V.overall({ site: { verdict: 'no-signal' }, text: { verdict: 'possible-ai' }, images: { counts: {} }, disclosures: [] }), 'weak-ai');
-  assert.equal(V.overall({ site: { verdict: 'no-signal' }, text: { verdict: 'no-signal' }, images: { counts: { captured: 2 } }, disclosures: [] }), 'provenance');
+  assert.equal(V.overall({ site: { verdict: 'no-signal' }, text: { verdict: 'no-signal' }, images: { counts: { captured: 2 }, proven: 2 }, disclosures: [] }), 'provenance');
   assert.equal(V.overall({ site: {}, text: {}, images: {}, disclosures: [] }), 'none');
+});
+
+/*
+ * L5-1(d). "Provenance credentials present" is a claim about credentials, and
+ * `captured` is also what camera EXIF and an XMP DigitalSourceType attribute
+ * produce — metadata anyone can type, and worth typing, since the claim is
+ * the exculpatory one. Only an image whose manifest verified, bound, anchored
+ * and came from the bytes the page loaded may light the green tick.
+ */
+test('the page-level provenance tick needs credentials, not a captured count', () => {
+  const weak = { site: {}, text: {}, images: { counts: { captured: 3 }, proven: 0 }, disclosures: [] };
+  assert.equal(V.overall(weak), 'none');
+  assert.equal(V.overall({ ...weak, images: { ...weak.images, proven: 1 } }), 'provenance');
+  // and the count comes from the signals, not from the verdict word
+  assert.equal(V.provenCount([[{ id: 'exif-camera' }], [{ id: 'c2pa-capture-unverified' }]]), 0);
+  assert.equal(V.provenCount([[{ id: 'exif-camera' }, { id: 'c2pa-capture' }]]), 1);
+  // A sentence on the page saying a person wrote it is a disclosure, and a
+  // welcome one, but "Provenance credentials present" is not what it shows.
+  assert.equal(V.overall({ site: {}, text: { verdict: 'human-disclosed' }, images: {}, disclosures: [] }), 'none');
+});
+
+/*
+ * An exculpatory verdict needs a hard signal, which lib/image-metadata.js
+ * emits only for a manifest that verified, bound, anchored and came from the
+ * bytes the page loaded. 'captured' and 'algorithmic' used to need no hard
+ * signal at all, which is how a camera EXIF tag reached the same green badge
+ * as a signed manifest — and how one XMP attribute would have, whatever the
+ * trust anchors said.
+ */
+test('a soft exculpatory signal reads as a claim, never as the verified badge', () => {
+  const proven = { id: 'c2pa-capture', hard: true, verdict: 'captured', strength: 0.9 };
+  for (const soft of [
+    { id: 'exif-camera', hard: false, verdict: 'captured', strength: 0.45 },
+    { id: 'xmp-dst-claim', hard: false, verdict: 'captured', strength: 0.9 },
+    { id: 'caption-human', hard: false, verdict: 'human-created', strength: 0.5 },
+    { id: 'x', hard: false, verdict: 'algorithmic', strength: 0.8 },
+  ]) {
+    const got = V.combineImageSignals([soft]).verdict;
+    assert.notEqual(got, soft.verdict, soft.id + ' reached an exculpatory verdict unaided');
+    assert.notEqual(V.IMAGE[got].color, V.IMAGE[soft.verdict].color, soft.id + ' is drawn as the verdict it claimed');
+    assert.ok(V.IMAGE[got].rank >= V.IMAGE[proven.verdict].rank, soft.id + ' is ranked as more trustworthy than a verified manifest');
+  }
+  assert.equal(V.combineImageSignals([proven]).verdict, 'captured', 'and the hard one still earns it');
+  // A claim is shown rather than swallowed: it has its own tier, not no-signal.
+  assert.equal(V.combineImageSignals([{ id: 'exif-camera', hard: false, verdict: 'self-claimed', strength: 0 }]).verdict, 'self-claimed');
+  assert.notEqual(V.IMAGE['self-claimed'].label, V.IMAGE['no-signal'].label, 'and it says something a reader can act on');
 });
 
 /* Broken provenance sits between an independent disclosure and the benign
@@ -101,4 +147,35 @@ test('no user-facing copy still claims signatures go unverified', () => {
   const popup = fs.readFileSync(root('popup/popup.js'), 'utf8');
   assert.match(popup, /V\.credentialCaveats\(r\)/, 'the exported report derives its caveats');
   assert.match(popup, /V\.CREDENTIAL_CAVEAT_SHORT/, 'and the receipt footer uses the shared sentence');
+});
+
+/*
+ * L5-6. The saved report called its digest "integrity" and the popup and the
+ * README said it showed the file had not been edited since it was saved. It
+ * cannot: the digest is unkeyed and it travels inside the artefact it
+ * describes, so whoever holds the file can change a finding, recompute the
+ * digest over the change, and produce something indistinguishable from a
+ * genuine export. Demonstrated below, against the shape the popup writes.
+ */
+test('the report checksum claims only what an unkeyed digest inside the file can show', () => {
+  const sha256 = (s) => require('crypto').createHash('sha256').update(s).digest('hex');
+  const findings = { url: 'https://example.invalid/', overall: 'undisclosed-ai', site: { verdict: 'ai-built' } };
+  const report = { checksum: { algorithm: 'SHA-256', digest: sha256(JSON.stringify(findings)), proves: V.REPORT_CHECKSUM_NOTE }, findings };
+
+  const forged = JSON.parse(JSON.stringify(report));
+  forged.findings.overall = 'none';
+  forged.findings.site = { verdict: 'no-signal' };
+  forged.checksum.digest = sha256(JSON.stringify(forged.findings));
+  assert.equal(forged.checksum.digest, sha256(JSON.stringify(forged.findings)), 'a forged report is self-consistent');
+  assert.notEqual(forged.checksum.digest, report.checksum.digest, 'and nothing outside it says which is which');
+
+  assert.match(V.REPORT_CHECKSUM_NOTE, /cannot show the file has not been edited/);
+  assert.match(V.REPORT_CHECKSUM_NOTE, /accidental corruption/);
+  // And the claim is made in one place, so the copies cannot drift again.
+  const overclaim = /(?:digest|checksum)[^.]{0,120}so you can show it has not been edited/i;
+  for (const f of ['popup/popup.js', 'popup/popup.html', 'README.md', 'lib/verdicts.js']) {
+    assert.ok(!overclaim.test(fs.readFileSync(root(f), 'utf8')), f + ' still says the digest proves the file is unedited');
+  }
+  assert.match(fs.readFileSync(root('popup/popup.js'), 'utf8'), /V\.REPORT_CHECKSUM_NOTE/, 'the popup uses the shared sentence');
+  assert.ok(!/integrity: \{/.test(fs.readFileSync(root('popup/popup.js'), 'utf8')), 'and the field is not called integrity');
 });

@@ -163,3 +163,75 @@ test('whole-page analysis stays fast on a hostile body of text', () => {
     }
   }
 });
+
+/*
+ * L1-1 / L1-2. The literal scanner above cannot see either of these: the XMP
+ * element regex is built with `new RegExp` from the field name, and a zlib
+ * bomb is not a regex at all. Both live in lib/image-metadata.js, which the
+ * whole-page guard never loaded, and both cost the one service worker every
+ * tab shares — measured at 29 s for a 1 MB XMP packet and a 1.1 GB resident
+ * spike for a 512 KB PNG. The bound below is derived from the fetch cap the
+ * worker actually enforces (lib/settings.js maxImageBytes), not from the
+ * sizes that happened to reproduce it.
+ */
+test('image parsing stays fast and bounded on a hostile image', async () => {
+  const M = require('../lib/image-metadata.js');
+  const zlib = require('zlib');
+  const H = require('./helpers.js');
+  const CAP = require('../lib/settings.js').DEFAULTS.maxImageBytes;   // what the worker will fetch
+
+  const riff = (chunks) => {
+    const body = H.concat([H.str('WEBP'), ...chunks]);
+    const hdr = new Uint8Array(8);
+    hdr.set(H.str('RIFF'), 0);
+    new DataView(hdr.buffer).setUint32(4, body.length, true);
+    return H.concat([hdr, body]);
+  };
+
+  /* A zTXt whose deflate stream inflates about 1000:1: at the fetch cap the
+   * same shape is several gigabytes of output from megabytes of input. */
+  const deflated = (n) => new Uint8Array(zlib.deflateSync(Buffer.alloc(n, 0x41), { level: 9 }));
+  const ztxtOf = (n, key) => H.pngChunk('zTXt', H.concat([H.str(key + '\0'), Uint8Array.from([0]), deflated(n)]));
+  const ztxt = ztxtOf(512 * 1024 * 1024, 'Comment');
+  // The same bomb split across chunks, to catch a ceiling that is per chunk
+  // and then forgotten. How much one image may keep in total is pinned
+  // behaviourally in test/image-metadata.test.js.
+  const many = Array.from({ length: 32 }, (_, i) => ztxtOf(8 * 1024 * 1024, 'C' + i));
+
+  const hostile = {
+    'PNG zTXt decompression bomb': H.png([ztxt]),
+    'PNG zTXt bomb, many chunks': H.png(many),
+    'WebP XMP packet of unclosed elements': riff([H.webpChunk('VP8 ', new Uint8Array(64)), H.webpChunk('XMP ', H.str('<CreatorTool>'.repeat(Math.floor(CAP / 13))))]),
+    'WebP XMP packet of unclosed AI flags': riff([H.webpChunk('VP8 ', new Uint8Array(64)), H.webpChunk('XMP ', H.str('<x:AIGenerated '.repeat(Math.floor(CAP / 15))))]),
+    'SVG of unclosed comments': H.str('<svg xmlns="http://www.w3.org/2000/svg">' + '<!--'.repeat(Math.floor(CAP / 4))),
+  };
+
+  const before = process.memoryUsage().rss;
+  for (const [name, bytes] of Object.entries(hostile)) {
+    assert.ok(bytes.length <= CAP + 65536, name + ' is bigger than the worker would ever fetch');
+    const t0 = Date.now();
+    await M.analyzeImageBytes(bytes, {});
+    const ms = Date.now() - t0;
+    assert.ok(ms < 4000, name + ' took ' + ms + 'ms (' + bytes.length + ' bytes)');
+  }
+  // Four of these run at once in the worker, so the whole set has to fit in
+  // memory a service worker is allowed to have.
+  const grew = (process.memoryUsage().rss - before) / (1 << 20);
+  assert.ok(grew < 256, 'parsing the hostile set grew RSS by ' + Math.round(grew) + ' MB');
+
+  /*
+   * Growth, not only a wall clock. Capping the packet bounds the damage but
+   * does not remove it: a quadratic scan inside the cap still costs seconds
+   * of the shared worker per image, four at a time. Quadrupling the packet
+   * must not do much more than quadruple the work.
+   */
+  const xmpCost = async (n) => {
+    const bytes = riff([H.webpChunk('VP8 ', new Uint8Array(64)), H.webpChunk('XMP ', H.str('<CreatorTool>'.repeat(Math.floor(n / 13))))]);
+    const t0 = Date.now();
+    await M.analyzeImageBytes(bytes, {});
+    return Date.now() - t0;
+  };
+  const quarter = await xmpCost(64 * 1024);
+  const whole = await xmpCost(256 * 1024);
+  assert.ok(whole < Math.max(150, quarter * 8), 'XMP parsing grew from ' + quarter + 'ms at 64 KB to ' + whole + 'ms at 256 KB');
+});

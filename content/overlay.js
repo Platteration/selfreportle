@@ -392,7 +392,7 @@
     const k = el('div', 'k'); k.textContent = 'Images'; d.appendChild(k);
     const v = el('div', 'v');
     const c = img.counts || {};
-    const order = ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'no-signal', 'unavailable'];
+    const order = ['ai-generated', 'ai-edited', 'ai-disclosed', 'suspected', 'captured', 'human-created', 'algorithmic', 'self-claimed', 'no-signal', 'unavailable'];
     let any = false;
     for (const key of order) {
       if (!c[key]) continue;
