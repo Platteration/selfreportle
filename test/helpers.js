@@ -22,10 +22,14 @@ function pngChunk(type, data) {
   const crc = zlib.crc32 ? u32be(zlib.crc32(concat([t, data]))) : u32be(0);
   return concat([u32be(data.length), t, data, crc]);
 }
-function png(chunks) {
+/* A real 1x1 truecolour PNG, so a browser actually decodes it. The pixel is
+ * black unless one is named: two fixtures that have to be told apart by what
+ * they look like need to look different. */
+function png(chunks, rgb) {
+  const px = rgb || [0, 0, 0];
   const sig = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdr = pngChunk('IHDR', concat([u32be(1), u32be(1), Uint8Array.from([8, 2, 0, 0, 0])]));
-  const idat = pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 0, 0, 0]))));
+  const idat = pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, px[0], px[1], px[2]]))));
   return concat([sig, ihdr, ...chunks, idat, pngChunk('IEND', new Uint8Array(0))]);
 }
 function tEXt(key, text) { return pngChunk('tEXt', concat([str(key), Uint8Array.from([0]), str(text)])); }

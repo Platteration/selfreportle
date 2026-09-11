@@ -27,14 +27,10 @@
   let runId = 0;
   let imageState = new Map();   // media element → state
   let posterSeen = new Set();
-  /* Every URL this page has had the worker fetch, for the page's whole life.
-   * The per-page cap used to count live <img> elements, so rewriting src on
-   * the same sixty elements re-armed it indefinitely: twenty ordinary batches
-   * pulled 640 requests and 2.6 GB. A budget is spent, not surveyed, so it is
-   * counted where the URLs are handed over, and nothing refills it: a real
-   * navigation re-injects this script and starts a fresh one, while a
-   * same-document href change continues the page it is already spending. */
-  const submittedUrls = new Set();
+  /* URLs handed to the worker whose answer has not come back yet, counted so
+   * a page cannot keep the ceiling below free by dropping each element as
+   * soon as its fetch is in flight. See imageBudget. */
+  const inFlightUrls = new Map();
   let textSeen = new WeakSet();
   let textCounter = 0;
   let imageCounter = 0;
@@ -133,7 +129,7 @@
     const st = { key, el: target, url: srcUrl, hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false, forced: true };
     imageState.set(target, st);
     const msg = { id: key, url: srcUrl };
-    await addPageBytes(msg);
+    await addPageBytes(msg, target);
     let resp = null;
     try { resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: [msg], settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } }); } catch (e) { resp = null; }
     const r = resp && resp.results && resp.results[0];
@@ -522,8 +518,69 @@
     }, { once: true });
   }
 
+  /*
+   * An element the page has taken out of the document is not in front of the
+   * reader any more: its badge goes with it, and so does the inspection
+   * budget it was holding. Without this a virtualised feed or a client-side
+   * route change accumulates state for pictures nobody can see, which is
+   * both a leak and — before the budget below was made a live count — the
+   * thing that made the extension go quietly blind.
+   */
+  function dropDetached() {
+    for (const [key, st] of imageState) {
+      if (st.el && st.el.isConnected === false) {
+        imageState.delete(key);
+        S.overlay.removeMarker(st.key);
+      }
+    }
+  }
+
+  /*
+   * What one view may have inspected at once.
+   *
+   * This cap used to count live <img> elements, and a src rewrite deletes
+   * the entry and re-inserts it, so rewriting the same sixty srcs re-armed
+   * it indefinitely: twenty ordinary batches pulled 640 requests and 2.6 GB.
+   * Counting instead every URL the document had ever submitted stopped that
+   * and paid for it in the reader's sight: nothing refilled the count, so a
+   * single-page app or an infinite feed went blind after sixty distinct
+   * images — for the tab's whole life, no badge, no marker, a page report
+   * indistinguishable from a clean one.
+   *
+   * Volume is bounded where it is actually spent. The worker charges each
+   * tab a request and byte budget per minute (BUDGET_REQUESTS, BUDGET_BYTES)
+   * which no amount of rewriting re-arms, and that is what answers the
+   * denial of service. What is wanted here is only a ceiling on how much of
+   * the view in front of the reader is inspected at once, so it is counted
+   * over the images this document is still tracking plus the fetches still
+   * in flight: a route change or a feed that drops its nodes gives its
+   * budget back, a page that holds sixty images on screen does not.
+   */
+  function imageBudget() {
+    const spent = new Set(inFlightUrls.keys());
+    for (const st of imageState.values()) if (st.submitted) spent.add(st.url);
+    return spent;
+  }
+
+  function holdUrl(url) { inFlightUrls.set(url, (inFlightUrls.get(url) || 0) + 1); }
+
+  function releaseUrl(entry) {
+    if (entry.released) return;
+    entry.released = true;
+    const n = (inFlightUrls.get(entry.msg.url) || 1) - 1;
+    if (n > 0) inFlightUrls.set(entry.msg.url, n); else inFlightUrls.delete(entry.msg.url);
+  }
+
+  /* Skipping an image for budget is not the same as finding nothing in it,
+   * and a reader cannot tell the two apart from a blank badge. */
+  function overBudgetSignal() {
+    return { id: 'not-budgeted', hard: false, verdict: 'unavailable', strength: 0, label: 'Not inspected: this page shows more images at once than the inspection limit', detail: 'The first ' + settings.maxImages + ' images in view have their bytes read; this one did not, so nothing here says whether it carries provenance either way.' };
+  }
+
   async function processImages(list, id) {
     sweepFetched();
+    dropDetached();
+    const spent = imageBudget();
     const toFetch = [];
     for (const item of list) {
       // One unreadable item must not cost the page every later one.
@@ -533,13 +590,20 @@
         const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
         // A poster shares its element with the video, so it is tracked by key.
         imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
+        const wanted = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && pageLoaded(item);
+        const budgeted = spent.has(item.url) || spent.size < settings.maxImages;
+        if (wanted && budgeted) {
+          spent.add(item.url);
+          st.submitted = true;
+          const msg = { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' };
+          holdUrl(item.url);
+          toFetch.push({ st, msg });
+        } else {
+          if (wanted) st.signals = [...st.signals, overBudgetSignal()];
+          st.done = true;
+          retryWhenLoaded(item, st);
+        }
         applyImageVerdict(st);
-        const budgeted = submittedUrls.has(item.url) || submittedUrls.size < settings.maxImages;
-        const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && budgeted && pageLoaded(item);
-        if (fetchable) {
-          submittedUrls.add(item.url);
-          toFetch.push({ st, msg: { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' } });
-        } else { st.done = true; retryWhenLoaded(item, st); }
       } catch (e) { /* skip this item */ }
     }
     /*
@@ -551,38 +615,48 @@
      * on the one nobody hashed. `only-if-cached` reads the response the
      * browser already holds and makes no request of its own, so it costs no
      * traffic and sends no cookies; it is same-origin only, and a blob: URL
-     * is only reachable from here at all. Where neither applies the worker
-     * still fetches, and deriveSignals will not read an exculpatory claim out
-     * of bytes nobody can tie to the picture (hints.rendered).
+     * is only reachable from here at all. Reading the cache is not the same
+     * as reading the picture, though — see showsTheseBytes, which is what
+     * decides whether these bytes may speak for it. Where neither applies the
+     * worker still fetches, and deriveSignals will not read an exculpatory
+     * claim out of bytes nobody can tie to the picture (hints.rendered).
      */
     for (const entry of toFetch) {
       if (entry.msg.kind === 'av') continue;      // a video is too large to pull through a message
-      await addPageBytes(entry.msg);
+      await addPageBytes(entry.msg, entry.st.el);
     }
     pendingImages += toFetch.length;
     refreshSummary();
-    for (let i = 0; i < toFetch.length; i += 6) {
-      if (id !== runId) return;
-      const batch = toFetch.slice(i, i + 6);
-      let resp = null;
-      try {
-        resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: batch.map((b) => b.msg), settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } });
-      } catch (e) { resp = null; }
-      if (id !== runId) return;
-      const byId = new Map(((resp && resp.results) || []).map((r) => [r.id, r]));
-      for (const { st } of batch) {
-        const r = byId.get(st.key);
-        st.done = true;
-        pendingImages = Math.max(0, pendingImages - 1);
-        if (r) {
-          st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null };
-          st.signals = [...st.hints, ...(r.signals || [])];
-        } else {
-          st.signals = [...st.hints, { id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Background inspection failed', detail: '' }];
+    try {
+      for (let i = 0; i < toFetch.length; i += 6) {
+        if (id !== runId) return;
+        const batch = toFetch.slice(i, i + 6);
+        let resp = null;
+        try {
+          resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: batch.map((b) => b.msg), settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } });
+        } catch (e) { resp = null; }
+        if (id !== runId) return;
+        const byId = new Map(((resp && resp.results) || []).map((r) => [r.id, r]));
+        for (const entry of batch) {
+          const st = entry.st;
+          const r = byId.get(st.key);
+          releaseUrl(entry);
+          st.done = true;
+          pendingImages = Math.max(0, pendingImages - 1);
+          if (r) {
+            st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null };
+            st.signals = [...st.hints, ...(r.signals || [])];
+          } else {
+            st.signals = [...st.hints, { id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Background inspection failed', detail: '' }];
+          }
+          applyImageVerdict(st);
         }
-        applyImageVerdict(st);
+        refreshSummary();
       }
-      refreshSummary();
+    } finally {
+      // Superseded runs and thrown batches release their hold too, or the
+      // budget drains without ever having fetched anything.
+      for (const entry of toFetch) releaseUrl(entry);
     }
   }
 
@@ -610,9 +684,10 @@
     return !!abs && (abs === location.origin || abs.startsWith(location.origin + '/'));
   }
 
-  /* Fills msg.base64/msg.rendered when the page can produce the bytes; leaves
-   * the message alone otherwise, and the worker's own fetch stands. */
-  async function addPageBytes(msg) {
+  /* Fills msg.base64 when the page can produce the bytes, and msg.rendered
+   * only when they have been shown to be the picture on the page; leaves the
+   * message alone otherwise, and the worker's own fetch stands. */
+  async function addPageBytes(msg, el) {
     const isBlob = /^blob:/i.test(msg.url);
     if (!isBlob && !sameOrigin(msg.url)) return;
     try {
@@ -622,8 +697,113 @@
       const cap = Math.min(buf.byteLength, settings.maxImageBytes);
       msg.base64 = toBase64(new Uint8Array(buf, 0, cap));
       msg.truncated = cap < buf.byteLength;
-      msg.rendered = true;
+      msg.rendered = !msg.truncated && (isBlob ? namesOneBlob(el, msg.url) : await showsTheseBytes(el, msg.url, buf));
     } catch (e) { msg.base64 = null; }
+  }
+
+  /*
+   * Are these the bytes on the page?
+   *
+   * The question the HTTP cache cannot answer, and reading it was a mistake.
+   * `cache: 'only-if-cached'` returns whatever the cache holds for the URL
+   * *now*, and nothing pins that entry to the response an <img> decoded: the
+   * page can overwrite its own entry whenever it likes — `fetch(url, {cache:
+   * 'reload'})`, or the same request from a frame or a worker this script
+   * never sees — so a page can show a generated picture, replace the entry
+   * with a genuinely signed photograph, and have the extension verify the
+   * photograph while the reader looks at the picture. Reproduced, at the
+   * browser layer and end to end. Nothing about the response distinguishes
+   * the two: not its status, not res.url, and not its length either — the
+   * lengths only have to match, and the generated half is the half the page
+   * is free to pad to any size it likes.
+   *
+   * So the bytes are not taken on trust. They are decoded and compared,
+   * pixel for pixel, with what this element is actually holding, and what
+   * that buys is worth stating exactly: the bytes handed to the worker
+   * decode to the picture this element is showing, so a credential read out
+   * of them is a credential about the picture in front of the reader. It is
+   * not a statement about the page's layout — an element can still be
+   * covered or replaced by something painted over it, which is equally true
+   * of the badge this extension draws next to it, and no check inside the
+   * page can settle that.
+   *
+   * Everything that cannot answer the question answers no, and the bytes are
+   * then read as what they are, a separate fetch whose claims are shown but
+   * not believed (deriveSignals, hints.rendered): a cross-origin or
+   * otherwise tainted canvas, a truncated read, an image too large to
+   * compare, an element that has moved on, differing dimensions, an
+   * animation past its first frame, or bytes that will not decode at all.
+   */
+  const MAX_COMPARE_PIXELS = 32 * 1024 * 1024;   // a 32 MP picture, four bytes a pixel
+  const COMPARE_ROWS = 64;                       // rows read back at a time
+
+  function namesOneBlob(el, url) {
+    /* A blob: URL names one immutable Blob under a name nothing can
+     * re-register — revoking it and creating another yields a different
+     * URL — so reading it back is reading what the element was given. */
+    return showingStill(el, url);
+  }
+
+  function showingStill(el, url) {
+    return !!el && el.tagName === 'IMG' && !!el.complete && (el.currentSrc || el.src) === url && el.naturalWidth > 0 && el.naturalHeight > 0;
+  }
+
+  /*
+   * `rendered` gates one thing: whether a C2PA claim may be read as
+   * provenance for the picture. A C2PA manifest always arrives inside a
+   * JUMBF store, so an image with no "jumb" in it anywhere has no claim for
+   * the flag to gate, and decoding every ordinary picture on a page a second
+   * time to prove that is a cost with nothing on the other side of it.
+   */
+  function carriesCredentials(buf) {
+    const b = new Uint8Array(buf);
+    for (let i = b.indexOf(0x6a); i >= 0 && i + 3 < b.length; i = b.indexOf(0x6a, i + 1)) {
+      if (b[i + 1] === 0x75 && b[i + 2] === 0x6d && b[i + 3] === 0x62) return true;   // "jumb"
+    }
+    return false;
+  }
+
+  async function showsTheseBytes(el, url, buf) {
+    if (!showingStill(el, url) || !carriesCredentials(buf)) return false;
+    const w = el.naturalWidth, h = el.naturalHeight;
+    if (w * h > MAX_COMPARE_PIXELS) return false;
+    let bmp = null;
+    try {
+      bmp = await createImageBitmap(new Blob([buf]));
+      // Re-asked after the await: the element may have been given something
+      // else while these bytes were decoding.
+      if (!showingStill(el, url) || bmp.width !== w || bmp.height !== h) return false;
+      const a = compareSurface(w), b = compareSurface(w);
+      for (let y = 0; y < h; y += COMPARE_ROWS) {
+        const rows = Math.min(COMPARE_ROWS, h - y);
+        a.clearRect(0, 0, w, rows); b.clearRect(0, 0, w, rows);
+        a.drawImage(el, 0, y, w, rows, 0, 0, w, rows);
+        b.drawImage(bmp, 0, y, w, rows, 0, 0, w, rows);
+        const pa = a.getImageData(0, 0, w, rows).data;
+        const pb = b.getImageData(0, 0, w, rows).data;
+        if (pa.length !== pb.length) return false;
+        // Four channels at a time: the same comparison, a quarter of the
+        // iterations, on the page's own thread.
+        const va = new Uint32Array(pa.buffer, pa.byteOffset, pa.length >> 2);
+        const vb = new Uint32Array(pb.buffer, pb.byteOffset, pb.length >> 2);
+        for (let i = 0; i < va.length; i++) if (va[i] !== vb[i]) return false;
+      }
+      return showingStill(el, url);
+    } catch (e) {
+      return false;      // tainted canvas, undecodable bytes, no createImageBitmap
+    } finally {
+      if (bmp && bmp.close) bmp.close();
+    }
+  }
+
+  /* A few rows at a time, not the whole picture twice: a 32 MP comparison
+   * would otherwise hold a quarter of a gigabyte of pixels on the page's own
+   * heap. Built through the isolated world's own bindings, so the page
+   * cannot hand back a canvas that agrees with whatever it likes. */
+  function compareSurface(w) {
+    const c = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(w, COMPARE_ROWS) : document.createElement('canvas');
+    c.width = w; c.height = COMPARE_ROWS;
+    return c.getContext('2d', { willReadFrequently: true });
   }
 
   function toBase64(bytes) {
@@ -636,6 +816,7 @@
 
   function refreshSummary() {
     if (!result) return;
+    dropDetached();
     const counts = {};
     const items = [];
     let inspected = 0;

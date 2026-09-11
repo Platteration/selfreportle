@@ -218,9 +218,13 @@ async function analyzeOne(img, maxBytes, tailBytes, pageUrl, tabId) {
   if (img.base64) {
     try {
       const bytes = fromBase64(img.base64);
-      /* The page read these out of its own cache, so they are the bytes it
-       * rendered — which is the only basis on which a provenance claim may
-       * be read as being about the picture the reader is looking at. */
+      /* The page produced these itself. `rendered` says more than that: the
+       * content script decoded them and matched them against the picture the
+       * element is showing, which is the only basis on which a provenance
+       * claim may be read as being about what the reader is looking at. The
+       * cache alone does not say it — a page can overwrite its own entry
+       * after the <img> has decoded — so an unproven read still arrives here
+       * with base64 and without the flag. */
       const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated, rendered: !!img.rendered });
       return { ...base, format: analysed.format, bytes: bytes.length, truncated: !!img.truncated, signals: analysed.signals, metadata: analysed.metadata };
     } catch (e) {

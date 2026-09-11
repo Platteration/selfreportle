@@ -7,6 +7,7 @@
  */
 const path = require('path');
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 const os = require('os');
 const assert = require('node:assert/strict');
@@ -16,6 +17,21 @@ function loadPlaywright() {
   try { return require('playwright'); } catch (e) { /* try global */ }
   const globalRoot = require('child_process').execSync('npm root -g').toString().trim();
   return require(path.join(globalRoot, 'playwright'));
+}
+
+/* One request, written to the socket exactly as given: no URL parsing, no
+ * normalisation, nothing between the string and the server. */
+function rawGet(port, target, host) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET ' + target + ' HTTP/1.1\r\nHost: ' + (host || '127.0.0.1:' + port) + '\r\nConnection: close\r\n\r\n');
+    });
+    let out = '';
+    sock.setTimeout(5000, () => { sock.destroy(); reject(new Error('timed out asking for ' + target)); });
+    sock.on('data', (d) => { out += d.toString('latin1'); });
+    sock.on('end', () => resolve(out));
+    sock.on('error', reject);
+  });
 }
 
 (async () => {
@@ -29,7 +45,35 @@ function loadPlaywright() {
   /* SEC-3: a redirector, and the loopback URL behind it. Requests to each are
    * counted so the test can say whether the worker made the hop, rather than
    * whether it read what came back. */
-  const hits = { redirector: 0, loopback: 0 };
+  const hits = { redirector: 0, loopback: 0, swap: 0 };
+
+  /*
+   * X5. A fixture server is still a server. This one used to hand out
+   * whatever `path.join(site, req.url)` reached, from a socket bound to
+   * every interface, for the length of a test run on a developer's machine
+   * and on every CI runner: `/../../../../etc/hostname` and the checkout's
+   * own `.git/config` both came back 200. A browser and node's own fetch
+   * normalise `..` away before it reaches here, which is why nobody saw it,
+   * so the suite asks with a raw socket instead (see rawGet below).
+   *
+   * The two rules its sibling repositories settled on: resolve the path and
+   * refuse anything that is not inside the fixture root, and refuse any
+   * segment beginning with a dot. Both answer 403, which no legitimate
+   * request reaches — everything the fixtures actually ask for still lands
+   * on a file, or on the same 404 as before.
+   */
+  const ROOT = fs.realpathSync(site);
+  function resolveFixture(urlPath) {
+    let decoded;
+    try { decoded = decodeURIComponent(urlPath); } catch (e) { return null; }
+    if (decoded.includes('\0')) return null;
+    const rel = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
+    if (rel.split('/').some((seg) => seg.startsWith('.'))) return null;
+    const f = path.resolve(ROOT, rel);
+    if (f !== ROOT && !f.startsWith(ROOT + path.sep)) return null;
+    return f;
+  }
+
   const server = http.createServer((req, res) => {
     const requested = req.url.split('?')[0];
     if (requested === '/redirect-to-loopback.png') {
@@ -43,11 +87,24 @@ function loadPlaywright() {
       res.statusCode = 404;
       return res.end('probe');
     }
-    const f = path.join(site, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
-    if (!fs.existsSync(f)) { res.statusCode = 404; return res.end('not found'); }
+    /* P-1: one URL, two pictures, so the test can say which one the
+     * extension hashed. The first hit is what the <img> decodes; the page
+     * then replaces the cache entry for the same URL itself. */
+    if (requested === '/swap.png') {
+      hits.swap++;
+      res.statusCode = 200;
+      res.setHeader('content-type', 'image/png');
+      res.setHeader('cache-control', 'max-age=300');
+      return res.end(fs.readFileSync(path.join(site, hits.swap === 1 ? 'shown.png' : 'camera.png')));
+    }
+    const f = resolveFixture(requested);
+    if (f === null) { res.statusCode = 403; return res.end('forbidden'); }
+    if (!fs.existsSync(f) || !fs.statSync(f).isFile()) { res.statusCode = 404; return res.end('not found'); }
     const body = fs.readFileSync(f);
     res.setHeader('content-type', TYPES[path.extname(f)] || 'application/octet-stream');
     res.setHeader('accept-ranges', 'bytes');
+    // The one fixture whose point is that the browser holds a copy of it.
+    if (requested === '/camera.png') res.setHeader('cache-control', 'max-age=300');
     // Real byte-range support, including suffix ranges, so the tail fetch
     // used for media files is exercised rather than stubbed.
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
@@ -62,8 +119,33 @@ function loadPlaywright() {
       return res.end(body.subarray(start, end + 1));
     }
     res.end(body);
-  }).listen(0);
+  }).listen(0, '127.0.0.1');
+  if (!server.listening) await new Promise((r) => server.once('listening', r));
+  /* `listen(0, cb)` passes the callback as the host, which is how a sibling
+   * repository's harness ended up on 0.0.0.0 while looking correct. */
+  assert.equal(server.address().address, '127.0.0.1', 'the fixture server must not leave loopback');
   const port = server.address().port;
+
+  /*
+   * Raw sockets, because every normal client normalises the request away.
+   * The first two were served 200, with contents, before the containment
+   * above; the dotfile rule is what keeps the fixture root's own dot
+   * directories out if one is ever created there.
+   */
+  for (const [name, target] of [
+    ['traversal to an absolute path', '/../../../../../../etc/hostname'],
+    ['traversal into the checkout', '/../../../../../..' + path.resolve(EXT, '.git', 'config')],
+    ['encoded traversal', '/%2e%2e/%2e%2e/etc/hostname'],
+    ['a dotfile under the root', '/.git/config'],
+  ]) {
+    const answer = await rawGet(port, target);
+    assert.match(answer.split('\r\n')[0], /^HTTP\/1\.1 (?:403|404) /, name + ' must be refused, got: ' + answer.split('\r\n')[0]);
+    assert.ok(!/repositoryformatversion|root:/.test(answer), name + ' leaked a file the fixture root does not contain');
+  }
+  // ...and the refusal is invisible to everything the fixtures actually ask for.
+  assert.match((await rawGet(port, '/index.html')).split('\r\n')[0], /^HTTP\/1\.1 200 /);
+  assert.match((await rawGet(port, '/')).split('\r\n')[0], /^HTTP\/1\.1 200 /);
+  assert.match((await rawGet(port, '/nope.png')).split('\r\n')[0], /^HTTP\/1\.1 404 /);
 
   const ctx = await chromium.launchPersistentContext(path.join(work, 'profile'), {
     headless: false,
@@ -79,12 +161,12 @@ function loadPlaywright() {
   });
   try {
     let sw = ctx.serviceWorkers()[0];
-    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 15000 });
+    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 30000 });
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto('http://localhost:' + port + '/');
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
 
     const result = await sw.evaluate(async (p) => {
       const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.startsWith('http://localhost:' + p));
@@ -184,6 +266,74 @@ function loadPlaywright() {
     assert.equal(moved.metadata.c2pa.verification.summary.ok, false, 'a manifest from another file must never read as verified');
     assert.equal(moved.metadata.c2pa.verification.summary.broken, true);
     assert.notEqual(moved.verdict, 'captured');
+
+    /*
+     * P-1. What is verified has to be what is displayed, and reading the
+     * page's own HTTP cache does not establish that: `only-if-cached`
+     * returns whatever the cache holds for the URL now, and a same-origin
+     * page can overwrite its own entry after the <img> has decoded. The
+     * fixture does exactly that — renders a Stable Diffusion picture, then
+     * replaces its cache entry with a genuinely signed camera capture — so
+     * the extension is handed real, valid, hard-bound credentials that
+     * describe a picture nobody on the page is looking at.
+     *
+     * The credentials are still read and shown; what they may not do is
+     * speak for the picture. `rendered` is one of the three conditions of
+     * the exculpatory gate, and it is now earned by decoding the bytes in
+     * the page and matching them against the element, not by the cache
+     * having answered at all.
+     */
+    const swap = await ctx.newPage();
+    await swap.goto('http://localhost:' + port + '/swap.html');
+    await swap.waitForTimeout(7000);
+    const swapResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.includes('/swap.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(swapResult, 'swap page result stored');
+    assert.ok(hits.swap >= 2, 'the page really did request the same URL a second time (' + hits.swap + ')');
+    const swapItems = swapResult.images.items || [];
+    const swapped = swapItems.find((i) => i.url.endsWith('swap.png'));
+    const straight = swapItems.find((i) => i.url.endsWith('camera.png'));
+    const disclaimed = (i) => (i.signals || []).some((x) => x.id === 'note' && /separate fetch/.test(x.label));
+    assert.ok(swapped, 'the swapped image was inspected');
+    // The desync is real: these are the credentials from the other picture.
+    assert.ok((swapped.metadata.c2pa.signerNames || []).includes('Fixture Camera AG'), 'the extension was handed the swapped-in photograph');
+    assert.equal(swapped.metadata.c2pa.verification.signature, 'valid', 'whose signature is genuine');
+    assert.equal(swapped.metadata.c2pa.verification.binding.status, 'valid', 'and genuinely bound to its own bytes');
+    // And it is refused as evidence about the picture on the page.
+    assert.ok(disclaimed(swapped), 'bytes that do not decode to the picture must be marked as a separate fetch');
+    assert.notEqual(swapped.verdict, 'captured');
+    assert.ok(!swapItems.some((i) => i.verdict === 'captured'), 'nothing on this page earned a capture badge');
+    assert.notEqual(swapResult.overall, 'provenance');
+    /* The control: the same signed photograph, served honestly at its own
+     * URL and never swapped. Its bytes do decode to what the element is
+     * showing, so nothing disclaims them — the leg still works where it can
+     * be earned, rather than having been quietly switched off. */
+    assert.ok(straight, 'the unswapped copy was inspected');
+    assert.ok(straight.metadata && straight.metadata.c2pa, 'and carries the same credentials');
+    assert.ok(!disclaimed(straight), 'bytes that do decode to the picture are not disclaimed');
+
+    /*
+     * P-2. The per-view inspection budget has to be refilled by what leaves
+     * the view. Charging a set nothing refills blinded the extension on any
+     * page that outlives sixty distinct images: the fixture fills the budget
+     * with one route's worth of tiles, changes route in the client, and
+     * shows three AI pictures. The volume is bounded by the worker's
+     * per-minute request and byte budget, which no page can re-arm.
+     */
+    const spa = await ctx.newPage();
+    await spa.goto('http://localhost:' + port + '/spa.html');
+    await spa.waitForTimeout(11000);
+    const spaResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.includes('/spa.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(spaResult, 'SPA result stored');
+    const routeTwo = (spaResult.images.items || []).filter((i) => /route=2/.test(i.url));
+    assert.equal(routeTwo.length, 3, 'every image of the second route was inspected (' + routeTwo.length + ' of 3)');
+    for (const i of routeTwo) assert.ok(['ai-generated', 'ai-edited'].includes(i.verdict), i.url.split('/').pop() + ' after the route change read as ' + i.verdict);
+    assert.equal(spaResult.overall, 'undisclosed-ai', 'and the page verdict says so');
 
     /*
      * SEC-3. The worker fetches with <all_urls> host permissions, so its

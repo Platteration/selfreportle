@@ -240,8 +240,50 @@ development branch.
   seconds-less GeneralizedTime was misread by about eighteen months.
 - The "box content" assertion hashing convention could never match, because
   the hashed range wrongly included the inner box header.
+- **"The bytes the page loaded" was read out of the HTTP cache, which does not
+  say what an element decoded.** The third condition of an exculpatory verdict
+  was satisfied by `fetch(url, {cache: 'only-if-cached'})` returning anything
+  at all, and a same-origin page can overwrite its own cache entry after the
+  `<img>` has decoded — `{cache: 'reload'}`, or the same request from a frame
+  or a worker the content script never sees. Rendering a generated picture and
+  then swapping the entry for a genuinely signed photograph therefore had the
+  extension verify the photograph while the reader looked at the picture, and
+  with a trust list installed that is the green camera badge on an AI image.
+  Nothing about the response tells the two apart, its length included: the
+  lengths only have to match, and the generated half is the half the page is
+  free to pad. The bytes are now decoded in the page and compared pixel for
+  pixel with what the element is holding, and the flag says exactly that much —
+  these bytes decode to the picture in front of the reader — with everything
+  that cannot be compared (cross-origin, truncated, oversized, animated,
+  undecodable, an element that has moved on) falling back to a separate fetch
+  whose claims are shown and not believed. A `blob:` URL is exempt, naming one
+  immutable Blob under a name nothing can re-register.
+- **The fixture server in `test/e2e/` served the whole machine.** It bound
+  every interface and joined the request path onto the fixture root with no
+  containment, so for the length of a test run — on CI runners too — anything
+  that could reach the port could read `/etc/hostname` or the checkout's own
+  `.git/config`. It now binds loopback and refuses both a path outside the
+  fixture root and any segment beginning with a dot; the suite asks over a raw
+  socket, since every normal client normalises the traversal away first.
 
 ### Fixed
+- **The extension went blind on single-page apps after sixty images.** The
+  per-document image budget was charged for the tab's life and refilled only by
+  a real navigation, so a client-side route change or an infinite feed — where
+  embedded provenance survives and this is most useful — stopped being
+  inspected entirely, with no badge and nothing to distinguish it from a clean
+  page. The volume it was guarding against is bounded by the worker's
+  per-minute request and byte budget, which no page can re-arm, so the count
+  here is now over the images the document is still tracking plus the fetches
+  still in flight: a torn-down view gives its budget back. An image skipped for
+  budget says so instead of looking uninspectable.
+- **A valid image with four megabytes of JUMBF boxes after it cost 54 s of the
+  service worker.** When a format parse finds no manifest the C2PA fallback
+  scans the whole file for the bytes `jumb`, up to 64 times, and each attempt
+  parsed the boxes from there to the end of the file. Box parsing is now
+  bounded for every caller, with one allowance shared across the scan's
+  attempts; the hostile-image test covers the shape, which it previously did
+  not while claiming image parsing was bounded.
 - **The saved report said signatures were never verified.** Cryptographic
   verification shipped, but three user-facing strings did not follow it: the
   exported JSON report — the artefact the reader is told to keep as evidence,

@@ -180,6 +180,17 @@ test('image parsing stays fast and bounded on a hostile image', async () => {
   const H = require('./helpers.js');
   const CAP = require('../lib/settings.js').DEFAULTS.maxImageBytes;   // what the worker will fetch
 
+  /* A run of sixteen-byte JUMBF boxes: the smallest shape that maximises how
+   * many boxes a region declares, which is what the parser's cost is counted
+   * in. Each unit is a `jumb` box eight bytes long holding an empty `jumd`,
+   * so every one of them is found by the byte-scan and none of them yields a
+   * label, which is what keeps the scan attempting. */
+  const jumbfLattice = (n) => {
+    const u32 = (v) => { const a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, v); return a; };
+    const unit = H.concat([u32(16), H.str('jumb'), u32(8), H.str('jumd')]);
+    return H.concat(Array.from({ length: Math.floor(n / unit.length) }, () => unit));
+  };
+
   const riff = (chunks) => {
     const body = H.concat([H.str('WEBP'), ...chunks]);
     const hdr = new Uint8Array(8);
@@ -204,6 +215,21 @@ test('image parsing stays fast and bounded on a hostile image', async () => {
     'WebP XMP packet of unclosed elements': riff([H.webpChunk('VP8 ', new Uint8Array(64)), H.webpChunk('XMP ', H.str('<CreatorTool>'.repeat(Math.floor(CAP / 13))))]),
     'WebP XMP packet of unclosed AI flags': riff([H.webpChunk('VP8 ', new Uint8Array(64)), H.webpChunk('XMP ', H.str('<x:AIGenerated '.repeat(Math.floor(CAP / 15))))]),
     'SVG of unclosed comments': H.str('<svg xmlns="http://www.w3.org/2000/svg">' + '<!--'.repeat(Math.floor(CAP / 4))),
+    /*
+     * A decodable image is not the end of the work. When a format-specific
+     * parse finds no manifest the C2PA fallback scans the whole buffer for
+     * the bytes "jumb", up to 64 times, and each attempt used to parse the
+     * boxes from there to the end of the file. A valid 1x1 PNG — which
+     * decodes, and styled to 100x100 passes every page-load and size gate —
+     * followed by a lattice of empty jumb/jumd boxes measured 2.1 s at
+     * 256 KB and 54.5 s at the fetch cap, in the one service worker every
+     * tab shares, four images at a time. It is the shape none of the other
+     * caps touch: nothing here inflates, decompresses or backtracks.
+     */
+    'PNG with a trailing JUMBF lattice': H.concat([H.png([]), jumbfLattice(CAP - 4096)]),
+    // The same lattice with no format in front of it, which takes the generic
+    // scan as well as the fallback, so the allowance has to cover both.
+    'JUMBF lattice and no format at all': jumbfLattice(CAP),
   };
 
   const before = process.memoryUsage().rss;
