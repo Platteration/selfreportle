@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  unit:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -30,16 +30,6 @@ jobs:
       - run: npm test
 
       - run: npm run test:conventions
-
-  e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .nvmrc
 
       # The extension has no dependencies and no lockfile, so Playwright is pinned here and
       # installed for this job only, without touching package.json. --ignore-scripts because
