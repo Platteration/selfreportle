@@ -463,7 +463,7 @@ function rawGet(port, target, host) {
     assert.ok(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length) > 0, 'toggling restores them');
 
     // Pausing a host stops the work and clears what was stored for the tab.
-    await sw.evaluate(async () => chrome.storage.sync.set({ disabledHosts: ['localhost'] }));
+    await sw.evaluate(async () => SRL.settings.save({ disabledHosts: ['localhost'] }));
     await page.waitForTimeout(1200);
     const afterPause = await sw.evaluate(async (p) => {
       const t = (await chrome.tabs.query({})).find((x) => x.url === 'http://localhost:' + p + '/');
@@ -471,7 +471,7 @@ function rawGet(port, target, host) {
     }, port);
     assert.equal(afterPause.stored, null, 'a paused host leaves no stored report');
     assert.equal(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length), 0, 'paused host has no markers');
-    await sw.evaluate(async () => chrome.storage.sync.set({ disabledHosts: [] }));
+    await sw.evaluate(async () => SRL.settings.save({ disabledHosts: [] }));
     await page.waitForTimeout(1500);
 
     /* Navigating a tab must not leave the previous page's report attached to
@@ -499,6 +499,29 @@ function rawGet(port, target, host) {
     assert.ok(mem.localhost.pages >= 2, 'repeat visits counted (' + mem.localhost.pages + ')');
     assert.ok(mem.localhost.aiPages >= 2, 'AI pages counted');
     assert.ok(mem.localhost.tools.lovable >= 1, 'tools counted per domain');
+
+    /*
+     * The flat items 0.1.0 wrote are moved under the two namespaced keys by
+     * the first load() that finds them. Staged against the real storage API
+     * rather than the unit suite's fake: planted as that build stored them,
+     * read back as this build does, and the old items gone afterwards.
+     */
+    await sw.evaluate(async () => {
+      await SRL.settings.reset();
+      await chrome.storage.sync.set({ sensitivity: 'high', maxImages: 7, disabledHosts: ['paused.example'] });
+    });
+    const migrated = await sw.evaluate(async () => {
+      const loaded = await SRL.settings.load();
+      return { loaded, all: await chrome.storage.sync.get(null) };
+    });
+    assert.deepEqual(Object.keys(migrated.all).sort(), ['selfreportle.disabledHosts.v1', 'selfreportle.settings.v1'], 'only the two namespaced items remain');
+    assert.deepEqual(migrated.all['selfreportle.settings.v1'], { sensitivity: 'high', maxImages: 7 }, 'the object carries what was stored and nothing more');
+    assert.deepEqual(migrated.all['selfreportle.disabledHosts.v1'], ['paused.example'], 'the host list is its own item');
+    assert.equal(migrated.loaded.sensitivity, 'high', 'and the reader sees the old choice');
+    assert.equal(migrated.loaded.maxImages, 7);
+    assert.deepEqual(migrated.loaded.disabledHosts, ['paused.example']);
+    await sw.evaluate(async () => SRL.settings.reset());
+    await page.waitForTimeout(1500);
     console.log('e2e OK:', JSON.stringify({ overall: result.overall, site: result.site.verdict, text: result.text.verdict, images: result.images.counts }));
   } finally {
     await ctx.close();

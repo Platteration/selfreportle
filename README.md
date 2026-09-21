@@ -155,7 +155,7 @@ lib/cbor.js                 minimal CBOR codec for C2PA claims and COSE
 lib/x509.js                 minimal DER / X.509 reader for signing certificates
 lib/c2pa-verify.js          COSE signature, assertion hashes and chain checks
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules
-lib/settings.js             defaults and storage
+lib/settings.js             every storage key, defaults, validation on read, the migration
 lib/fetch-policy.js         which URLs the worker may fetch for a page, and how they are cached
 background/service-worker.js  fetches image bytes cross-origin, caches, stores per-tab results, badge
 content/content.js          orchestrates the analyses on the page and reports results

@@ -5,6 +5,19 @@ development branch.
 
 ## Unreleased
 
+### Changed
+- **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
+  (one object) and `selfreportle.disabledHosts.v1` (its own item, so the
+  browser's per-item quota bounds the host list alone), instead of one sync
+  item per field. The first load that finds the old items copies them over
+  byte for byte and removes them only once the copy is stored. Every stored
+  value is validated field by field on the way in: an enum by an own-property
+  table, a boolean only as a boolean, a number only as a number within its
+  bounds; a value that is none of those falls back to its default on its own.
+  A stored host or number that was an object used to throw inside the storage
+  callback and leave every reader waiting for settings that never arrived.
+  Every key the extension writes is named in `lib/settings.js`.
+
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
   are verified with WebCrypto against the embedded leaf certificate

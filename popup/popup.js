@@ -37,7 +37,7 @@
     const s = await SET.load();
     const paused = SET.isHostDisabled(s, host);
     const next = paused ? s.disabledHosts.filter((h) => h !== host && !host.endsWith('.' + h)) : [...s.disabledHosts, host];
-    await SET.save({ disabledHosts: next });
+    try { await SET.save({ disabledHosts: next }); } catch (e) { /* refused past the item quota; the button reads back what is stored */ }
     await refreshPause();
   });
 
