@@ -114,7 +114,7 @@ Every row is labelled **legal duty** or **good practice**, because conflating th
 
 Providers of generative AI systems must ensure their outputs are marked in a machine-readable format and detectable as artificially generated (Art. 50(2)). Deployers must disclose deepfakes (Art. 50(4)) and AI-generated text published to inform the public on matters of public interest, unless a human has reviewed it and someone holds editorial responsibility. These obligations apply from **2 August 2026**. C2PA Content Credentials and IPTC digital source types are the most widely deployed machine-readable markers today, which is why the image analyser leans on them; there is no equivalent standard yet for text or for whole sites, so those layers rely on conventions and heuristics.
 
-## Install (unpacked)
+## Running it
 
 1. Clone this repository.
 2. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`), enable **Developer mode**.
@@ -126,15 +126,18 @@ Requires Chrome/Chromium 116 or newer.
 ## Development
 
 ```
-npm test          # unit tests (Node ≥ 18, no dependencies)
-npm run lint      # syntax check of every script
-npm run e2e       # loads the extension into Chromium via Playwright and checks a fixture site
-npm run icons     # regenerate icons/*.png
+npm test                   # unit tests (Node 22, no dependencies)
+npm run lint               # syntax check of every script
+npm run test:conventions   # the conventions shared with the sibling repositories
+npm run check              # lint, unit tests and conventions: the gate before a push
+npm run test:e2e           # loads the extension into Chromium via Playwright and checks a fixture site
+npm run test:all           # unit and end-to-end suites together
+npm run icons              # regenerate icons/*.png
 ```
 
-The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Both suites run in GitHub Actions (`.github/workflows/test.yml`).
+The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
 
-Layout:
+## Project layout
 
 ```
 manifest.json               MV3 manifest

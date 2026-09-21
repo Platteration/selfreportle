@@ -2,8 +2,8 @@
  * End-to-end check: loads the unpacked extension into Chromium via Playwright,
  * serves the fixture site, and asserts the stored page result.
  *
- *   npm run e2e            (needs `playwright` resolvable and a Chromium build)
- *   PW_CHROMIUM=/path/to/chrome npm run e2e   to pin the browser binary
+ *   npm run test:e2e       (needs `playwright` resolvable and a Chromium build)
+ *   PW_CHROMIUM=/path/to/chrome npm run test:e2e   to pin the browser binary
  */
 const path = require('path');
 const http = require('http');
