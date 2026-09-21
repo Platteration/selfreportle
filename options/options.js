@@ -31,9 +31,28 @@
 
   function flash(msg) { status.textContent = msg; setTimeout(() => { status.textContent = ''; }, 2000); }
 
+  document.getElementById('version').textContent = chrome.runtime.getManifest().version;
   fill(await S.load());
-  form.addEventListener('submit', async (e) => { e.preventDefault(); fill(await S.save(read())); flash('Saved'); });
-  document.getElementById('reset').addEventListener('click', async () => { await chrome.storage.sync.clear(); fill(await S.load()); flash('Defaults restored'); });
-  document.getElementById('clearHistory').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-history' }); flash('Domain memory cleared'); });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    /* The browser refuses a host list past its per-item quota; say so
+     * rather than flash Saved over settings that were not. */
+    try { fill(await S.save(read())); flash('Saved'); } catch (err) { flash('Could not save: ' + ((err && err.message) || err)); }
+  });
+  /* Confirmed, because neither can be undone from inside the extension:
+   * Reset is every preference and every paused host, Clear domain memory
+   * is the counters. The image cache is re-fetchable, so Clear image cache
+   * asks nothing. Cancel is the safe answer in both. */
+  document.getElementById('reset').addEventListener('click', async () => {
+    if (!window.confirm('Reset every setting to its default and clear the paused hosts? Domain memory is not touched.')) return;
+    await S.reset();
+    fill(await S.load());
+    flash('Defaults restored');
+  });
+  document.getElementById('clearHistory').addEventListener('click', async () => {
+    if (!window.confirm('Clear the per-domain memory? The counters cannot be recovered.')) return;
+    await chrome.runtime.sendMessage({ type: 'srl:clear-history' });
+    flash('Domain memory cleared');
+  });
   document.getElementById('clearCache').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-cache' }); flash('Cache cleared'); });
 })();

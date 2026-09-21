@@ -21,7 +21,10 @@
     button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
     button.primary { background: #3b7dd8; border-color: #3b7dd8; color: #fff; }
     #status { color: var(--muted); }
-    .privacy { font-size: 12px; color: var(--muted); }
+    .about { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 12px; font-size: 12px; color: var(--muted); }
+    .about h2 { font-size: 14px; margin: 0 0 4px; color: var(--fg); }
+    .about p { margin: 0 0 6px; }
+    .about a { color: inherit; }
   </style>
 </head>
 <body>
@@ -61,9 +64,13 @@
       <label class="row"><span>Stylometry sensitivity<small>Scales heuristic (vocabulary, rhythm) signals. Hard signals such as hidden characters and disclosures are unaffected.</small></span>
         <select name="sensitivity"><option value="low">Low (fewer false alarms)</option><option value="medium">Medium</option><option value="high">High</option></select></label>
     </fieldset>
-    <div class="actions"><button type="submit" class="primary">Save</button><button type="button" id="reset">Reset to defaults</button><button type="button" id="clearCache">Clear image cache</button><button type="button" id="clearHistory">Clear domain memory</button><span id="status"></span></div>
+    <div class="actions"><button type="submit" class="primary">Save</button><button type="button" id="reset">Reset to defaults</button><button type="button" id="clearCache">Clear image cache</button><button type="button" id="clearHistory">Clear domain memory</button><span id="status" role="status" aria-live="polite"></span></div>
   </form>
-  <p class="privacy">Privacy: all analysis runs locally in your browser. The only network activity is fetching image bytes from the sites you visit (credentials omitted). Nothing is sent to the extension author or any third party.</p>
+  <section class="about" aria-labelledby="about-heading">
+    <h2 id="about-heading">About</h2>
+    <p><strong>Selfreportle</strong> <span id="version"></span> reads AI-provenance and disclosure signals from a page's code, text and images in your browser. <a href="https://github.com/Platteration/selfreportle">MIT licence · source</a>.</p>
+    <p>Privacy: all analysis runs in this browser. The only network requests are for the bytes of images and media on the pages you visit, sent without cookies; nothing goes to the extension's author or to anyone else. These settings live in the browser's extension storage and travel with your browser profile if it syncs extensions.</p>
+  </section>
   <script src="../lib/settings.js"></script>
   <script src="options.js"></script>
 </body>

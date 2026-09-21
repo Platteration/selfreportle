@@ -501,6 +501,55 @@ function rawGet(port, target, host) {
     assert.ok(mem.localhost.tools.lovable >= 1, 'tools counted per domain');
 
     /*
+     * The options page. About shows the manifest's version; every control
+     * has an accessible name; and the two actions the extension cannot undo
+     * ask first, so a dismissed dialog changes nothing and an accepted one
+     * does. Clear domain memory is checked here, while the record above is
+     * fresh and no analysis is in flight to write it back.
+     */
+    const extId = await sw.evaluate(() => chrome.runtime.id);
+    const version = await sw.evaluate(() => chrome.runtime.getManifest().version);
+    const options = await ctx.newPage();
+    const optionsErrors = [];
+    options.on('pageerror', (e) => optionsErrors.push(e.message));
+    await options.goto('chrome-extension://' + extId + '/options/options.html');
+    await options.waitForTimeout(500);
+    assert.equal(await options.locator('#version').textContent(), version, 'About shows the manifest version');
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+    const unnamed = await options.evaluate(() => {
+      const byId = (id) => { const n = id && document.getElementById(id); return n ? n.textContent.trim() : ''; };
+      const name = (el) => (el.labels && [...el.labels].map((l) => l.textContent.trim()).join(' '))
+        || el.getAttribute('aria-label') || byId(el.getAttribute('aria-labelledby')) || el.textContent.trim();
+      return [...document.querySelectorAll('button, input, select, textarea, a[href]')].filter((el) => !name(el)).map((el) => el.outerHTML.slice(0, 80));
+    });
+    assert.deepEqual(unnamed, [], 'every control on the options page has an accessible name');
+    const domains = () => sw.evaluate(async () => (await chrome.storage.local.get('srl:domains'))['srl:domains'] || null);
+    options.once('dialog', (d) => d.dismiss());
+    await options.click('#clearHistory');
+    await options.waitForTimeout(300);
+    assert.ok((await domains()) && (await domains()).localhost, 'a cancelled Clear keeps the domain memory');
+    options.once('dialog', (d) => d.accept());
+    await options.click('#clearHistory');
+    await options.waitForTimeout(500);
+    assert.equal(await domains(), null, 'an accepted Clear removes it');
+    await sw.evaluate(async () => SRL.settings.save({ sensitivity: 'high' }));
+    await options.reload();
+    await options.waitForTimeout(500);
+    assert.equal(await options.locator('select[name="sensitivity"]').inputValue(), 'high', 'the form shows what is stored');
+    const sensitivity = () => sw.evaluate(async () => (await SRL.settings.load()).sensitivity);
+    options.once('dialog', (d) => d.dismiss());
+    await options.click('#reset');
+    await options.waitForTimeout(300);
+    assert.equal(await sensitivity(), 'high', 'a cancelled Reset changes nothing');
+    options.once('dialog', (d) => d.accept());
+    await options.click('#reset');
+    await options.waitForTimeout(500);
+    assert.equal(await sensitivity(), 'medium', 'an accepted Reset restores the defaults');
+    assert.equal(await options.locator('select[name="sensitivity"]').inputValue(), 'medium', 'and the form shows them');
+    assert.deepEqual(optionsErrors, []);
+    await options.close();
+
+    /*
      * The flat items 0.1.0 wrote are moved under the two namespaced keys by
      * the first load() that finds them. Staged against the real storage API
      * rather than the unit suite's fake: planted as that build stored them,

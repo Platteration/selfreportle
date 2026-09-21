@@ -51,6 +51,28 @@ undoes one passes every test it did not add.
   Everything that cannot answer answers no, and the saved report says what was not
   checked rather than implying it was.
 
+## Settings
+
+Every key the extension writes is named in `lib/settings.js` (`KEYS`): `chrome.storage.sync`
+holds `selfreportle.settings.v1`, one object with every field of `DEFAULTS` but the host
+list, and `selfreportle.disabledHosts.v1`, the paused hosts as their own item so that the
+browser's per-item quota bounds that list alone; `chrome.storage.local` holds the domain
+memory at `srl:domains`, which `lib/history.js` reads from the table; the per-tab results
+under `tab:<id>` in `chrome.storage.session` are a cache that ends with the tab, not a
+record. Every reader goes through `S.settings.load()`, which is where the migration from
+the flat items of 0.1.0 lives (read NEW; absent → copy OLD byte for byte, remove OLD only
+after the write resolved; both → NEW wins) and where validation happens: `cleanSettings`
+takes each field by the type of its default, enums through own-property tables (`has`,
+never `in` — every name on `Object.prototype` is truthy on a plain table), numbers within
+`RANGES`, and falls back field by field, never as a whole. `test/settings.test.js` walks
+`Object.getOwnPropertyNames(Object.prototype)` through `JSON.parse` and drives the migration
+against an in-memory `chrome.storage`; `test/settings-contract.test.js` pins the keys, the
+fields, the enum tables and the options page's rows as literals. Reset to defaults removes
+the two records and any legacy item (or the next load would migrate it back), never the
+domain memory; it and Clear domain memory are confirmed with `window.confirm`, Clear image
+cache is not. About reads the version from `chrome.runtime.getManifest()`, which the
+contract test holds equal to `package.json`. There is no onboarding flag to preserve.
+
 ## Conventions
 
 This repository follows `CONVENTIONS.md`, which is identical in every platteration
