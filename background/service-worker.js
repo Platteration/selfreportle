@@ -55,6 +55,12 @@ chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({ id: 'srl-inspect-image', title: 'Inspect this image for AI provenance', contexts: ['image'] });
     chrome.contextMenus.create({ id: 'srl-inspect-selection', title: 'Check selected text for AI signals', contexts: ['selection'] });
   } catch (e) { /* already created */ }
+  /* The one-time copy of the flat settings items under the namespaced keys.
+   * Here and not in load(): a reader that writes can land a stale copy over
+   * a save that completed meanwhile, and here nothing else is running yet.
+   * Idempotent, so every reason is fine, and load() reads the flat items
+   * on its own until this has run. */
+  S.settings.migrate().catch(() => {});
 });
 
 chrome.commands && chrome.commands.onCommand.addListener((command, tab) => {

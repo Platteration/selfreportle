@@ -59,19 +59,31 @@ list, and `selfreportle.disabledHosts.v1`, the paused hosts as their own item so
 browser's per-item quota bounds that list alone; `chrome.storage.local` holds the domain
 memory at `srl:domains`, which `lib/history.js` reads from the table; the per-tab results
 under `tab:<id>` in `chrome.storage.session` are a cache that ends with the tab, not a
-record. Every reader goes through `S.settings.load()`, which is where the migration from
-the flat items of 0.1.0 lives (read NEW; absent → copy OLD byte for byte, remove OLD only
-after the write resolved; both → NEW wins) and where validation happens: `cleanSettings`
-takes each field by the type of its default, enums through own-property tables (`has`,
-never `in` — every name on `Object.prototype` is truthy on a plain table), numbers within
-`RANGES`, and falls back field by field, never as a whole. `test/settings.test.js` walks
-`Object.getOwnPropertyNames(Object.prototype)` through `JSON.parse` and drives the migration
-against an in-memory `chrome.storage`; `test/settings-contract.test.js` pins the keys, the
-fields, the enum tables and the options page's rows as literals. Reset to defaults removes
-the two records and any legacy item (or the next load would migrate it back), never the
-domain memory; it and Clear domain memory are confirmed with `window.confirm`, Clear image
-cache is not. About reads the version from `chrome.runtime.getManifest()`, which the
-contract test holds equal to `package.json`. There is no onboarding flag to preserve.
+record. Every reader goes through `S.settings.load()`, which only reads: the namespaced
+record where present, else the flat items earlier builds wrote (`LEGACY_KEYS`, one sync
+item per field), and validates either through `cleanSettings` — each field by the type of
+its default, enums through own-property tables (`has`, never `in` — every name on
+`Object.prototype` is truthy on a plain table), numbers within `RANGES`, falling back field
+by field, never as a whole. The one-time copy of the flat items under the namespaced keys
+is `migrate()`, run from the worker's `onInstalled` and not from `load()`, because a reader
+that writes can land a stale copy over a save that completed in between. It writes the two
+records in two `set()` calls: sync refuses a whole call when one item is past
+`QUOTA_BYTES_PER_ITEM`, the namespaced host-list key is sixteen bytes longer than the flat
+one, so a list that fitted before can be exactly what is refused and must not take the
+settings object with it (`save()` writes the same way, rewrites the list only when it
+changed, and names the list in the error, code `hosts`, once the rest is stored). The flat
+items are never removed: sync storage is one store per browser profile, a device still on
+the old build re-creates them on every save and reads only them, so both present is the
+normal state and the namespaced record wins. `test/settings.test.js` walks
+`Object.getOwnPropertyNames(Object.prototype)` through `JSON.parse`, drives the copy against
+an in-memory `chrome.storage` with the per-item quota, and stages the read-against-save
+race; `test/settings-contract.test.js` pins the keys, the fields, the enum tables and the
+options page's rows as literals, and that no key string is spelled outside `lib/settings.js`
+(the worker's `tab:<id>` session cache is the stated exemption). Reset to defaults writes the
+defaults under the two records and removes nothing — not the flat items, never the domain
+memory; it and Clear domain memory are confirmed with `window.confirm`, Clear image cache is
+not. About reads the version from `chrome.runtime.getManifest()`, which the contract test
+holds equal to `package.json`. There is no onboarding flag to preserve.
 
 ## Conventions
 

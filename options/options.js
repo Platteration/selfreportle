@@ -35,9 +35,12 @@
   fill(await S.load());
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    /* The browser refuses a host list past its per-item quota; say so
-     * rather than flash Saved over settings that were not. */
-    try { fill(await S.save(read())); flash('Saved'); } catch (err) { flash('Could not save: ' + ((err && err.message) || err)); }
+    /* The browser refuses a host list past its per-item quota. save() has
+     * stored the rest by then and says which list it was, so the message
+     * does too, rather than flashing Saved or blaming every setting. */
+    try { fill(await S.save(read())); flash('Saved'); } catch (err) {
+      if (err && err.code === 'hosts') { fill(await S.load()); flash('Saved, except ' + err.message); } else flash('Could not save: ' + ((err && err.message) || err));
+    }
   });
   /* Confirmed, because neither can be undone from inside the extension:
    * Reset is every preference and every paused host, Clear domain memory

@@ -1,8 +1,9 @@
 /*
  * lib/settings.js: what comes back out of chrome.storage is input. Each
- * field falls back on its own, an enum is an own-property lookup, and the
- * migration from the flat keys of 0.1.0 copies bytes, removes the old keys
- * only after the copy is stored, and does nothing the second time.
+ * field falls back on its own, an enum is an own-property lookup, load()
+ * never writes, and the one-time copy of the flat items written before the
+ * namespaced record copies bytes, writes each record in its own call, never
+ * removes the flat items, and does nothing the second time.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -11,23 +12,31 @@ const S = require('../lib/settings.js');
 const D = S.DEFAULTS;
 
 /* An in-memory chrome.storage: two areas, promise-returning like the real
- * one, with a switch to make a write or a remove fail and a count of every
- * call, so a test can say "and it wrote nothing". */
+ * one, with a switch to make a write or a remove fail, a gate that parks a
+ * read after it has looked (the race), the sync area's per-item quota as
+ * Chrome measures it (key length plus the JSON of the value, 8192 bytes,
+ * the whole call refused), and a count of every call, so a test can say
+ * "and it wrote nothing". */
+const QUOTA_BYTES_PER_ITEM = 8192;
 function fakeChrome(seed = {}, local = {}) {
   const calls = { get: 0, set: 0, remove: 0 };
-  const faults = { setFails: false, removeFails: false, getFails: false };
+  const faults = { setFails: false, removeFails: false, getFails: false, hold: null };
   const clone = (v) => JSON.parse(JSON.stringify(v));
-  const area = (store) => ({
+  const area = (store, quota) => ({
     async get(keys) {
       calls.get++;
       if (faults.getFails) throw new Error('storage unavailable');
       const out = {};
       for (const k of Array.isArray(keys) ? keys : [keys]) if (store.has(k)) out[k] = clone(store.get(k));
+      if (faults.hold) { const gate = faults.hold; faults.hold = null; await gate; }
       return out;
     },
     async set(items) {
       calls.set++;
-      if (faults.setFails) throw new Error('QUOTA_BYTES_PER_ITEM quota exceeded');
+      if (faults.setFails) throw new Error('storage write refused');
+      for (const [k, v] of Object.entries(items)) {
+        if (quota && k.length + JSON.stringify(v).length > quota) throw new Error('Resource::kQuotaBytesPerItem quota exceeded');
+      }
       for (const [k, v] of Object.entries(items)) store.set(k, clone(v));
     },
     async remove(keys) {
@@ -38,7 +47,17 @@ function fakeChrome(seed = {}, local = {}) {
   });
   const sync = new Map(Object.entries(seed));
   const loc = new Map(Object.entries(local));
-  return { sync, local: loc, calls, faults, chrome: { storage: { sync: area(sync), local: area(loc) } } };
+  return { sync, local: loc, calls, faults, chrome: { storage: { sync: area(sync, QUOTA_BYTES_PER_ITEM), local: area(loc, 0) } } };
+}
+
+/* A host list whose JSON is exactly `bytes` long. */
+function hostListOfJsonBytes(bytes) {
+  const hosts = [];
+  while (JSON.stringify(hosts).length + 20 <= bytes) hosts.push('h' + String(hosts.length).padStart(4, '0') + '.example');
+  const short = bytes - JSON.stringify(hosts).length;   // 3..22: one more entry of the right length
+  hosts.push('x'.repeat(short - 3));                       // quotes and the comma
+  assert.equal(JSON.stringify(hosts).length, bytes);
+  return hosts;
 }
 
 async function withChrome(fake, fn) {
@@ -47,7 +66,7 @@ async function withChrome(fake, fn) {
   try { return await fn(); } finally { global.chrome = real; }
 }
 
-/* The sixteen flat items of 0.1.0, every one away from its default. */
+/* The sixteen flat items an earlier build wrote, every one away from its default. */
 const LEGACY = {
   enabled: false, showPill: false, showImageBadges: false, showTextMarkers: false, markUnflaggedImages: true,
   fetchImages: false, maxImages: 7, maxImageBytes: 128 * 1024, inspectMedia: false, maxMediaBytes: 96 * 1024,
@@ -122,11 +141,12 @@ test('without chrome.storage, load() is the defaults', async () => {
   try { assert.deepEqual(await S.load(), D); } finally { global.chrome = real; }
 });
 
-test('a fresh install reads the defaults and writes nothing', async () => {
+test('a fresh install reads the defaults and writes nothing, and the copy has nothing to copy', async () => {
   const fake = fakeChrome();
   await withChrome(fake, async () => {
     assert.deepEqual(await S.load(), D);
-    assert.deepEqual(fake.calls, { get: 1, set: 0, remove: 0 });
+    assert.deepEqual(await S.migrate(), []);
+    assert.deepEqual(fake.calls, { get: 2, set: 0, remove: 0 });
     assert.equal(fake.sync.size, 0);
   });
 });
@@ -140,25 +160,37 @@ test('a storage that cannot be read is the defaults, not a hang', async () => {
   });
 });
 
-test('migration, old only: copied under the new keys, then the old ones go', async () => {
+test('before the copy, load() reads the flat items and writes nothing', async () => {
   const fake = fakeChrome(LEGACY);
   await withChrome(fake, async () => {
     const s = await S.load();
     assert.deepEqual(s, { ...LEGACY, disabledHosts: ['example.com', 'intranet.local'] }, 'the reader sees the old values');
-    assert.deepEqual([...fake.sync.keys()].sort(), [S.KEYS.disabledHosts, S.KEYS.settings].sort(), 'only the two new items remain');
-    assert.deepEqual(fake.sync.get(S.KEYS.settings), withoutHosts(LEGACY), 'the object carries every field but the hosts');
-    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), LEGACY.disabledHosts, 'the hosts as they were stored, uncanonicalised');
-    assert.deepEqual(fake.calls, { get: 1, set: 1, remove: 1 });
+    assert.deepEqual([...fake.sync.keys()].sort(), Object.keys(LEGACY).sort(), 'the store is as it was');
+    assert.deepEqual(fake.calls, { get: 1, set: 0, remove: 0 });
   });
 });
 
-test('migration copies bytes; validation happens on the read, not in the copy', async () => {
+test('the copy, flat items only: each record under its key in its own call, the flat items kept', async () => {
+  const fake = fakeChrome(LEGACY);
+  await withChrome(fake, async () => {
+    assert.deepEqual(await S.migrate(), [S.KEYS.settings, S.KEYS.disabledHosts]);
+    assert.deepEqual([...fake.sync.keys()].sort(), [...Object.keys(LEGACY), S.KEYS.disabledHosts, S.KEYS.settings].sort(), 'the flat items stay: a device on the old build reads only them');
+    assert.deepEqual(fake.sync.get(S.KEYS.settings), withoutHosts(LEGACY), 'the object carries every field but the hosts');
+    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), LEGACY.disabledHosts, 'the hosts as they were stored, uncanonicalised');
+    assert.deepEqual(fake.calls, { get: 1, set: 2, remove: 0 });
+    const s = await S.load();
+    assert.deepEqual(s, { ...LEGACY, disabledHosts: ['example.com', 'intranet.local'] });
+  });
+});
+
+test('the copy carries bytes; validation happens on the read', async () => {
   const fake = fakeChrome({ sensitivity: 'constructor', maxImages: 'abc', enabled: 'false', disabledHosts: [3, 'A.b.'] });
   await withChrome(fake, async () => {
-    const s = await S.load();
+    await S.migrate();
     assert.equal(fake.sync.get(S.KEYS.settings).sensitivity, 'constructor', 'stored as it was');
     assert.equal(fake.sync.get(S.KEYS.settings).maxImages, 'abc');
     assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), [3, 'A.b.']);
+    const s = await S.load();
     assert.equal(s.sensitivity, 'medium', 'read as its default');
     assert.equal(s.maxImages, 60);
     assert.equal(s.enabled, true);
@@ -166,93 +198,132 @@ test('migration copies bytes; validation happens on the read, not in the copy', 
   });
 });
 
-test('migration, new only: read as is, nothing written', async () => {
+test('namespaced only: read as is, nothing written by the copy or the read', async () => {
   const fake = fakeChrome({ [S.KEYS.settings]: withoutHosts(LEGACY), [S.KEYS.disabledHosts]: ['x.test'] });
   await withChrome(fake, async () => {
-    const s = await S.load();
-    assert.deepEqual(s, { ...LEGACY, disabledHosts: ['x.test'] });
-    assert.deepEqual(fake.calls, { get: 1, set: 0, remove: 0 });
+    assert.deepEqual(await S.migrate(), []);
+    assert.deepEqual(await S.load(), { ...LEGACY, disabledHosts: ['x.test'] });
+    assert.deepEqual(fake.calls, { get: 2, set: 0, remove: 0 });
   });
 });
 
-test('migration, both present: new wins and the old keys are removed', async () => {
-  const fake = fakeChrome({ ...LEGACY, [S.KEYS.settings]: { sensitivity: 'low' }, [S.KEYS.disabledHosts]: ['new.test'] });
+test('both present: the namespaced record wins and the flat items are left untouched', async () => {
+  const seed = { ...LEGACY, [S.KEYS.settings]: { sensitivity: 'low' }, [S.KEYS.disabledHosts]: ['new.test'] };
+  const fake = fakeChrome(seed);
   await withChrome(fake, async () => {
     const s = await S.load();
     assert.equal(s.sensitivity, 'low');
-    assert.equal(s.enabled, true, 'a field the new record lacks is its default, not the old value');
+    assert.equal(s.enabled, true, 'a field the namespaced record lacks is its default, not the flat item');
     assert.deepEqual(s.disabledHosts, ['new.test']);
-    assert.deepEqual([...fake.sync.keys()].sort(), [S.KEYS.disabledHosts, S.KEYS.settings].sort());
-    assert.deepEqual(fake.sync.get(S.KEYS.settings), { sensitivity: 'low' }, 'the new record is untouched');
-    assert.deepEqual(fake.calls, { get: 1, set: 0, remove: 1 });
+    assert.deepEqual(await S.migrate(), [], 'nothing to copy');
+    assert.deepEqual(Object.fromEntries(fake.sync), seed, 'every item exactly as it was');
+    assert.deepEqual(fake.calls, { get: 2, set: 0, remove: 0 });
   });
 });
 
-test('migration, one record only: the other stays absent and reads as its default', async () => {
+test('one record only: the copy writes just that one, the other reads as its default', async () => {
   const fake = fakeChrome({ disabledHosts: ['only.test'] });
   await withChrome(fake, async () => {
-    const s = await S.load();
-    assert.deepEqual(s, { ...D, disabledHosts: ['only.test'] });
-    assert.deepEqual([...fake.sync.keys()], [S.KEYS.disabledHosts]);
-    const again = await S.load();
-    assert.deepEqual(again, s);
-    assert.deepEqual(fake.calls, { get: 2, set: 1, remove: 1 });
+    assert.deepEqual(await S.migrate(), [S.KEYS.disabledHosts]);
+    assert.deepEqual([...fake.sync.keys()].sort(), ['disabledHosts', S.KEYS.disabledHosts].sort());
+    assert.deepEqual(await S.load(), { ...D, disabledHosts: ['only.test'] });
+    assert.deepEqual(fake.calls, { get: 2, set: 1, remove: 0 });
   });
 });
 
-test('migration, write fails: the old keys stay for next time and the reader still sees them', async () => {
+test('the copy is refused: the flat items stay, the reader still sees them, the next run completes it', async () => {
   const fake = fakeChrome(LEGACY);
   fake.faults.setFails = true;
   await withChrome(fake, async () => {
-    const s = await S.load();
-    assert.equal(s.sensitivity, 'high', 'the values the user chose, not the defaults');
+    assert.deepEqual(await S.migrate(), [], 'nothing written');
     assert.deepEqual([...fake.sync.keys()].sort(), Object.keys(LEGACY).sort(), 'nothing removed, nothing added');
-    assert.deepEqual(fake.calls, { get: 1, set: 1, remove: 0 });
+    assert.equal((await S.load()).sensitivity, 'high', 'the values the user chose, not the defaults');
+    assert.deepEqual(fake.calls, { get: 2, set: 2, remove: 0 });
     fake.faults.setFails = false;
-    await S.load();
-    assert.deepEqual([...fake.sync.keys()].sort(), [S.KEYS.disabledHosts, S.KEYS.settings].sort(), 'the next load completes it');
+    assert.deepEqual(await S.migrate(), [S.KEYS.settings, S.KEYS.disabledHosts]);
+    assert.ok(fake.sync.has(S.KEYS.settings) && fake.sync.has('sensitivity'), 'copied, the flat items kept');
   });
 });
 
-test('migration, remove fails: both present until the next load, which reads new and retries', async () => {
-  const fake = fakeChrome(LEGACY);
-  fake.faults.removeFails = true;
+/* QUOTA_BYTES_PER_ITEM counts the key, and the namespaced host-list key is
+ * sixteen bytes longer than the flat one: a list of 8170 JSON bytes fitted
+ * under `disabledHosts` (8183) and is refused under
+ * `selfreportle.disabledHosts.v1` (8199). It must not take the settings
+ * object with it, and the rest must still save. */
+test('a host list that fitted under the short key: the settings still copy and still save', async () => {
+  const hosts = hostListOfJsonBytes(8170);
+  const fake = fakeChrome({ sensitivity: 'high', maxImages: 7, disabledHosts: hosts });
   await withChrome(fake, async () => {
+    assert.deepEqual(await S.migrate(), [S.KEYS.settings], 'the object copied, the list refused');
+    assert.deepEqual(fake.sync.get(S.KEYS.settings), { sensitivity: 'high', maxImages: 7 });
+    assert.equal(fake.sync.has(S.KEYS.disabledHosts), false);
     const s = await S.load();
     assert.equal(s.sensitivity, 'high');
-    assert.ok(fake.sync.has(S.KEYS.settings) && fake.sync.has('sensitivity'), 'copied, old not removed');
-    fake.faults.removeFails = false;
-    fake.sync.set(S.KEYS.settings, { ...fake.sync.get(S.KEYS.settings), sensitivity: 'low' }); // a later build wrote NEW
-    const again = await S.load();
-    assert.equal(again.sensitivity, 'low', 'new wins over the stale old copy');
-    assert.deepEqual([...fake.sync.keys()].sort(), [S.KEYS.disabledHosts, S.KEYS.settings].sort());
-    assert.deepEqual(fake.calls, { get: 2, set: 1, remove: 2 });
+    assert.equal(s.disabledHosts.length, hosts.length, 'the list is read from the flat item');
+    const saved = await S.save({ sensitivity: 'low' });
+    assert.equal(saved.sensitivity, 'low');
+    assert.equal(saved.disabledHosts.length, hosts.length, 'and kept across a save that did not touch it');
+    assert.equal(fake.sync.get(S.KEYS.settings).sensitivity, 'low');
+    assert.equal(fake.sync.has(S.KEYS.disabledHosts), false, 'an unchanged list is not rewritten, so nothing is refused');
+    /* Changing the list is what asks the browser again, and the refusal
+     * names the list while the rest of the save has already landed. */
+    await assert.rejects(S.save({ sensitivity: 'medium', disabledHosts: [...hosts, 'one.more.example'] }), (e) => {
+      assert.equal(e.code, 'hosts');
+      assert.match(e.message, /paused-host list is too long/);
+      return true;
+    });
+    assert.equal(fake.sync.get(S.KEYS.settings).sensitivity, 'medium', 'the settings object was written in its own call');
+    assert.equal(fake.sync.has(S.KEYS.disabledHosts), false);
+    const shorter = await S.save({ disabledHosts: hosts.slice(0, 10) });
+    assert.equal(shorter.disabledHosts.length, 10);
+    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), hosts.slice(0, 10), 'a list that fits is stored and wins over the flat one');
+    assert.equal((await S.load()).disabledHosts.length, 10);
   });
 });
 
-test('migration runs once: the second load writes nothing', async () => {
+test('the copy runs once: the second run writes nothing', async () => {
   const fake = fakeChrome(LEGACY);
   await withChrome(fake, async () => {
-    const first = await S.load();
-    const second = await S.load();
-    assert.deepEqual(second, first);
-    assert.deepEqual(fake.calls, { get: 2, set: 1, remove: 1 });
+    assert.deepEqual(await S.migrate(), [S.KEYS.settings, S.KEYS.disabledHosts]);
+    assert.deepEqual(await S.migrate(), []);
+    assert.deepEqual(fake.calls, { get: 2, set: 2, remove: 0 });
   });
 });
 
-test('concurrent loads during the migration agree and leave one consistent store', async () => {
+test('concurrent copies agree and leave one consistent store', async () => {
   const fake = fakeChrome(LEGACY);
   await withChrome(fake, async () => {
-    const [a, b, c] = await Promise.all([S.load(), S.load(), S.load()]);
-    assert.deepEqual(a, b);
-    assert.deepEqual(b, c);
-    assert.equal(a.sensitivity, 'high');
-    assert.deepEqual([...fake.sync.keys()].sort(), [S.KEYS.disabledHosts, S.KEYS.settings].sort());
+    await Promise.all([S.migrate(), S.migrate(), S.migrate()]);
     assert.deepEqual(fake.sync.get(S.KEYS.settings), withoutHosts(LEGACY));
+    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), LEGACY.disabledHosts);
+    const [a, b] = await Promise.all([S.load(), S.load()]);
+    assert.deepEqual(a, b);
+    assert.equal(a.sensitivity, 'high');
   });
 });
 
-test('save() writes the two records, hosts apart, and returns the cleaned merge', async () => {
+/* A reader that had looked at the flat items and not yet acted must not be
+ * able to land anything over a save that completed in between: load()
+ * never writes. The gate parks the read after it has looked. */
+test('load() never writes, so a read that raced a save cannot revert it', async () => {
+  const fake = fakeChrome(LEGACY);
+  await withChrome(fake, async () => {
+    let release;
+    fake.faults.hold = new Promise((r) => { release = r; });
+    const parked = S.load();
+    const saved = await S.save({ sensitivity: 'low', disabledHosts: ['new.example'] });
+    assert.equal(saved.sensitivity, 'low');
+    release();
+    const stale = await parked;
+    assert.equal(stale.sensitivity, 'high', 'the parked reader saw the store as it was');
+    assert.deepEqual(await S.load(), saved, 'and changed nothing');
+    assert.equal(fake.sync.get(S.KEYS.settings).sensitivity, 'low');
+    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), ['new.example']);
+    assert.deepEqual(fake.calls, { get: 3, set: 2, remove: 0 }, 'the only writes are the save\'s two');
+  });
+});
+
+test('save() writes the two records in two calls, hosts apart and only when changed, and returns the cleaned merge', async () => {
   const fake = fakeChrome();
   await withChrome(fake, async () => {
     const s = await S.save({ sensitivity: 'high', disabledHosts: ['A.b.', 7], maxImages: '3', later: true });
@@ -265,24 +336,41 @@ test('save() writes the two records, hosts apart, and returns the cleaned merge'
     assert.equal('disabledHosts' in record, false, 'the object never carries the host list');
     assert.deepEqual(Object.keys(record).sort(), Object.keys(D).filter((k) => k !== 'disabledHosts').sort());
     assert.deepEqual(await S.load(), s);
+    assert.equal(fake.calls.set, 2, 'one call per record');
+    await S.save({ sensitivity: 'low' });
+    assert.equal(fake.calls.set, 3, 'an unchanged host list is not rewritten');
+    await S.save({ disabledHosts: [] });
+    assert.equal(fake.calls.set, 5);
+    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), []);
   });
 });
 
-test('save() rejects when the browser refuses the write', async () => {
+test('save() rejects when the browser refuses the write, naming the host list when that is what it was', async () => {
   const fake = fakeChrome();
   fake.faults.setFails = true;
   await withChrome(fake, async () => {
-    await assert.rejects(S.save({ disabledHosts: ['a.b'] }), /quota/);
+    await assert.rejects(S.save({ sensitivity: 'high' }), (e) => e.code === undefined && /refused/.test(e.message));
     assert.equal(fake.sync.size, 0);
+  });
+  const quota = fakeChrome();
+  await withChrome(quota, async () => {
+    await assert.rejects(S.save({ disabledHosts: hostListOfJsonBytes(8200) }), (e) => e.code === 'hosts' && /paused-host list is too long to store; remove some hosts/.test(e.message));
+    assert.ok(quota.sync.has(S.KEYS.settings), 'the settings object was stored on its own');
+    assert.equal(quota.sync.has(S.KEYS.disabledHosts), false);
   });
 });
 
-test('reset() removes the settings records and any legacy item, and nothing in local', async () => {
-  const fake = fakeChrome({ [S.KEYS.settings]: { sensitivity: 'high' }, [S.KEYS.disabledHosts]: ['a.b'], sensitivity: 'low' }, { [S.KEYS.domains]: { 'a.b': { pages: 3 } } });
+test('reset() writes the defaults under the two records and removes nothing: not the flat items, not local', async () => {
+  const seed = { [S.KEYS.settings]: { sensitivity: 'high' }, [S.KEYS.disabledHosts]: ['a.b'], sensitivity: 'low', disabledHosts: ['old.b'] };
+  const fake = fakeChrome(seed, { [S.KEYS.domains]: { 'a.b': { pages: 3 } } });
   await withChrome(fake, async () => {
     await S.reset();
-    assert.equal(fake.sync.size, 0, 'sync is empty');
-    assert.deepEqual(await S.load(), D, 'and a stale legacy item cannot migrate back over the defaults');
+    assert.deepEqual(await S.load(), D, 'the defaults, over whatever the flat items say');
+    assert.deepEqual(fake.sync.get(S.KEYS.settings), withoutHosts(D));
+    assert.deepEqual(fake.sync.get(S.KEYS.disabledHosts), []);
+    assert.equal(fake.sync.get('sensitivity'), 'low', 'the flat item a device on the old build reads is untouched');
+    assert.deepEqual(fake.sync.get('disabledHosts'), ['old.b']);
     assert.deepEqual(fake.local.get(S.KEYS.domains), { 'a.b': { pages: 3 } }, 'domain memory is not a setting');
+    assert.deepEqual(fake.calls, { get: 1, set: 2, remove: 0 }, 'two writes, no remove');
   });
 });

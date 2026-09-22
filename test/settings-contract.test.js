@@ -13,6 +13,8 @@ const H = require('../lib/history.js');
 
 const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
+const APP_NAME = 'Selfreportle';
+const SOURCE_URL = 'https://github.com/Platteration/selfreportle';
 
 test('the storage keys', () => {
   assert.deepEqual({ ...S.KEYS }, {
@@ -24,7 +26,11 @@ test('the storage keys', () => {
   assert.ok(Object.isFrozen(S.KEYS));
 });
 
-test('the legacy keys of 0.1.0, one item per field', () => {
+/* The flat items written before the namespaced record. They are read
+ * whenever the namespaced key is absent and never removed: sync storage is
+ * one store per browser profile, and a device still on the old build writes
+ * only these and reads only these. */
+test('the legacy keys, one item per field, kept for the old build', () => {
   assert.deepEqual([...S.LEGACY_KEYS], [
     'enabled', 'showPill', 'showImageBadges', 'showTextMarkers', 'markUnflaggedImages', 'fetchImages',
     'maxImages', 'maxImageBytes', 'inspectMedia', 'maxMediaBytes', 'minImageSize', 'sensitivity', 'mood',
@@ -94,26 +100,68 @@ test('the options page confirms what it cannot undo, and only that', () => {
   assert.doesNotMatch(js, /chrome\.storage\./, 'the options page touches no storage key of its own');
 });
 
-test('About shows the manifest version, and the manifest agrees with package.json', () => {
+test('About: the name, the manifest version (equal to package.json), the source link that opens beside the page', () => {
   const manifest = JSON.parse(read('manifest.json'));
   const pkg = JSON.parse(read('package.json'));
   assert.equal(manifest.version, pkg.version);
+  assert.equal(manifest.short_name, APP_NAME);
   assert.match(read('options/options.js'), /chrome\.runtime\.getManifest\(\)\.version/);
   const html = read('options/options.html');
-  assert.match(html, /id="version"/);
-  assert.match(html, /MIT licence · source/);
-  assert.match(html, /href="https:\/\/github\.com\/Platteration\/selfreportle"/);
+  assert.match(html, /<strong>Selfreportle<\/strong> <span id="version"><\/span>/, 'the app name beside the version');
+  /* options_ui.open_in_tab: a link without target navigates the options tab
+   * itself to the source host. */
+  assert.ok(html.includes(`<a href="${SOURCE_URL}" target="_blank" rel="noopener noreferrer">MIT licence · source</a>`), 'the licence and source link');
+  assert.match(html, /Privacy: all analysis runs in this browser/, 'the privacy sentence');
+});
+
+/* Every storage key the extension writes is spelled in lib/settings.js and
+ * nowhere else in the shipped scripts, so a new key added beside its own
+ * module lands here. The one exemption is stated: the worker's per-tab
+ * results under 'tab:<id>' in chrome.storage.session are a cache that ends
+ * with the tab, not a record, and are built where they are used. */
+test('no storage key string is spelled outside lib/settings.js', () => {
+  const files = [];
+  for (const dir of ['lib', 'background', 'content', 'popup', 'options', 'publisher']) {
+    for (const name of fs.readdirSync(path.join(root, dir))) if (name.endsWith('.js')) files.push(path.join(dir, name));
+  }
+  assert.ok(files.length > 15, 'the walk found the shipped scripts');
+  const spelled = [];
+  for (const f of files) {
+    if (f === path.join('lib', 'settings.js')) continue;
+    const src = read(f);
+    for (const m of src.matchAll(/['"`](srl:domains|selfreportle\.[A-Za-z][A-Za-z0-9.]*)['"`]/g)) spelled.push(f + ': ' + m[1]);
+    for (const m of src.matchAll(/chrome\.storage\.(sync|local)\.(get|set|remove|clear)\(/g)) {
+      assert.equal(f, path.join('lib', 'history.js'), f + ' reaches chrome.storage.' + m[1] + ' directly; only lib/settings.js and lib/history.js (through S.KEYS.domains) do');
+    }
+    for (const m of src.matchAll(/chrome\.storage\.session\b/g)) assert.equal(f, path.join('background', 'service-worker.js'), f + ' uses the session area, which only the worker\'s tab cache does');
+  }
+  assert.deepEqual(spelled, [], 'strings outside the table that look like a storage key');
+});
+
+/* The one-time copy of the flat items runs from the worker's onInstalled,
+ * and load() only reads: a reader that writes can land a stale copy over a
+ * save that completed in between (test/settings.test.js stages the race). */
+test('the copy runs from onInstalled, and load() is read-only', () => {
+  const SW = read('background/service-worker.js');
+  assert.match(SW, /chrome\.runtime\.onInstalled\.addListener\([\s\S]*?S\.settings\.migrate\(\)/, 'the worker copies on install and update');
+  assert.doesNotMatch(String(S.load), /\.set\(|\.remove\(|migrate\(/, 'load() writes nothing');
+  assert.doesNotMatch(String(S.migrate) + String(S.save) + String(S.reset), /\.remove\(|\.clear\(/, 'nothing removes the flat items');
 });
 
 test('the accessibility floor on the options page', () => {
   const html = read('options/options.html');
-  /* Every control sits inside its label; a control outside one needs a
-   * name of its own. */
+  /* A control has a name when a <label> wraps it, a <label for> names its
+   * id, or it carries aria-label/aria-labelledby. An id alone names
+   * nothing. */
+  const labelFor = new Set([...html.matchAll(/<label\b[^>]*\bfor="([^"]+)"/g)].map((m) => m[1]));
   const controls = [...html.matchAll(/<(input|select|textarea)\b[^>]*>/g)];
+  assert.ok(controls.length >= 16, 'the walk found the controls');
   for (const c of controls) {
     const before = html.slice(0, c.index);
-    const inLabel = before.lastIndexOf('<label') > before.lastIndexOf('</label>');
-    assert.ok(inLabel || /aria-label=|id="/.test(c[0]), 'unlabelled control: ' + c[0]);
+    const wrapped = before.lastIndexOf('<label') > before.lastIndexOf('</label>');
+    const id = (c[0].match(/\bid="([^"]+)"/) || [])[1];
+    const named = wrapped || (id !== undefined && labelFor.has(id)) || /\baria-label(?:ledby)?="[^"]+"/.test(c[0]);
+    assert.ok(named, 'unlabelled control: ' + c[0]);
   }
   for (const b of [...html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)]) {
     assert.ok(b[1].trim() || /aria-label=/.test(b[0]), 'a button with no text needs aria-label: ' + b[0]);

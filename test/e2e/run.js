@@ -550,26 +550,38 @@ function rawGet(port, target, host) {
     await options.close();
 
     /*
-     * The flat items 0.1.0 wrote are moved under the two namespaced keys by
-     * the first load() that finds them. Staged against the real storage API
-     * rather than the unit suite's fake: planted as that build stored them,
-     * read back as this build does, and the old items gone afterwards.
+     * The flat items written before the namespaced record, against the real
+     * storage API rather than the unit suite's fake: planted as an earlier
+     * build stored them, read by load() without any write, copied by
+     * migrate() (what the worker runs from onInstalled) with the flat items
+     * left in place for a device still on the old build, and then the
+     * namespaced record wins over them.
      */
     await sw.evaluate(async () => {
-      await SRL.settings.reset();
+      await chrome.storage.sync.clear();
       await chrome.storage.sync.set({ sensitivity: 'high', maxImages: 7, disabledHosts: ['paused.example'] });
     });
+    const flatOnly = await sw.evaluate(async () => ({ loaded: await SRL.settings.load(), keys: Object.keys(await chrome.storage.sync.get(null)).sort() }));
+    assert.equal(flatOnly.loaded.sensitivity, 'high', 'a reader sees the flat items before any copy');
+    assert.deepEqual(flatOnly.loaded.disabledHosts, ['paused.example']);
+    assert.deepEqual(flatOnly.keys, ['disabledHosts', 'maxImages', 'sensitivity'], 'and writes nothing');
     const migrated = await sw.evaluate(async () => {
-      const loaded = await SRL.settings.load();
-      return { loaded, all: await chrome.storage.sync.get(null) };
+      const written = await SRL.settings.migrate();
+      return { written, all: await chrome.storage.sync.get(null), loaded: await SRL.settings.load() };
     });
-    assert.deepEqual(Object.keys(migrated.all).sort(), ['selfreportle.disabledHosts.v1', 'selfreportle.settings.v1'], 'only the two namespaced items remain');
+    assert.deepEqual(migrated.written, ['selfreportle.settings.v1', 'selfreportle.disabledHosts.v1']);
+    assert.deepEqual(Object.keys(migrated.all).sort(), ['disabledHosts', 'maxImages', 'selfreportle.disabledHosts.v1', 'selfreportle.settings.v1', 'sensitivity'], 'the copy is added and the flat items stay');
     assert.deepEqual(migrated.all['selfreportle.settings.v1'], { sensitivity: 'high', maxImages: 7 }, 'the object carries what was stored and nothing more');
     assert.deepEqual(migrated.all['selfreportle.disabledHosts.v1'], ['paused.example'], 'the host list is its own item');
-    assert.equal(migrated.loaded.sensitivity, 'high', 'and the reader sees the old choice');
+    assert.equal(migrated.loaded.sensitivity, 'high');
     assert.equal(migrated.loaded.maxImages, 7);
-    assert.deepEqual(migrated.loaded.disabledHosts, ['paused.example']);
-    await sw.evaluate(async () => SRL.settings.reset());
+    const overridden = await sw.evaluate(async () => {
+      await SRL.settings.save({ sensitivity: 'low' });
+      return { loaded: await SRL.settings.load(), flat: (await chrome.storage.sync.get('sensitivity')).sensitivity };
+    });
+    assert.equal(overridden.loaded.sensitivity, 'low', 'the namespaced record wins');
+    assert.equal(overridden.flat, 'high', 'and the flat item is left as it was');
+    await sw.evaluate(async () => chrome.storage.sync.clear());
     await page.waitForTimeout(1500);
     console.log('e2e OK:', JSON.stringify({ overall: result.overall, site: result.site.verdict, text: result.text.verdict, images: result.images.counts }));
   } finally {

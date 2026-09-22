@@ -9,19 +9,25 @@ development branch.
 - **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
   (one object) and `selfreportle.disabledHosts.v1` (its own item, so the
   browser's per-item quota bounds the host list alone), instead of one sync
-  item per field. The first load that finds the old items copies them over
-  byte for byte and removes them only once the copy is stored. Every stored
-  value is validated field by field on the way in: an enum by an own-property
-  table, a boolean only as a boolean, a number only as a number within its
-  bounds; a value that is none of those falls back to its default on its own.
-  A stored host or number that was an object used to throw inside the storage
-  callback and leave every reader waiting for settings that never arrived.
-  Every key the extension writes is named in `lib/settings.js`.
+  item per field. On install or update the worker copies the flat items
+  under the new keys byte for byte, one record per write so a paused-host
+  list the browser's per-item quota refuses does not take the rest with it;
+  the flat items are left in place, because a device still on an earlier
+  build reads only them, and the namespaced record wins where both exist.
+  Readers never write. Every stored value is validated field by field on the
+  way in: an enum by an own-property table, a boolean only as a boolean, a
+  number only as a number within its bounds; a value that is none of those
+  falls back to its default on its own. A stored host or number that was an
+  object used to throw inside the storage callback and leave every reader
+  waiting for settings that never arrived. Every key the extension writes is
+  named in `lib/settings.js`.
 - **The settings page asks before Reset to defaults and Clear domain memory**,
   the two actions it cannot undo (Clear image cache still asks nothing: a
   cache is re-fetchable), reports a save the browser refused instead of
-  flashing Saved, and carries an About line with the version from the
-  manifest, the licence and source link, and what the extension sends where.
+  flashing Saved — naming the paused-host list when that is what was too
+  long — and carries an About line with the version from the manifest, the
+  licence and source link (opened beside the page), and what the extension
+  sends where.
 
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
