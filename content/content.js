@@ -15,10 +15,22 @@
   const BLOCK_SEL = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd, dt, figcaption, td, th, pre, summary';
   const SKIP_SEL = 'srl-overlay, [data-srl-ui], script, style, noscript, template, textarea, [contenteditable="true"], svg';
 
+  /* location.hostname keeps a trailing dot when the page was reached by its
+   * fully qualified name ("example.com."). It is the same host, but it
+   * matches no rule written against the name — the reader's paused-host
+   * list, the platform-label hosts, the builder fingerprints — so the host
+   * is canonicalised once, here, and that form is what everything downstream
+   * sees. lib/fetch-policy.js does the same for the worker's fetches. */
+  const pageHost = () => S.settings.canonicalHost(location.hostname);
+
   let settings = S.settings.DEFAULTS;
   let runId = 0;
   let imageState = new Map();   // media element → state
   let posterSeen = new Set();
+  /* URLs handed to the worker whose answer has not come back yet, counted so
+   * a page cannot keep the ceiling below free by dropping each element as
+   * soon as its fetch is in flight. See imageBudget. */
+  const inFlightUrls = new Map();
   let textSeen = new WeakSet();
   let textCounter = 0;
   let imageCounter = 0;
@@ -36,6 +48,7 @@
   async function main() {
     settings = await S.settings.load();
     if (!active()) return;
+    observeFetches();
     S.overlay.init(settings);
     await analyze(true);
     observeMutations();
@@ -58,7 +71,7 @@
   });
 
   function active() {
-    return settings.enabled && !S.settings.isHostDisabled(settings, location.hostname);
+    return settings.enabled && !S.settings.isHostDisabled(settings, pageHost());
   }
 
   /* Pausing a host has to stop the work, not just hide the result: no more
@@ -115,8 +128,10 @@
     const hints = S.imageHints.analyzeImageHints(item);
     const st = { key, el: target, url: srcUrl, hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false, forced: true };
     imageState.set(target, st);
+    const msg = { id: key, url: srcUrl };
+    await addPageBytes(msg, target);
     let resp = null;
-    try { resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: [{ id: key, url: srcUrl }], settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } }); } catch (e) { resp = null; }
+    try { resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: [msg], settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } }); } catch (e) { resp = null; }
     const r = resp && resp.results && resp.results[0];
     st.done = true;
     if (r) { st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null }; st.signals = [...hints, ...(r.signals || [])]; }
@@ -147,7 +162,33 @@
 
   /* ---- full analysis ---------------------------------------------------- */
 
+  /*
+   * No single analyser defect may silently disable the content script. The
+   * page controls its own markup, so a malformed URL or attribute is an
+   * attacker-reachable input; without this guard one bad tag aborts main()
+   * before the mutation observer and the SPA poller ever start, and the
+   * reader is told nothing was analysed. The failure is recorded on the
+   * result instead, and reported.
+   */
   async function analyze(full) {
+    try {
+      await runAnalysis(full);
+    } catch (e) {
+      const message = (e && e.message) ? e.message : String(e);
+      if (!result) {
+        result = {
+          url: location.href, hostname: pageHost(), title: document.title, at: Date.now(),
+          site: { verdict: 'no-signal', signals: [] }, text: { verdict: 'no-signal', signals: [], flaggedBlocks: 0 },
+          trader: null, disclosures: [], textHints: { disclosures: [], metaText: '' },
+          images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
+        };
+      }
+      result.error = 'Analysis stopped early: ' + message.slice(0, 200);
+      try { refreshSummary(); } catch (e2) { /* nothing more to do */ }
+    }
+  }
+
+  async function runAnalysis(full) {
     if (!active()) return;
     const id = ++runId;
     if (full) {
@@ -169,7 +210,7 @@
     const textHints = { disclosures: disclosures.filter((d) => d.scope === 'text' || d.scope === 'general'), metaText };
     text.attribution = S.attribution.attributeText(text, textHints);
     result = {
-      url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
+      url: location.href, hostname: pageHost(), title: document.title, at: Date.now(),
       site, text, trader, disclosures, textHints,
       images: { total: 0, inspected: 0, pending: 0, counts: {}, items: [] },
     };
@@ -186,7 +227,7 @@
   function applyPlatformLabels() {
     if (!settings.platformLabels) return;
     let labels = [];
-    try { labels = S.platformLabels.scanLabels(location.hostname, document); } catch (e) { return; }
+    try { labels = S.platformLabels.scanLabels(pageHost(), document); } catch (e) { return; }
     if (!labels.length) return;
     for (const label of labels) {
       const signal = S.platformLabels.toImageSignal(label);
@@ -231,7 +272,7 @@
     let bodyText = '';
     try { bodyText = document.body ? document.body.innerText.slice(0, 300000) : ''; } catch (e) { bodyText = ''; }
     return {
-      url: location.href, hostname: location.hostname, lang: document.documentElement.lang || '', title: document.title,
+      url: location.href, hostname: pageHost(), lang: document.documentElement.lang || '', title: document.title,
       metas, scripts, inlineScripts, jsonLd, links, anchors, comments, attrNames: [...attrs], bodyText,
     };
   }
@@ -360,16 +401,21 @@
     for (const m of document.querySelectorAll('video, audio')) {
       if (m.closest('[data-srl-ui]')) continue;
       const src = m.currentSrc || m.getAttribute('src') || (m.querySelector('source[src]') || {}).src || '';
-      if (src && !imageStateHasUrl(m, src)) {
-        const r = m.getBoundingClientRect();
-        if (r.width >= 24 && r.height >= 24) {
-          out.push({ el: m, url: src, kind: 'av', alt: '', title: m.title || '', ariaLabel: m.getAttribute('aria-label') || '', caption: captionFor(m) });
-        }
+      const r = m.getBoundingClientRect();
+      const rendered = r.width >= 24 && r.height >= 24;
+      if (src && rendered && !imageStateHasUrl(m, src)) {
+        out.push({ el: m, url: src, kind: 'av', alt: '', title: m.title || '', ariaLabel: m.getAttribute('aria-label') || '', caption: captionFor(m) });
       }
-      const poster = m.tagName === 'VIDEO' ? m.getAttribute('poster') : null;
+      /* The same rendered-size floor as the video's own source. Without it a
+       * hidden <video poster="…"> was a URL the extension would fetch for a
+       * page that never displayed, let alone loaded, the poster itself. */
+      const poster = m.tagName === 'VIDEO' && rendered ? m.getAttribute('poster') : null;
       if (poster) {
-        const abs = new URL(poster, location.href).href;
-        if (!posterSeen.has(abs)) {
+        // The page writes this attribute, and it need not be a URL at all;
+        // one unparseable one would otherwise stop the whole analysis for the
+        // page's life. resolveUrl answers null instead of throwing.
+        const abs = S.imageHints.resolveUrl(poster, location.href);
+        if (abs && !posterSeen.has(abs)) {
           posterSeen.add(abs);
           out.push({ el: m, url: abs, kind: 'poster', alt: '', title: '', ariaLabel: '', caption: captionFor(m) });
         }
@@ -403,54 +449,214 @@
     return out;
   }
 
+  /*
+   * Has the page's own loader already fetched this?
+   *
+   * That is the question the address-space policy cannot answer: it reads the
+   * URL's text and never resolves it, so a name the attacker owns pointed at
+   * 127.0.0.1 is classified public and fetched by a worker that is exempt
+   * from mixed-content blocking, the page's CSP and Private Network Access.
+   * A URL the browser has already requested for this document has been
+   * through all three for that exact request, so re-reading it mints no new
+   * capability; a URL that only ever appeared in an attribute has not.
+   *
+   * Resource timing is the record of what was actually requested — a resource
+   * mixed-content blocking or a CSP refused never appears there — and it is
+   * read through the isolated world's own bindings, so the page cannot patch
+   * what this sees. Entries can be cleared by the page and the buffer can
+   * overflow, so the observer keeps its own copy as they arrive; the sweep in
+   * processImages covers whatever landed before it was registered.
+   *
+   * The element's own state is the fallback, for a blob: URL (which resource
+   * timing does not record) and for a browser without the observer. A failed
+   * <img> completes with no intrinsic size at all, which is what separates it
+   * from an SVG that has only one of the two.
+   */
+  const fetchedByPage = new Set();
+
+  function sweepFetched() {
+    try { for (const e of performance.getEntriesByType('resource')) fetchedByPage.add(e.name); } catch (e) { /* nothing to read */ }
+  }
+
+  function observeFetches() {
+    try {
+      new PerformanceObserver((list) => { for (const e of list.getEntries()) fetchedByPage.add(e.name); }).observe({ type: 'resource', buffered: true });
+    } catch (e) { /* the sweep still runs */ }
+  }
+
+  function pageLoaded(item) {
+    const el = item.el;
+    if (fetchedByPage.has(item.url)) return true;
+    if (!el) return false;
+    if (item.kind === 'av') return el.readyState >= 1;            // HAVE_METADATA
+    if (item.kind === 'poster') return false;                     // nothing else reports whether a poster was fetched
+    return !!el.complete && (el.naturalWidth > 0 || el.naturalHeight > 0);
+  }
+
+  const retryArmed = new WeakSet();
+
+  /*
+   * An element the page is still loading has not failed the gate above, it
+   * has not answered it yet: the browser's own request is in flight. One
+   * listener per element re-collects it when that request settles, so a slow
+   * image is inspected rather than dropped. An element that loads and fails
+   * fires no 'load' at all and stays out, which is the point.
+   */
+  function retryWhenLoaded(item, st) {
+    const el = item.el;
+    const kind = item.kind || 'image';
+    if (!el || kind === 'poster' || retryArmed.has(el)) return;
+    if (kind === 'av' ? el.readyState >= 1 : el.complete) return;
+    retryArmed.add(el);
+    el.addEventListener(kind === 'av' ? 'loadedmetadata' : 'load', () => {
+      retryArmed.delete(el);
+      if (!active() || imageState.get(el) !== st) return;   // superseded, or the host was paused
+      imageState.delete(el);
+      S.overlay.removeMarker(st.key);
+      const again = [...collectImages(), ...collectMedia()].filter((x) => x.el === el);
+      if (again.length) processImages(again, runId);
+    }, { once: true });
+  }
+
+  /*
+   * An element the page has taken out of the document is not in front of the
+   * reader any more: its badge goes with it, and so does the inspection
+   * budget it was holding. Without this a virtualised feed or a client-side
+   * route change accumulates state for pictures nobody can see, which is
+   * both a leak and — before the budget below was made a live count — the
+   * thing that made the extension go quietly blind.
+   */
+  function dropDetached() {
+    for (const [key, st] of imageState) {
+      if (st.el && st.el.isConnected === false) {
+        imageState.delete(key);
+        S.overlay.removeMarker(st.key);
+      }
+    }
+  }
+
+  /*
+   * What one view may have inspected at once.
+   *
+   * This cap used to count live <img> elements, and a src rewrite deletes
+   * the entry and re-inserts it, so rewriting the same sixty srcs re-armed
+   * it indefinitely: twenty ordinary batches pulled 640 requests and 2.6 GB.
+   * Counting instead every URL the document had ever submitted stopped that
+   * and paid for it in the reader's sight: nothing refilled the count, so a
+   * single-page app or an infinite feed went blind after sixty distinct
+   * images — for the tab's whole life, no badge, no marker, a page report
+   * indistinguishable from a clean one.
+   *
+   * Volume is bounded where it is actually spent. The worker charges each
+   * tab a request and byte budget per minute (BUDGET_REQUESTS, BUDGET_BYTES)
+   * which no amount of rewriting re-arms, and that is what answers the
+   * denial of service. What is wanted here is only a ceiling on how much of
+   * the view in front of the reader is inspected at once, so it is counted
+   * over the images this document is still tracking plus the fetches still
+   * in flight: a route change or a feed that drops its nodes gives its
+   * budget back, a page that holds sixty images on screen does not.
+   */
+  function imageBudget() {
+    const spent = new Set(inFlightUrls.keys());
+    for (const st of imageState.values()) if (st.submitted) spent.add(st.url);
+    return spent;
+  }
+
+  function holdUrl(url) { inFlightUrls.set(url, (inFlightUrls.get(url) || 0) + 1); }
+
+  function releaseUrl(entry) {
+    if (entry.released) return;
+    entry.released = true;
+    const n = (inFlightUrls.get(entry.msg.url) || 1) - 1;
+    if (n > 0) inFlightUrls.set(entry.msg.url, n); else inFlightUrls.delete(entry.msg.url);
+  }
+
+  /* Skipping an image for budget is not the same as finding nothing in it,
+   * and a reader cannot tell the two apart from a blank badge. */
+  function overBudgetSignal() {
+    return { id: 'not-budgeted', hard: false, verdict: 'unavailable', strength: 0, label: 'Not inspected: this page shows more images at once than the inspection limit', detail: 'The first ' + settings.maxImages + ' images in view have their bytes read; this one did not, so nothing here says whether it carries provenance either way.' };
+  }
+
   async function processImages(list, id) {
+    sweepFetched();
+    dropDetached();
+    const spent = imageBudget();
     const toFetch = [];
     for (const item of list) {
-      const key = 'i' + (++imageCounter);
-      const hints = S.imageHints.analyzeImageHints(item);
-      const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
-      // A poster shares its element with the video, so it is tracked by key.
-      imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
-      applyImageVerdict(st);
-      const fetchable = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && imageState.size <= settings.maxImages;
-      if (fetchable) toFetch.push({ st, msg: { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' } });
-      else st.done = true;
-    }
-    // blob: URLs are only reachable from the page itself: read them here and
-    // hand the bytes (base64, capped) to the service worker.
-    for (const entry of toFetch) {
-      if (!/^blob:/i.test(entry.msg.url)) continue;
+      // One unreadable item must not cost the page every later one.
       try {
-        const buf = await (await fetch(entry.msg.url)).arrayBuffer();
-        const cap = Math.min(buf.byteLength, settings.maxImageBytes);
-        entry.msg.base64 = toBase64(new Uint8Array(buf, 0, cap));
-        entry.msg.truncated = cap < buf.byteLength;
-      } catch (e) { entry.msg.base64 = null; }
+        const key = 'i' + (++imageCounter);
+        const hints = S.imageHints.analyzeImageHints(item);
+        const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
+        // A poster shares its element with the video, so it is tracked by key.
+        imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
+        const wanted = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && pageLoaded(item);
+        const budgeted = spent.has(item.url) || spent.size < settings.maxImages;
+        if (wanted && budgeted) {
+          spent.add(item.url);
+          st.submitted = true;
+          const msg = { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' };
+          holdUrl(item.url);
+          toFetch.push({ st, msg });
+        } else {
+          if (wanted) st.signals = [...st.signals, overBudgetSignal()];
+          st.done = true;
+          retryWhenLoaded(item, st);
+        }
+        applyImageVerdict(st);
+      } catch (e) { /* skip this item */ }
+    }
+    /*
+     * The bytes the page itself has, wherever they can be had.
+     *
+     * The worker's fetch is a second, distinguishable request — no cookies, a
+     * Range header, no Referer — so a server can answer the reader with an AI
+     * picture and the extension with a signed photograph, and the badge lands
+     * on the one nobody hashed. `only-if-cached` reads the response the
+     * browser already holds and makes no request of its own, so it costs no
+     * traffic and sends no cookies; it is same-origin only, and a blob: URL
+     * is only reachable from here at all. Reading the cache is not the same
+     * as reading the picture, though — see showsTheseBytes, which is what
+     * decides whether these bytes may speak for it. Where neither applies the
+     * worker still fetches, and deriveSignals will not read an exculpatory
+     * claim out of bytes nobody can tie to the picture (hints.rendered).
+     */
+    for (const entry of toFetch) {
+      if (entry.msg.kind === 'av') continue;      // a video is too large to pull through a message
+      await addPageBytes(entry.msg, entry.st.el);
     }
     pendingImages += toFetch.length;
     refreshSummary();
-    for (let i = 0; i < toFetch.length; i += 6) {
-      if (id !== runId) return;
-      const batch = toFetch.slice(i, i + 6);
-      let resp = null;
-      try {
-        resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: batch.map((b) => b.msg), settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } });
-      } catch (e) { resp = null; }
-      if (id !== runId) return;
-      const byId = new Map(((resp && resp.results) || []).map((r) => [r.id, r]));
-      for (const { st } of batch) {
-        const r = byId.get(st.key);
-        st.done = true;
-        pendingImages = Math.max(0, pendingImages - 1);
-        if (r) {
-          st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null };
-          st.signals = [...st.hints, ...(r.signals || [])];
-        } else {
-          st.signals = [...st.hints, { id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Background inspection failed', detail: '' }];
+    try {
+      for (let i = 0; i < toFetch.length; i += 6) {
+        if (id !== runId) return;
+        const batch = toFetch.slice(i, i + 6);
+        let resp = null;
+        try {
+          resp = await chrome.runtime.sendMessage({ type: 'srl:analyze-images', images: batch.map((b) => b.msg), settings: { maxImageBytes: settings.maxImageBytes, maxMediaBytes: settings.maxMediaBytes } });
+        } catch (e) { resp = null; }
+        if (id !== runId) return;
+        const byId = new Map(((resp && resp.results) || []).map((r) => [r.id, r]));
+        for (const entry of batch) {
+          const st = entry.st;
+          const r = byId.get(st.key);
+          releaseUrl(entry);
+          st.done = true;
+          pendingImages = Math.max(0, pendingImages - 1);
+          if (r) {
+            st.bytes = { format: r.format, contentType: r.contentType, size: r.bytes, truncated: r.truncated, metadata: r.metadata || null };
+            st.signals = [...st.hints, ...(r.signals || [])];
+          } else {
+            st.signals = [...st.hints, { id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Background inspection failed', detail: '' }];
+          }
+          applyImageVerdict(st);
         }
-        applyImageVerdict(st);
+        refreshSummary();
       }
-      refreshSummary();
+    } finally {
+      // Superseded runs and thrown batches release their hold too, or the
+      // budget drains without ever having fetched anything.
+      for (const entry of toFetch) releaseUrl(entry);
     }
   }
 
@@ -470,6 +676,136 @@
     } else S.overlay.removeMarker(st.key);
   }
 
+  /* resolveUrl rather than a bare `new URL`: the string came off an attribute
+   * the page wrote, and one unparseable one used to abort the whole analysis.
+   * An origin is a prefix of the resolved href, so no second parse is wanted. */
+  function sameOrigin(url) {
+    const abs = S.imageHints.resolveUrl(url, location.href);
+    return !!abs && (abs === location.origin || abs.startsWith(location.origin + '/'));
+  }
+
+  /* Fills msg.base64 when the page can produce the bytes, and msg.rendered
+   * only when they have been shown to be the picture on the page; leaves the
+   * message alone otherwise, and the worker's own fetch stands. */
+  async function addPageBytes(msg, el) {
+    const isBlob = /^blob:/i.test(msg.url);
+    if (!isBlob && !sameOrigin(msg.url)) return;
+    try {
+      const res = isBlob ? await fetch(msg.url) : await fetch(msg.url, { mode: 'same-origin', cache: 'only-if-cached' });
+      if (!res || !res.ok) return;
+      const buf = await res.arrayBuffer();
+      const cap = Math.min(buf.byteLength, settings.maxImageBytes);
+      msg.base64 = toBase64(new Uint8Array(buf, 0, cap));
+      msg.truncated = cap < buf.byteLength;
+      msg.rendered = !msg.truncated && (isBlob ? namesOneBlob(el, msg.url) : await showsTheseBytes(el, msg.url, buf));
+    } catch (e) { msg.base64 = null; }
+  }
+
+  /*
+   * Are these the bytes on the page?
+   *
+   * The question the HTTP cache cannot answer, and reading it was a mistake.
+   * `cache: 'only-if-cached'` returns whatever the cache holds for the URL
+   * *now*, and nothing pins that entry to the response an <img> decoded: the
+   * page can overwrite its own entry whenever it likes — `fetch(url, {cache:
+   * 'reload'})`, or the same request from a frame or a worker this script
+   * never sees — so a page can show a generated picture, replace the entry
+   * with a genuinely signed photograph, and have the extension verify the
+   * photograph while the reader looks at the picture. Reproduced, at the
+   * browser layer and end to end. Nothing about the response distinguishes
+   * the two: not its status, not res.url, and not its length either — the
+   * lengths only have to match, and the generated half is the half the page
+   * is free to pad to any size it likes.
+   *
+   * So the bytes are not taken on trust. They are decoded and compared,
+   * pixel for pixel, with what this element is actually holding, and what
+   * that buys is worth stating exactly: the bytes handed to the worker
+   * decode to the picture this element is showing, so a credential read out
+   * of them is a credential about the picture in front of the reader. It is
+   * not a statement about the page's layout — an element can still be
+   * covered or replaced by something painted over it, which is equally true
+   * of the badge this extension draws next to it, and no check inside the
+   * page can settle that.
+   *
+   * Everything that cannot answer the question answers no, and the bytes are
+   * then read as what they are, a separate fetch whose claims are shown but
+   * not believed (deriveSignals, hints.rendered): a cross-origin or
+   * otherwise tainted canvas, a truncated read, an image too large to
+   * compare, an element that has moved on, differing dimensions, an
+   * animation past its first frame, or bytes that will not decode at all.
+   */
+  const MAX_COMPARE_PIXELS = 32 * 1024 * 1024;   // a 32 MP picture, four bytes a pixel
+  const COMPARE_ROWS = 64;                       // rows read back at a time
+
+  function namesOneBlob(el, url) {
+    /* A blob: URL names one immutable Blob under a name nothing can
+     * re-register — revoking it and creating another yields a different
+     * URL — so reading it back is reading what the element was given. */
+    return showingStill(el, url);
+  }
+
+  function showingStill(el, url) {
+    return !!el && el.tagName === 'IMG' && !!el.complete && (el.currentSrc || el.src) === url && el.naturalWidth > 0 && el.naturalHeight > 0;
+  }
+
+  /*
+   * `rendered` gates one thing: whether a C2PA claim may be read as
+   * provenance for the picture. A C2PA manifest always arrives inside a
+   * JUMBF store, so an image with no "jumb" in it anywhere has no claim for
+   * the flag to gate, and decoding every ordinary picture on a page a second
+   * time to prove that is a cost with nothing on the other side of it.
+   */
+  function carriesCredentials(buf) {
+    const b = new Uint8Array(buf);
+    for (let i = b.indexOf(0x6a); i >= 0 && i + 3 < b.length; i = b.indexOf(0x6a, i + 1)) {
+      if (b[i + 1] === 0x75 && b[i + 2] === 0x6d && b[i + 3] === 0x62) return true;   // "jumb"
+    }
+    return false;
+  }
+
+  async function showsTheseBytes(el, url, buf) {
+    if (!showingStill(el, url) || !carriesCredentials(buf)) return false;
+    const w = el.naturalWidth, h = el.naturalHeight;
+    if (w * h > MAX_COMPARE_PIXELS) return false;
+    let bmp = null;
+    try {
+      bmp = await createImageBitmap(new Blob([buf]));
+      // Re-asked after the await: the element may have been given something
+      // else while these bytes were decoding.
+      if (!showingStill(el, url) || bmp.width !== w || bmp.height !== h) return false;
+      const a = compareSurface(w), b = compareSurface(w);
+      for (let y = 0; y < h; y += COMPARE_ROWS) {
+        const rows = Math.min(COMPARE_ROWS, h - y);
+        a.clearRect(0, 0, w, rows); b.clearRect(0, 0, w, rows);
+        a.drawImage(el, 0, y, w, rows, 0, 0, w, rows);
+        b.drawImage(bmp, 0, y, w, rows, 0, 0, w, rows);
+        const pa = a.getImageData(0, 0, w, rows).data;
+        const pb = b.getImageData(0, 0, w, rows).data;
+        if (pa.length !== pb.length) return false;
+        // Four channels at a time: the same comparison, a quarter of the
+        // iterations, on the page's own thread.
+        const va = new Uint32Array(pa.buffer, pa.byteOffset, pa.length >> 2);
+        const vb = new Uint32Array(pb.buffer, pb.byteOffset, pb.length >> 2);
+        for (let i = 0; i < va.length; i++) if (va[i] !== vb[i]) return false;
+      }
+      return showingStill(el, url);
+    } catch (e) {
+      return false;      // tainted canvas, undecodable bytes, no createImageBitmap
+    } finally {
+      if (bmp && bmp.close) bmp.close();
+    }
+  }
+
+  /* A few rows at a time, not the whole picture twice: a 32 MP comparison
+   * would otherwise hold a quarter of a gigabyte of pixels on the page's own
+   * heap. Built through the isolated world's own bindings, so the page
+   * cannot hand back a canvas that agrees with whatever it likes. */
+  function compareSurface(w) {
+    const c = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(w, COMPARE_ROWS) : document.createElement('canvas');
+    c.width = w; c.height = COMPARE_ROWS;
+    return c.getContext('2d', { willReadFrequently: true });
+  }
+
   function toBase64(bytes) {
     let bin = '';
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
@@ -480,17 +816,20 @@
 
   function refreshSummary() {
     if (!result) return;
+    dropDetached();
     const counts = {};
     const items = [];
     let inspected = 0;
+    let proven = 0;
     for (const st of imageState.values()) {
       counts[st.verdict] = (counts[st.verdict] || 0) + 1;
       if (st.bytes) inspected++;
+      if (st.signals.some((x) => V.PROVEN_PROVENANCE_SIGNALS.has(x.id))) proven++;
       if ((st.platformLabel || (st.verdict !== 'no-signal' && st.verdict !== 'unavailable')) && items.length < 100) {
         items.push({ url: st.url.slice(0, 500), verdict: st.verdict, kind: st.kind || 'image', score: Math.round(st.score * 100) / 100, format: st.bytes && st.bytes.format, platformLabel: st.platformLabel || null, attribution: st.attribution ? stripSkews(st.attribution) : null, signals: st.signals.filter((s) => s.label).slice(0, 8).map(({ id, hard, verdict, strength, label, detail }) => ({ id, hard, verdict, strength, label, detail })), metadata: st.bytes ? trimMetadata(st.bytes.metadata) : null });
       }
     }
-    result.images = { total: imageState.size, inspected, pending: pendingImages, counts, items };
+    result.images = { total: imageState.size, inspected, proven, pending: pendingImages, counts, items };
     result.overall = V.overall(result);
     result.aiSystems = collectAiSystems();
     S.overlay.setSummary({ overall: result.overall, site: result.site, text: result.text, images: result.images, aiSystems: result.aiSystems, disclosures: result.disclosures.filter((d) => d.level !== 'weak' && d.level !== 'human') });

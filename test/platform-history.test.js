@@ -71,17 +71,51 @@ test('labels on a non-matching host are ignored', () => {
   assert.deepEqual(P.scanLabels('example.com', doc([node('span', { text: 'Made with AI' })])), []);
 });
 
+const DAY = 24 * 60 * 60 * 1000;
+
 test('history folds page results into domain counters', () => {
-  let rec = H.fold(null, { hostname: 'shop.test', overall: 'undisclosed-ai', images: { total: 4, counts: { 'ai-generated': 2 } }, aiSystems: [{ id: 'openai' }] }, 1000);
-  rec = H.fold(rec, { hostname: 'shop.test', overall: 'disclosed-ai', images: { total: 2, counts: { 'ai-disclosed': 1 } }, aiSystems: [{ id: 'openai' }, { id: null }] }, 2000);
-  rec = H.fold(rec, { hostname: 'shop.test', overall: 'none', images: { total: 1, counts: {} }, aiSystems: [] }, 3000);
+  let rec = H.fold(null, { hostname: 'shop.test', overall: 'undisclosed-ai', images: { total: 4, counts: { 'ai-generated': 2 } }, aiSystems: [{ id: 'openai' }] }, 1000 * DAY);
+  rec = H.fold(rec, { hostname: 'shop.test', overall: 'disclosed-ai', images: { total: 2, counts: { 'ai-disclosed': 1 } }, aiSystems: [{ id: 'openai' }, { id: null }] }, 1001 * DAY);
+  rec = H.fold(rec, { hostname: 'shop.test', overall: 'none', images: { total: 1, counts: {} }, aiSystems: [] }, 1002 * DAY);
   assert.equal(rec.pages, 3);
   assert.equal(rec.aiPages, 2);
   assert.equal(rec.disclosedPages, 1);
   assert.equal(rec.aiImages, 3);
   assert.equal(rec.tools.openai, 2);
-  assert.equal(rec.firstSeen, 1000);
-  assert.equal(rec.lastSeen, 3000);
+  assert.equal(rec.firstSeen, 1000 * DAY);
+  assert.equal(rec.lastSeen, 1002 * DAY);
+});
+
+/*
+ * The store is a list of the sites someone opened. Keeping the exact minute
+ * of each visit makes it a reading log; the day is all the cap and the expiry
+ * need. This is also the half of the finding the code disagreed with itself
+ * about — lib/history.js said the store was off by default while
+ * lib/settings.js switched it on — so the header now says what is true.
+ */
+test('visit times are recorded to the day, not the millisecond', () => {
+  const noon = 1000 * DAY + 12 * 60 * 60 * 1000 + 34567;
+  const rec = H.fold(null, { hostname: 'a.test', overall: 'none', images: {}, aiSystems: [] }, noon);
+  assert.equal(rec.firstSeen, 1000 * DAY, 'rounded down to the start of the day');
+  assert.equal(rec.lastSeen, 1000 * DAY);
+  assert.equal(rec.lastSeen % DAY, 0, 'no time of day survives');
+  const later = H.fold(rec, { hostname: 'a.test', overall: 'none', images: {}, aiSystems: [] }, noon + 60 * 1000);
+  assert.equal(later.lastSeen, 1000 * DAY, 'a second visit the same day moves nothing');
+});
+
+test('records expire, so a domain seen once does not stay for ever', () => {
+  const now = 1000 * DAY;
+  const all = {
+    fresh: { host: 'fresh', lastSeen: now - 3 * DAY },
+    edge: { host: 'edge', lastSeen: now - 90 * DAY },
+    stale: { host: 'stale', lastSeen: now - 91 * DAY },
+    ancient: { host: 'ancient', lastSeen: 0 },
+  };
+  const kept = H.prune({ ...all }, 400, now);
+  assert.deepEqual(Object.keys(kept).sort(), ['edge', 'fresh'], 'older than 90 days is dropped');
+  // Without a clock the cap still works on its own: prune is used that way
+  // by callers that only want the size bound.
+  assert.deepEqual(Object.keys(H.prune({ ...all }, 400)).sort(), ['ancient', 'edge', 'fresh', 'stale']);
 });
 
 test('history summary needs more than one page and reads the pattern', () => {

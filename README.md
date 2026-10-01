@@ -14,23 +14,29 @@ Everything runs locally in the browser. No data leaves your machine except the m
 
 ### Verifying Content Credentials
 
-Reading a manifest and trusting it are different things, so the extension answers three separate questions and reports them separately.
+Reading a manifest and trusting it are different things, so the extension answers four separate questions and reports them separately.
 
 1. **Is the signature valid?** The COSE_Sign1 signature is checked with WebCrypto against the public key in the embedded leaf certificate, covering ES256/384/512, PS256/384/512, RS256/384/512 and Ed25519, with detached payloads reconstructed from the claim bytes. A valid signature proves the claim has not been altered since it was signed.
 2. **Do the assertions match the claim?** Each assertion's JUMBF box is re-hashed and compared with the hash the claim recorded. This is what stops someone swapping "made by a camera" for "made by AI" while leaving the signature intact. Producers differ over whether that hash covers the whole box or only its content, so both are tried; if neither reconciles, the result is reported as inconclusive rather than as tampering, because a false accusation would be worse than an unanswered question.
 3. **Does the certificate chain mean anything?** The chain is checked for internal consistency (each certificate actually signed by the next, verified cryptographically) and for validity dates.
+4. **Does the manifest describe *this* file?** A C2PA claim is only about an asset because it carries a hard binding: a digest over the asset's own bytes with the credential store excluded. That digest is recomputed here, over the fetched bytes, with the exclusion ranges the claim declares — and those ranges are refused unless they fall inside the credential store, because a claim that excludes the picture itself is hashing nothing. Without this check a genuine, fully verifying camera manifest can be lifted byte for byte out of a real photograph and dropped into a generated image: signature valid, assertions intact, chain consistent, and every word of it about a different file.
 
-**This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
+**This build ships no C2PA trust list, so no chain is anchored — and an unanchored chain earns no badge.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That is not only a wording rule: a self-signed certificate with "Leica Camera AG" typed into it answers every other question yes, so until a chain reaches a signer this build knows, a claim that a camera or a human made the file is shown as the unverified assertion it is and produces no camera badge and no page-level provenance tick. Populating that list — the C2PA conformance bundle, plus an anchor list the reader can import — is the outstanding work; the mechanism that consumes it is in `lib/c2pa-verify.js` (`setTrustAnchors`).
 
-Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up), and **caution** (the claim is authentic but its assertions could not be fully reconciled, or the fetch was byte-capped before reaching them). Nothing here touches the network, and an unanswered question is never reported as a pass.
+Outcomes are three, kept visually distinct: **verified** (all four answers are yes), **broken** (the signature, an assertion hash, the chain or the hard binding verifiably does not add up, or the claim carries no hard binding at all), and **caution** (the claim is authentic but something could not be reconciled: its assertions, or the binding, because the fetch was byte-capped, the binding form is one this reader cannot recompute, or its exclusion ranges could not be accounted for). Nothing here touches the network, and an unanswered question is never reported as a pass. In particular, a binding that could not be recomputed is never treated as one that matched.
 
-Three rules keep a valid signature from vouching for the wrong thing:
+Four rules keep a valid signature from vouching for the wrong thing:
 
 * **The signature must cover the claim being reported.** A COSE payload carried inline is accepted only when it is byte-identical to the claim in the manifest. Without that check, a genuine signature can be lifted from one asset and attached beside an attacker's claim, and the reader shows their words under the real signer's name.
-* **Only assertions the signed claim references may speak for the asset.** An assertion box added afterwards disturbs no signature, so an unreferenced one is ignored; once hashes verify, only the assertions that matched are read.
+* **The claim must be bound to the file it arrived in.** Its hard binding is recomputed over the fetched bytes; a mismatch is a broken manifest, and a claim with no hard binding at all is invalid rather than merely unverified, because it describes no particular file.
+* **Only assertions the signed claim references may speak for the asset.** An assertion box added afterwards disturbs no signature, so an unreferenced one is ignored; once hashes verify, only the assertions that matched are read. That includes the hard binding: one nobody referenced binds nothing.
 * **A broken manifest stops speaking entirely.** No claim from it reaches the verdict, and the finding that it is broken outranks any benign claim inside it, so a tampered manifest can never produce a green camera-provenance result.
 
-The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures, and then attacks them one change at a time — a tampered signature, a swapped assertion, a broken chain link, expired dates, a replayed signature over a forged claim, an injected unreferenced assertion, an assertion deleted after signing, an unreadable certificate in the chain — to confirm each is caught and correctly distinguished from the others. The end-to-end run does the same inside the browser.
+**Nothing is exculpatory for free, whatever field it is written in.** A claim that a camera or a human made the image is the one worth forging, and forging it costs nothing: a hand-written JUMBF box with no certificate and no key says "digitalCapture" just as loudly as a signed one, an `Iptc4xmpExt:DigitalSourceType` attribute is one line of XML, and an EXIF `Make` is a string whatever wrote the file chose. So the green **camera-capture** badge is reserved for a manifest that verified, is bound to these bytes, anchors to a signer this build knows, and decodes to the picture the page is actually showing — the bytes are read in the page and compared with the element, pixel for pixel, because the browser's cache can be overwritten after an image has been decoded and so says nothing about what a reader saw. Everything short of that — an unverified or unanchored manifest, an IPTC attribute, camera EXIF — is shown as **"Origin claimed by the file, not verified"**: a neutral badge, ranked no higher than no evidence at all, wording the claim rather than endorsing it. The claim is still shown, because it is real evidence and hiding it would be worse; it just never reads as a check that was performed. Claims of AI generation are read at full strength either way — a self-declaration against interest is not worth forging.
+
+The page-level provenance tick follows the same rule: it means credentials, so only an image with a manifest that met all four conditions lights it. A sentence on the page declaring human authorship is reported as the disclosure it is, not as a credential.
+
+The verifier is tested against real cryptography, not stubs: the test suite generates P-256 keys, issues genuine X.509 certificates, signs real COSE structures over assets whose hard bindings really do hash, and then attacks them one change at a time — a tampered signature, a swapped assertion, a broken chain link, expired dates, a replayed signature over a forged claim, an injected unreferenced assertion, an assertion deleted after signing, an unreadable certificate in the chain, a genuine manifest transplanted onto another picture, one changed byte of the asset, a claim with no hard binding, and a binding whose exclusions swallow the whole file — to confirm each is caught and correctly distinguished from the others. The end-to-end run does the same inside the browser.
 
 ### Video and audio
 
@@ -83,7 +89,7 @@ With `Remember what was found per domain` on, the extension keeps counters per h
 * **Toolbar icon changes state**, not just its count: the lens pupil takes the verdict colour, and resets to neutral on navigation.
 * **Right-click actions**: "Inspect this image for AI provenance" analyses any image on demand, ignoring the size floor and per-page cap; "Check selected text for AI signals" analyses a selection in place.
 * **Tabbed report** in the toolbar popup: a sticky verdict header over Overview, Site, Text, Images, Trader and Tools, each tab carrying a count.
-* **Keep a record**: copy the report as JSON, save it as a file, or save a shareable PNG receipt. Saved reports carry a SHA-256 digest of their own findings so you can show the file has not been edited since; that digest is self-attested by the extension, not notarised by a third party.
+* **Keep a record**: copy the report as JSON, save it as a file, or save a shareable PNG receipt. Saved reports carry a SHA-256 checksum of their own findings, which catches accidental corruption; it is unkeyed and stored inside the report, so it cannot show the file has not been edited — anyone changing a finding can recompute it.
 * **Hidden-character reveal**: any flagged block whose popover contains invisible characters offers a view that names each one (ZWSP, TAG…, VS3, NNBSP) without touching the page, plus a "Copy cleaned text" button that strips them.
 * **Keyboard throughout.** `Alt+Shift+A` toggles the in-page badges, rebindable at `chrome://extensions/shortcuts`. The popup is a proper tablist: arrow keys move between tabs, `Home` and `End` jump to the ends, and each panel is a labelled `tabpanel`. `Escape` closes the in-page panel and popovers.
 * **Reverse image lookup.** Links under a flagged image open Google Lens, TinEye or Bing with that image URL. They are links you choose to follow; nothing leaves the browser unless you click one.
@@ -99,6 +105,7 @@ Every row is labelled **legal duty** or **good practice**, because conflating th
 
 * **Invisible pixel or token watermarks** such as SynthID, Stable Signature or OpenAI's text watermark need the vendor's keys. They are not detected.
 * **C2PA signatures are verified, but the signer is not vouched for.** See below.
+* **Some hard bindings cannot be recomputed here.** BMFF Merkle-tree and box-hash bindings are not implemented, and a byte-capped fetch cannot hash a file it has not fully read. Those manifests are reported as *caution*, never as verified: the extension will say the credentials could not be tied to the file rather than pretending they were.
 * **Metadata can be stripped or forged.** "No provenance signals" is not proof of human origin, and most social platforms strip metadata on upload.
 * **Stylometry is a heuristic.** It is capped so that it can never produce the strongest verdict on its own, and sensitivity is adjustable.
 * **Disclosures are self-reports.** A page that says "human-written" is only telling you what it says.
@@ -107,7 +114,7 @@ Every row is labelled **legal duty** or **good practice**, because conflating th
 
 Providers of generative AI systems must ensure their outputs are marked in a machine-readable format and detectable as artificially generated (Art. 50(2)). Deployers must disclose deepfakes (Art. 50(4)) and AI-generated text published to inform the public on matters of public interest, unless a human has reviewed it and someone holds editorial responsibility. These obligations apply from **2 August 2026**. C2PA Content Credentials and IPTC digital source types are the most widely deployed machine-readable markers today, which is why the image analyser leans on them; there is no equivalent standard yet for text or for whole sites, so those layers rely on conventions and heuristics.
 
-## Install (unpacked)
+## Running it
 
 1. Clone this repository.
 2. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`), enable **Developer mode**.
@@ -119,15 +126,18 @@ Requires Chrome/Chromium 116 or newer.
 ## Development
 
 ```
-npm test          # unit tests (Node ≥ 18, no dependencies)
-npm run lint      # syntax check of every script
-npm run e2e       # loads the extension into Chromium via Playwright and checks a fixture site
-npm run icons     # regenerate icons/*.png
+npm test                   # unit tests (Node 22, no dependencies)
+npm run lint               # syntax check of every script
+npm run test:conventions   # the conventions shared with the sibling repositories
+npm run check              # lint, unit tests and conventions: the gate before a push
+npm run test:e2e           # loads the extension into Chromium via Playwright and checks a fixture site
+npm run test:all           # unit and end-to-end suites together
+npm run icons              # regenerate icons/*.png
 ```
 
-The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Both suites run in GitHub Actions (`.github/workflows/test.yml`).
+The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
 
-Layout:
+## Project layout
 
 ```
 manifest.json               MV3 manifest
@@ -145,7 +155,8 @@ lib/cbor.js                 minimal CBOR codec for C2PA claims and COSE
 lib/x509.js                 minimal DER / X.509 reader for signing certificates
 lib/c2pa-verify.js          COSE signature, assertion hashes and chain checks
 lib/verdicts.js             verdict vocabularies, colours, combination and overall rules
-lib/settings.js             defaults and storage
+lib/settings.js             every storage key, defaults, validation on read, the migration
+lib/fetch-policy.js         which URLs the worker may fetch for a page, and how they are cached
 background/service-worker.js  fetches image bytes cross-origin, caches, stores per-tab results, badge
 content/content.js          orchestrates the analyses on the page and reports results
 content/overlay.js          shadow-DOM pill, panel, badges and popovers
@@ -172,7 +183,7 @@ The binary parsers were fuzzed separately with random bytes behind each containe
 | --- | --- |
 | `storage` | Settings (sync), per-tab results (session), and the local per-domain counters. |
 | `contextMenus` | The right-click entries for inspecting one image or a text selection. |
-| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials, are size-capped, and only ever target files the page already loaded. |
+| `<all_urls>` host access | Reading image, video and audio bytes to find embedded provenance. Those files live on whatever hosts the page uses, and a cross-origin fetch is the only way to reach them. Fetches omit credentials and are size-capped. Only a URL the page's own loader already fetched successfully is handed over, so the browser has already applied mixed-content blocking, the page's CSP and Private Network Access to that exact request; where the bytes can be re-read from the browser's cache, those are the bytes inspected, which costs no traffic and sends no cookies; before a credential in them may speak for the picture they are also decoded and matched against the element itself, since a page can replace its own cache entry after an image has been decoded. Fetches are also refused when the target sits on a more private network than the page itself — a page on the public internet cannot have the extension read `127.0.0.1`, `10.0.0.0/8`, `169.254.169.254`, a NAT64/6to4/Teredo literal carrying one of those inside it, or a `.local`, `.lan` or single-label name on the reader's behalf. That test reads the URL and cannot resolve DNS, so a public name whose owner points it at a private address is caught by the already-loaded rule above, not by this one. A `file:` resource is read only for a page that is itself a local file, and a page on a `.local` name is ranked where it actually sits, on the LAN, not in the loopback tier. Nor is a redirect followed for such a page, since where it leads cannot be checked before it is taken: an image behind a redirect is reported as not fetched. |
 
 The extension has no `tabs` permission, no analytics, no remote code and no
 `externally_connectable`, so a web page cannot talk to it. All rendering uses
@@ -184,7 +195,7 @@ their marker.
 ## Privacy
 
 * No analytics, no remote calls to the author.
-* Image bytes are fetched from the page's own sources with `credentials: 'omit'`, limited to the first few MB (configurable), and cached in memory only.
+* Image bytes are read from the browser's own cache where possible, making no request at all; otherwise fetched from the page's own sources with `credentials: 'omit'`, limited to the first few MB (configurable), and cached in memory only. One tab's fetches are budgeted (requests and bytes per minute), so a page cannot use the extension as an unmetered request generator.
 * Results are kept in `chrome.storage.session` per tab and discarded when the tab closes.
 * Hosts can be excluded in the settings.
-* Domain memory holds counters per hostname, never URLs or page content, on this device only. It is capped, clearable and can be switched off.
+* Domain memory holds counters per hostname, never URLs or page content, on this device only. Its timestamps are kept only to the day, records expire after 90 days, and it is capped, clearable and can be switched off.

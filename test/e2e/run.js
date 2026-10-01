@@ -2,11 +2,12 @@
  * End-to-end check: loads the unpacked extension into Chromium via Playwright,
  * serves the fixture site, and asserts the stored page result.
  *
- *   npm run e2e            (needs `playwright` resolvable and a Chromium build)
- *   PW_CHROMIUM=/path/to/chrome npm run e2e   to pin the browser binary
+ *   npm run test:e2e       (needs `playwright` resolvable and a Chromium build)
+ *   PW_CHROMIUM=/path/to/chrome npm run test:e2e   to pin the browser binary
  */
 const path = require('path');
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 const os = require('os');
 const assert = require('node:assert/strict');
@@ -18,6 +19,21 @@ function loadPlaywright() {
   return require(path.join(globalRoot, 'playwright'));
 }
 
+/* One request, written to the socket exactly as given: no URL parsing, no
+ * normalisation, nothing between the string and the server. */
+function rawGet(port, target, host) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET ' + target + ' HTTP/1.1\r\nHost: ' + (host || '127.0.0.1:' + port) + '\r\nConnection: close\r\n\r\n');
+    });
+    let out = '';
+    sock.setTimeout(5000, () => { sock.destroy(); reject(new Error('timed out asking for ' + target)); });
+    sock.on('data', (d) => { out += d.toString('latin1'); });
+    sock.on('end', () => resolve(out));
+    sock.on('error', reject);
+  });
+}
+
 (async () => {
   const { chromium } = loadPlaywright();
   const EXT = path.resolve(__dirname, '..', '..');
@@ -26,12 +42,69 @@ function loadPlaywright() {
   await build(site);
 
   const TYPES = { '.html': 'text/html', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4' };
+  /* SEC-3: a redirector, and the loopback URL behind it. Requests to each are
+   * counted so the test can say whether the worker made the hop, rather than
+   * whether it read what came back. */
+  const hits = { redirector: 0, loopback: 0, swap: 0 };
+
+  /*
+   * X5. A fixture server is still a server. This one used to hand out
+   * whatever `path.join(site, req.url)` reached, from a socket bound to
+   * every interface, for the length of a test run on a developer's machine
+   * and on every CI runner: `/../../../../etc/hostname` and the checkout's
+   * own `.git/config` both came back 200. A browser and node's own fetch
+   * normalise `..` away before it reaches here, which is why nobody saw it,
+   * so the suite asks with a raw socket instead (see rawGet below).
+   *
+   * The two rules its sibling repositories settled on: resolve the path and
+   * refuse anything that is not inside the fixture root, and refuse any
+   * segment beginning with a dot. Both answer 403, which no legitimate
+   * request reaches — everything the fixtures actually ask for still lands
+   * on a file, or on the same 404 as before.
+   */
+  const ROOT = fs.realpathSync(site);
+  function resolveFixture(urlPath) {
+    let decoded;
+    try { decoded = decodeURIComponent(urlPath); } catch (e) { return null; }
+    if (decoded.includes('\0')) return null;
+    const rel = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
+    if (rel.split('/').some((seg) => seg.startsWith('.'))) return null;
+    const f = path.resolve(ROOT, rel);
+    if (f !== ROOT && !f.startsWith(ROOT + path.sep)) return null;
+    return f;
+  }
+
   const server = http.createServer((req, res) => {
-    const f = path.join(site, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
-    if (!fs.existsSync(f)) { res.statusCode = 404; return res.end('not found'); }
+    const requested = req.url.split('?')[0];
+    if (requested === '/redirect-to-loopback.png') {
+      hits.redirector++;
+      res.statusCode = 302;
+      res.setHeader('location', 'http://127.0.0.1:' + server.address().port + '/loopback-probe.png');
+      return res.end();
+    }
+    if (requested === '/loopback-probe.png') {
+      hits.loopback++;
+      res.statusCode = 404;
+      return res.end('probe');
+    }
+    /* P-1: one URL, two pictures, so the test can say which one the
+     * extension hashed. The first hit is what the <img> decodes; the page
+     * then replaces the cache entry for the same URL itself. */
+    if (requested === '/swap.png') {
+      hits.swap++;
+      res.statusCode = 200;
+      res.setHeader('content-type', 'image/png');
+      res.setHeader('cache-control', 'max-age=300');
+      return res.end(fs.readFileSync(path.join(site, hits.swap === 1 ? 'shown.png' : 'camera.png')));
+    }
+    const f = resolveFixture(requested);
+    if (f === null) { res.statusCode = 403; return res.end('forbidden'); }
+    if (!fs.existsSync(f) || !fs.statSync(f).isFile()) { res.statusCode = 404; return res.end('not found'); }
     const body = fs.readFileSync(f);
     res.setHeader('content-type', TYPES[path.extname(f)] || 'application/octet-stream');
     res.setHeader('accept-ranges', 'bytes');
+    // The one fixture whose point is that the browser holds a copy of it.
+    if (requested === '/camera.png') res.setHeader('cache-control', 'max-age=300');
     // Real byte-range support, including suffix ranges, so the tail fetch
     // used for media files is exercised rather than stubbed.
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
@@ -46,8 +119,33 @@ function loadPlaywright() {
       return res.end(body.subarray(start, end + 1));
     }
     res.end(body);
-  }).listen(0);
+  }).listen(0, '127.0.0.1');
+  if (!server.listening) await new Promise((r) => server.once('listening', r));
+  /* `listen(0, cb)` passes the callback as the host, which is how a sibling
+   * repository's harness ended up on 0.0.0.0 while looking correct. */
+  assert.equal(server.address().address, '127.0.0.1', 'the fixture server must not leave loopback');
   const port = server.address().port;
+
+  /*
+   * Raw sockets, because every normal client normalises the request away.
+   * The first two were served 200, with contents, before the containment
+   * above; the dotfile rule is what keeps the fixture root's own dot
+   * directories out if one is ever created there.
+   */
+  for (const [name, target] of [
+    ['traversal to an absolute path', '/../../../../../../etc/hostname'],
+    ['traversal into the checkout', '/../../../../../..' + path.resolve(EXT, '.git', 'config')],
+    ['encoded traversal', '/%2e%2e/%2e%2e/etc/hostname'],
+    ['a dotfile under the root', '/.git/config'],
+  ]) {
+    const answer = await rawGet(port, target);
+    assert.match(answer.split('\r\n')[0], /^HTTP\/1\.1 (?:403|404) /, name + ' must be refused, got: ' + answer.split('\r\n')[0]);
+    assert.ok(!/repositoryformatversion|root:/.test(answer), name + ' leaked a file the fixture root does not contain');
+  }
+  // ...and the refusal is invisible to everything the fixtures actually ask for.
+  assert.match((await rawGet(port, '/index.html')).split('\r\n')[0], /^HTTP\/1\.1 200 /);
+  assert.match((await rawGet(port, '/')).split('\r\n')[0], /^HTTP\/1\.1 200 /);
+  assert.match((await rawGet(port, '/nope.png')).split('\r\n')[0], /^HTTP\/1\.1 404 /);
 
   const ctx = await chromium.launchPersistentContext(path.join(work, 'profile'), {
     headless: false,
@@ -63,12 +161,12 @@ function loadPlaywright() {
   });
   try {
     let sw = ctx.serviceWorkers()[0];
-    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 15000 });
+    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 30000 });
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto('http://localhost:' + port + '/');
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
 
     const result = await sw.evaluate(async (p) => {
       const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.startsWith('http://localhost:' + p));
@@ -85,7 +183,11 @@ function loadPlaywright() {
     const blob = result.images.items.find((i) => i.url.startsWith('blob:'));
     assert.equal(byName['sd.png'], 'ai-generated');
     assert.equal(byName['c2pa.jpg'], 'ai-generated');
-    assert.equal(byName['camera.jpg'], 'captured');
+    /* Camera EXIF and nothing else: the file's own claim, shown as one. The
+     * green capture badge is what an anchored, bound, page-loaded manifest
+     * earns, and no build ships a trust list, so nothing here may reach it. */
+    assert.equal(byName['camera.jpg'], 'self-claimed');
+    assert.ok(!Object.values(byName).includes('captured'), 'nothing on this page earned a verified capture badge');
     assert.equal(byName['firefly.webp'], 'ai-edited');
     assert.equal(byName['0_0.png'], 'ai-disclosed');
     assert.ok(blob && blob.verdict === 'ai-generated', 'blob: image inspected via content script');
@@ -156,6 +258,169 @@ function loadPlaywright() {
     assert.equal(tampered.metadata.c2pa.verification.signature, 'invalid', 'tampered signature rejected');
     assert.equal(tampered.metadata.c2pa.verification.summary.broken, true);
     assert.ok(tampered.signals.some((s) => s.id === 'c2pa-broken'), 'broken credentials surfaced as a signal');
+    // The same signed manifest inside another picture: signature still valid,
+    // hard binding is what catches it.
+    const moved = (credResult.images.items || []).find((i) => i.url.endsWith('transplanted.png'));
+    assert.equal(moved.metadata.c2pa.verification.signature, 'valid', 'the transplanted signature really is genuine');
+    assert.equal(moved.metadata.c2pa.verification.binding.status, 'mismatch');
+    assert.equal(moved.metadata.c2pa.verification.summary.ok, false, 'a manifest from another file must never read as verified');
+    assert.equal(moved.metadata.c2pa.verification.summary.broken, true);
+    assert.notEqual(moved.verdict, 'captured');
+
+    /*
+     * P-1. What is verified has to be what is displayed, and reading the
+     * page's own HTTP cache does not establish that: `only-if-cached`
+     * returns whatever the cache holds for the URL now, and a same-origin
+     * page can overwrite its own entry after the <img> has decoded. The
+     * fixture does exactly that — renders a Stable Diffusion picture, then
+     * replaces its cache entry with a genuinely signed camera capture — so
+     * the extension is handed real, valid, hard-bound credentials that
+     * describe a picture nobody on the page is looking at.
+     *
+     * The credentials are still read and shown; what they may not do is
+     * speak for the picture. `rendered` is one of the three conditions of
+     * the exculpatory gate, and it is now earned by decoding the bytes in
+     * the page and matching them against the element, not by the cache
+     * having answered at all.
+     */
+    const swap = await ctx.newPage();
+    await swap.goto('http://localhost:' + port + '/swap.html');
+    await swap.waitForTimeout(7000);
+    const swapResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.includes('/swap.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(swapResult, 'swap page result stored');
+    assert.ok(hits.swap >= 2, 'the page really did request the same URL a second time (' + hits.swap + ')');
+    const swapItems = swapResult.images.items || [];
+    const swapped = swapItems.find((i) => i.url.endsWith('swap.png'));
+    const straight = swapItems.find((i) => i.url.endsWith('camera.png'));
+    const disclaimed = (i) => (i.signals || []).some((x) => x.id === 'note' && /separate fetch/.test(x.label));
+    assert.ok(swapped, 'the swapped image was inspected');
+    // The desync is real: these are the credentials from the other picture.
+    assert.ok((swapped.metadata.c2pa.signerNames || []).includes('Fixture Camera AG'), 'the extension was handed the swapped-in photograph');
+    assert.equal(swapped.metadata.c2pa.verification.signature, 'valid', 'whose signature is genuine');
+    assert.equal(swapped.metadata.c2pa.verification.binding.status, 'valid', 'and genuinely bound to its own bytes');
+    // And it is refused as evidence about the picture on the page.
+    assert.ok(disclaimed(swapped), 'bytes that do not decode to the picture must be marked as a separate fetch');
+    assert.notEqual(swapped.verdict, 'captured');
+    assert.ok(!swapItems.some((i) => i.verdict === 'captured'), 'nothing on this page earned a capture badge');
+    assert.notEqual(swapResult.overall, 'provenance');
+    /* The control: the same signed photograph, served honestly at its own
+     * URL and never swapped. Its bytes do decode to what the element is
+     * showing, so nothing disclaims them — the leg still works where it can
+     * be earned, rather than having been quietly switched off. */
+    assert.ok(straight, 'the unswapped copy was inspected');
+    assert.ok(straight.metadata && straight.metadata.c2pa, 'and carries the same credentials');
+    assert.ok(!disclaimed(straight), 'bytes that do decode to the picture are not disclaimed');
+
+    /*
+     * P-2. The per-view inspection budget has to be refilled by what leaves
+     * the view. Charging a set nothing refills blinded the extension on any
+     * page that outlives sixty distinct images: the fixture fills the budget
+     * with one route's worth of tiles, changes route in the client, and
+     * shows three AI pictures. The volume is bounded by the worker's
+     * per-minute request and byte budget, which no page can re-arm.
+     */
+    const spa = await ctx.newPage();
+    await spa.goto('http://localhost:' + port + '/spa.html');
+    await spa.waitForTimeout(11000);
+    const spaResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.includes('/spa.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(spaResult, 'SPA result stored');
+    const routeTwo = (spaResult.images.items || []).filter((i) => /route=2/.test(i.url));
+    assert.equal(routeTwo.length, 3, 'every image of the second route was inspected (' + routeTwo.length + ' of 3)');
+    for (const i of routeTwo) assert.ok(['ai-generated', 'ai-edited'].includes(i.verdict), i.url.split('/').pop() + ' after the route change read as ' + i.verdict);
+    assert.equal(spaResult.overall, 'undisclosed-ai', 'and the page verdict says so');
+
+    /*
+     * SEC-3. The worker fetches with <all_urls> host permissions, so its
+     * requests are not subject to the page's CSP, its mixed-content rules or
+     * Chrome's Private Network Access checks. The fixture site is on
+     * localhost and reads its own images (asserted above, so the guard does
+     * not simply block everything); a page on the public internet must not
+     * be able to point the extension at the reader's own network.
+     */
+    const policy = await sw.evaluate(() => {
+      const p = self.SRL && self.SRL.fetchPolicy;
+      if (!p) return { loaded: false };
+      const from = 'https://news.example/article';
+      return {
+        loaded: true,
+        loopback: p.mayFetch('http://127.0.0.1:11434/api/tags', from).ok,
+        privateNet: p.mayFetch('http://192.168.1.1/', from).ok,
+        metadata: p.mayFetch('http://169.254.169.254/latest/meta-data/', from).ok,
+        mdns: p.mayFetch('http://nas.local/photo.jpg', from).ok,
+        /* The same two hosts named fully qualified: one trailing dot used to
+         * be past every rule written against a name. */
+        dottedLoopback: p.mayFetch('http://localhost.:11434/api/tags', from).ok,
+        dottedMdns: p.mayFetch('http://nas.local./photo.jpg', from).ok,
+        localFile: p.mayFetch('file:///etc/passwd', from).ok,
+        publicImage: p.mayFetch('https://cdn.example/a.jpg', from).ok,
+        ownSpace: p.mayFetch('http://localhost:9/a.png', 'http://localhost:8/b.html').ok,
+      };
+    });
+    assert.ok(policy.loaded, 'the fetch policy is loaded in the service worker');
+    assert.equal(policy.loopback, false, 'a public page may not reach loopback');
+    assert.equal(policy.privateNet, false, 'nor a private network');
+    assert.equal(policy.metadata, false, 'nor the cloud metadata address');
+    assert.equal(policy.mdns, false, 'nor a .local name');
+    assert.equal(policy.dottedLoopback, false, 'nor loopback written as a fully qualified name');
+    assert.equal(policy.dottedMdns, false, 'nor a .local name written the same way');
+    assert.equal(policy.localFile, false, 'nor a local file');
+    assert.equal(policy.publicImage, true, 'ordinary images still load');
+    assert.equal(policy.ownSpace, true, 'and a page may read its own address space');
+
+    /*
+     * SEC-3, second half. Refusing to read what a redirect returned is not
+     * the same as not making the request: with redirect:'follow' the browser
+     * performs every hop before the fetch settles, so a page naming a
+     * redirector it controls still gets the GET delivered to loopback. The
+     * URL below is a public name (www.instagram.com resolves to this server)
+     * whose response is a 302 to 127.0.0.1, asked for on behalf of a public
+     * page — the redirector must be reached and the address behind it must
+     * not be.
+     */
+    const hitsBefore = { ...hits };
+    const redirected = await sw.evaluate(async (u) => {
+      const r = await analyzeImages([{ id: 'redir', url: u }], {}, 'https://news.example/article');
+      return r.results[0];
+    }, 'http://www.instagram.com/redirect-to-loopback.png');
+    assert.equal(hits.redirector, hitsBefore.redirector + 1, 'the redirector itself was fetched');
+    assert.equal(hits.loopback, hitsBefore.loopback, 'but the loopback address behind it was never requested');
+    const refusal = (redirected.signals || []).find((s) => s.id === 'unavailable');
+    assert.ok(refusal, 'and the image is reported as not fetched');
+    assert.match(refusal.detail, /redirects/, 'for the redirect, not for whatever the address behind it answered');
+
+    /* SEC-1. No extension page is offered to web content any more, so a site
+     * cannot frame the publisher view with a tab id of its choosing. */
+    const extUrl = await sw.evaluate(() => chrome.runtime.getURL('publisher/publisher.html'));
+    const reachable = await page.evaluate(async (u) => {
+      try { const r = await fetch(u); return r.ok; } catch (e) { return false; }
+    }, extUrl);
+    assert.equal(reachable, false, 'publisher.html must not be reachable from a web page');
+
+    /* A page cannot silence the extension with one bad attribute. */
+    const hostile = await ctx.newPage();
+    await hostile.goto('http://localhost:' + port + '/hostile.html');
+    await hostile.waitForTimeout(3500);
+    const hostileResult = await sw.evaluate(async () => {
+      const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith('/hostile.html'));
+      return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+    });
+    assert.ok(hostileResult, 'a page full of malformed URLs is still analysed');
+    assert.ok(!hostileResult.error, 'and no analyser threw: ' + (hostileResult.error || ''));
+    assert.equal(hostileResult.text.verdict, 'ai', 'text analysis still ran');
+    const lighthouse = (hostileResult.images.items || []).find((i) => i.url.endsWith('sd.png'));
+    assert.ok(lighthouse && lighthouse.verdict === 'ai-generated', 'image analysis still ran past the broken tags');
+    /* The poster of a hidden video is an attribute, not a resource the page
+     * loaded. The video's own source has always had a rendered-size floor;
+     * the poster had none, which made `<video poster="…" style="display:none">`
+     * the cheapest way to hand the extension a URL to fetch. */
+    assert.ok(!(hostileResult.images.items || []).some((i) => i.url.endsWith('camera.jpg')),
+      'a poster on a hidden video is not fetched');
 
     // Language awareness: a German page is read with the German lexicon.
     const de = await ctx.newPage();
@@ -198,7 +463,7 @@ function loadPlaywright() {
     assert.ok(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length) > 0, 'toggling restores them');
 
     // Pausing a host stops the work and clears what was stored for the tab.
-    await sw.evaluate(async () => chrome.storage.sync.set({ disabledHosts: ['localhost'] }));
+    await sw.evaluate(async () => SRL.settings.save({ disabledHosts: ['localhost'] }));
     await page.waitForTimeout(1200);
     const afterPause = await sw.evaluate(async (p) => {
       const t = (await chrome.tabs.query({})).find((x) => x.url === 'http://localhost:' + p + '/');
@@ -206,7 +471,7 @@ function loadPlaywright() {
     }, port);
     assert.equal(afterPause.stored, null, 'a paused host leaves no stored report');
     assert.equal(await page.evaluate(() => document.querySelectorAll('[data-srl-text]').length), 0, 'paused host has no markers');
-    await sw.evaluate(async () => chrome.storage.sync.set({ disabledHosts: [] }));
+    await sw.evaluate(async () => SRL.settings.save({ disabledHosts: [] }));
     await page.waitForTimeout(1500);
 
     /* Navigating a tab must not leave the previous page's report attached to
@@ -234,6 +499,90 @@ function loadPlaywright() {
     assert.ok(mem.localhost.pages >= 2, 'repeat visits counted (' + mem.localhost.pages + ')');
     assert.ok(mem.localhost.aiPages >= 2, 'AI pages counted');
     assert.ok(mem.localhost.tools.lovable >= 1, 'tools counted per domain');
+
+    /*
+     * The options page. About shows the manifest's version; every control
+     * has an accessible name; and the two actions the extension cannot undo
+     * ask first, so a dismissed dialog changes nothing and an accepted one
+     * does. Clear domain memory is checked here, while the record above is
+     * fresh and no analysis is in flight to write it back.
+     */
+    const extId = await sw.evaluate(() => chrome.runtime.id);
+    const version = await sw.evaluate(() => chrome.runtime.getManifest().version);
+    const options = await ctx.newPage();
+    const optionsErrors = [];
+    options.on('pageerror', (e) => optionsErrors.push(e.message));
+    await options.goto('chrome-extension://' + extId + '/options/options.html');
+    await options.waitForTimeout(500);
+    assert.equal(await options.locator('#version').textContent(), version, 'About shows the manifest version');
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+    const unnamed = await options.evaluate(() => {
+      const byId = (id) => { const n = id && document.getElementById(id); return n ? n.textContent.trim() : ''; };
+      const name = (el) => (el.labels && [...el.labels].map((l) => l.textContent.trim()).join(' '))
+        || el.getAttribute('aria-label') || byId(el.getAttribute('aria-labelledby')) || el.textContent.trim();
+      return [...document.querySelectorAll('button, input, select, textarea, a[href]')].filter((el) => !name(el)).map((el) => el.outerHTML.slice(0, 80));
+    });
+    assert.deepEqual(unnamed, [], 'every control on the options page has an accessible name');
+    const domains = () => sw.evaluate(async () => (await chrome.storage.local.get('srl:domains'))['srl:domains'] || null);
+    options.once('dialog', (d) => d.dismiss());
+    await options.click('#clearHistory');
+    await options.waitForTimeout(300);
+    assert.ok((await domains()) && (await domains()).localhost, 'a cancelled Clear keeps the domain memory');
+    options.once('dialog', (d) => d.accept());
+    await options.click('#clearHistory');
+    await options.waitForTimeout(500);
+    assert.equal(await domains(), null, 'an accepted Clear removes it');
+    await sw.evaluate(async () => SRL.settings.save({ sensitivity: 'high' }));
+    await options.reload();
+    await options.waitForTimeout(500);
+    assert.equal(await options.locator('select[name="sensitivity"]').inputValue(), 'high', 'the form shows what is stored');
+    const sensitivity = () => sw.evaluate(async () => (await SRL.settings.load()).sensitivity);
+    options.once('dialog', (d) => d.dismiss());
+    await options.click('#reset');
+    await options.waitForTimeout(300);
+    assert.equal(await sensitivity(), 'high', 'a cancelled Reset changes nothing');
+    options.once('dialog', (d) => d.accept());
+    await options.click('#reset');
+    await options.waitForTimeout(500);
+    assert.equal(await sensitivity(), 'medium', 'an accepted Reset restores the defaults');
+    assert.equal(await options.locator('select[name="sensitivity"]').inputValue(), 'medium', 'and the form shows them');
+    assert.deepEqual(optionsErrors, []);
+    await options.close();
+
+    /*
+     * The flat items written before the namespaced record, against the real
+     * storage API rather than the unit suite's fake: planted as an earlier
+     * build stored them, read by load() without any write, copied by
+     * migrate() (what the worker runs from onInstalled) with the flat items
+     * left in place for a device still on the old build, and then the
+     * namespaced record wins over them.
+     */
+    await sw.evaluate(async () => {
+      await chrome.storage.sync.clear();
+      await chrome.storage.sync.set({ sensitivity: 'high', maxImages: 7, disabledHosts: ['paused.example'] });
+    });
+    const flatOnly = await sw.evaluate(async () => ({ loaded: await SRL.settings.load(), keys: Object.keys(await chrome.storage.sync.get(null)).sort() }));
+    assert.equal(flatOnly.loaded.sensitivity, 'high', 'a reader sees the flat items before any copy');
+    assert.deepEqual(flatOnly.loaded.disabledHosts, ['paused.example']);
+    assert.deepEqual(flatOnly.keys, ['disabledHosts', 'maxImages', 'sensitivity'], 'and writes nothing');
+    const migrated = await sw.evaluate(async () => {
+      const written = await SRL.settings.migrate();
+      return { written, all: await chrome.storage.sync.get(null), loaded: await SRL.settings.load() };
+    });
+    assert.deepEqual(migrated.written, ['selfreportle.settings.v1', 'selfreportle.disabledHosts.v1']);
+    assert.deepEqual(Object.keys(migrated.all).sort(), ['disabledHosts', 'maxImages', 'selfreportle.disabledHosts.v1', 'selfreportle.settings.v1', 'sensitivity'], 'the copy is added and the flat items stay');
+    assert.deepEqual(migrated.all['selfreportle.settings.v1'], { sensitivity: 'high', maxImages: 7 }, 'the object carries what was stored and nothing more');
+    assert.deepEqual(migrated.all['selfreportle.disabledHosts.v1'], ['paused.example'], 'the host list is its own item');
+    assert.equal(migrated.loaded.sensitivity, 'high');
+    assert.equal(migrated.loaded.maxImages, 7);
+    const overridden = await sw.evaluate(async () => {
+      await SRL.settings.save({ sensitivity: 'low' });
+      return { loaded: await SRL.settings.load(), flat: (await chrome.storage.sync.get('sensitivity')).sensitivity };
+    });
+    assert.equal(overridden.loaded.sensitivity, 'low', 'the namespaced record wins');
+    assert.equal(overridden.flat, 'high', 'and the flat item is left as it was');
+    await sw.evaluate(async () => chrome.storage.sync.clear());
+    await page.waitForTimeout(1500);
     console.log('e2e OK:', JSON.stringify({ overall: result.overall, site: result.site.verdict, text: result.text.verdict, images: result.images.counts }));
   } finally {
     await ctx.close();

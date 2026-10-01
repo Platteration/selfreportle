@@ -5,6 +5,30 @@ development branch.
 
 ## Unreleased
 
+### Changed
+- **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
+  (one object) and `selfreportle.disabledHosts.v1` (its own item, so the
+  browser's per-item quota bounds the host list alone), instead of one sync
+  item per field. On install or update the worker copies the flat items
+  under the new keys byte for byte, one record per write so a paused-host
+  list the browser's per-item quota refuses does not take the rest with it;
+  the flat items are left in place, because a device still on an earlier
+  build reads only them, and the namespaced record wins where both exist.
+  Readers never write. Every stored value is validated field by field on the
+  way in: an enum by an own-property table, a boolean only as a boolean, a
+  number only as a number within its bounds; a value that is none of those
+  falls back to its default on its own. A stored host or number that was an
+  object used to throw inside the storage callback and leave every reader
+  waiting for settings that never arrived. Every key the extension writes is
+  named in `lib/settings.js`.
+- **The settings page asks before Reset to defaults and Clear domain memory**,
+  the two actions it cannot undo (Clear image cache still asks nothing: a
+  cache is re-fetchable), reports a save the browser refused instead of
+  flashing Saved — naming the paused-host list when that is what was too
+  long — and carries an About line with the version from the manifest, the
+  licence and source link (opened beside the page), and what the extension
+  sends where.
+
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
   are verified with WebCrypto against the embedded leaf certificate
@@ -50,6 +74,174 @@ development branch.
   signal, so an informational marker is visible without inflating the verdict.
 
 ### Security
+- **A self-signed certificate earned the green "camera capture" badge.** Every
+  question the verifier asked — signature, assertion hashes, chain
+  consistency, hard binding — was answered yes by a certificate minted in five
+  seconds with "Leica Camera AG" typed into its subject, because nothing
+  checked the root against anything. An exculpatory claim now needs three
+  things, not one: a manifest that verified and bound, a chain reaching a
+  certificate this build knows (`TRUST_ANCHORS` in `lib/c2pa-verify.js`, empty
+  here, filled by `setTrustAnchors`), and bytes the page itself loaded. Until
+  a trust list ships, a capture or human-origin claim is shown as the
+  unverified assertion it is and produces no camera badge, no page-level
+  provenance tick and no green toolbar ✓; the popup says "signed by an
+  unvouched signer" rather than "verified". The page-level tick also stopped
+  resting on the `captured` count, which camera EXIF and an XMP
+  `DigitalSourceType` attribute — fields anyone can type — also produce.
+- **A forgeable text attribute earned the same green badge as a signed
+  manifest.** Closing the C2PA path above raised the price of a camera badge to
+  an anchored, bound, page-loaded manifest — and left a shorter path open at
+  the old price: an `Iptc4xmpExt:DigitalSourceType` of `digitalCapture` is one
+  line of XML, and camera EXIF is a `Make` string, and either produced the
+  green "Camera-capture provenance" badge on its own. (`captured` and
+  `algorithmic` also needed no *hard* signal to win, which `human-created`
+  already did, so even a soft EXIF reading reached it.) An exculpatory verdict
+  now requires a hard signal, which only a manifest meeting all four conditions
+  produces; everything else lands in a new neutral tier, "Origin claimed by the
+  file, not verified" — slate, ranked no higher than no evidence at all, and
+  worded as the file's own claim. It is a tier rather than silence on purpose:
+  the claim is real evidence, and an unverified Content Credentials claim used
+  to disappear from the report altogether, which is the wrong half of the
+  problem to fix. The page-level tick lost its last free route too: a sentence
+  declaring human authorship is a disclosure, not a credential.
+- **What was verified was not what was displayed.** The worker re-fetched each
+  URL itself: no cookies, a `Range` header, no `Referer`. A server that tells
+  the two requests apart could hand the reader an AI picture and the extension
+  a signed photograph, and the badge landed on the picture nobody hashed. The
+  content script now reads the response the browser already holds
+  (`cache: 'only-if-cached'`, which makes no request of its own and sends no
+  cookies) and hands those bytes over; where it cannot — an opaque
+  cross-origin response — the worker's fetch still runs but its credentials
+  are not read as provenance for the picture on the page. As a side effect an
+  image-heavy page is now fetched once rather than twice.
+- **A declared length decided where the credential store ended.** The hard
+  binding is a digest over the file with the store excluded, and the reader
+  took the store's extent from length fields that no hash and no signature
+  covers. Overwriting the outer JUMBF box's own length made the declared store
+  swallow the picture: the binding hashed 41 bytes of 1728, reported "valid",
+  and one manifest minted once validated unchanged in front of any number of
+  different pictures. A store found by byte-scan now supplies no exclusion
+  range at all — nothing attests its extent — and a PNG chunk, WebP chunk,
+  JPEG APP11 run or ISOBMFF box is used only when it ends inside the file and
+  holds nothing but the JUMBF boxes that parsed. The badge line also says how
+  much of the file was hashed.
+- **A claim that referenced no assertions switched off the rule that only
+  referenced assertions speak.** An empty reference list was read as "no basis
+  to restrict", so every box in the manifest was admitted — including a hard
+  binding the claim never named — and the summary said nothing about
+  assertions at all. An empty list now admits nothing, and the manifest is
+  reported as bound to no file.
+- **Two assertion boxes sharing a label.** C2PA requires a label to be unique
+  within a manifest; the reader hashed whichever box a `Map` kept and then read
+  both, so a smuggled "digital capture" action nobody hashed was reported under
+  "all 2 assertions match the signed claim". A repeated label now breaks the
+  manifest.
+- **Two denial-of-service bombs in the shared service worker.** A PNG `zTXt`
+  or `iTXt` chunk inflated without any output ceiling: 512 KB of deflate became
+  536 MB, four at a time, and a hostile page could retrigger it on every
+  navigation until Chrome killed the worker and every tab's analysis with it.
+  Decompression is now bounded per chunk and per image, and an over-cap chunk
+  is reported as too large to inspect rather than failing the parse. Separately,
+  `xmpValue` built its element regex with `new RegExp` — invisible to the
+  literal ReDoS scanner — and its lazy middle rescanned to the end of the
+  packet from every unclosed opening tag: 29 s for a 1 MB XMP packet, past
+  Chrome's worker watchdog at the 4 MB fetch cap. Element extraction is now
+  linear, every XMP packet is bounded before parsing, and the SVG comment scan
+  uses `indexOf` rather than a lazy global regex. `test/redos.test.js` now
+  loads `lib/image-metadata.js` with both shapes as fixtures.
+- **IPv6 transition prefixes and LAN name suffixes walked past the address
+  policy.** NAT64 (`64:ff9b::/96`), 6to4, Teredo, the IPv4-translated
+  `::ffff:0:0/96` form and site-local `fec0::/10` were classified public, so a
+  literal carrying `192.168.1.1` inside it was fetched on a network running
+  the matching mechanism; so were `.lan`, `.intranet`, `.corp` and single-label
+  intranet names. Each is now classified by the address it actually carries,
+  and anything outside `2000::/3` fails closed. A page served from a `.local`,
+  `.home.arpa` or `.internal` name is ranked where it sits — on the LAN — so a
+  machine on the reader's Wi-Fi can no longer claim an mDNS name and be handed
+  the reader's own loopback and redirect-following.
+- **Nothing bounded how much one page could make the worker fetch.** The
+  per-page cap counted live `<img>` elements, so rewriting `src` re-armed it
+  forever, and the worker metered the caller not at all: twenty ordinary
+  content-script batches from one tab pulled 640 requests and 2.6 GB with the
+  reader's IP on them. The page-side cap is now a budget spent on URLs handed
+  over, which a same-document navigation does not refill, and the worker holds
+  a per-tab request and byte budget over a rolling minute, released when the
+  tab navigates or closes. Only a URL the page's own loader actually fetched
+  is handed over at all, which is what the address policy cannot check: it
+  reads the URL's text and cannot resolve a name whose owner points it at
+  127.0.0.1.
+- **The saved report claimed more than it could show.** Its SHA-256 digest was
+  called "integrity" and described as proof the file had not been edited since
+  it was saved. It is unkeyed and stored inside the report, so anyone changing
+  a finding can recompute it. The field is now `checksum` and says it catches
+  accidental corruption and nothing else, from one exported sentence beside
+  the credential caveat.
+- **Any page could make the extension fetch a private address.** The worker
+  fetches image, video and audio URLs with `<all_urls>` host permissions, so
+  its requests are subject to neither the page's CSP, nor its mixed-content
+  blocking, nor Chrome's Private Network Access checks — and the only filter
+  was a scheme test. An ordinary HTTPS page could name `http://127.0.0.1:…`,
+  `http://192.168.1.1/` or `http://169.254.169.254/…` in an image attribute
+  and have the extension reach it from the reader's IP and inside the reader's
+  network. Fetches now follow the Private Network Access rule: a page may
+  reach its own address space or a less private one, never a more private one,
+  and a `file:` resource is read only for a page that is itself a local file.
+  The rule is matched against the host as a resolver reads it, so writing a
+  name fully qualified (`http://localhost.:11434/…`, `http://nas.local./…`)
+  does not walk past it. A redirect is not followed on such a page's behalf
+  at all: the worker fetches with `redirect: 'manual'`, which does not perform
+  the hop, because checking where a fetch landed happens after the fact and
+  can only refuse the read — the request to the private address would already
+  have been delivered. The cost is deliberate: an image behind a redirect is
+  reported as not fetched. A page that is itself local (a `file:` album, a
+  localhost fixture) still follows redirects, since the policy already lets it
+  reach every address space. A `<video poster>` also has to belong to a video
+  the page actually displays, which it did not before: the poster path had no
+  rendered-size floor at all.
+- **The credentials cache could answer one image with another's provenance.**
+  URLs longer than 2000 characters were keyed on their first 2000 characters
+  plus their length, so two signed CDN URLs differing only in a trailing token
+  of the same length shared one entry — and the second image was reported with
+  the first one's format, metadata and verification result. The key is now a
+  SHA-256 digest of the whole URL.
+- **An assertion reference with no usable hash was skipped, not counted.** A
+  claim whose references carry the digest as text (or omit it) left the
+  assertion check at zero checked, which removed the whole assertion clause
+  from the summary and let the manifest pass on its signature and binding
+  alone, with the second of the three advertised checks silently not
+  performed. Such a reference is now counted and reported, and a claim that
+  names assertions none of which could be checked is caution, never a pass.
+- **Message handlers took the caller's word for which tab to report on.**
+  `srl:get-result` returned the full analysis of any tab id the caller named.
+  A content script now gets the tab it is running in; only an extension page
+  may name one, and the sender's extension id is checked.
+- **The worker trusted the byte caps it was handed.** `maxImageBytes` and
+  `maxMediaBytes` had a floor and no ceiling although the settings normaliser
+  that clamps them was already imported; the incoming object now goes through
+  it, and one message can no longer queue an unbounded number of fetches.
+- **The publisher page was offered to every website.** `publisher/publisher.html`
+  was declared web-accessible for `<all_urls>` although the popup opens it with
+  `chrome.tabs.create`, which needs no such declaration — so any site could
+  frame a privileged extension page with a tab id of its choosing, and its
+  buttons with it. The declaration is gone, and the page refuses to run inside
+  a frame.
+- **Nothing tied a manifest to the file it arrived in.** Signature, assertion
+  hashes and chain were all checked, but not the hard binding, so a genuine and
+  fully verifying camera manifest could be lifted byte for byte out of a real
+  photograph and embedded in a generated image: every check still passed and the
+  reader was shown "signature verified" beside "original digital capture". The
+  claim's `c2pa.hash.data` binding is now recomputed over the file's own bytes.
+  A mismatch is a broken manifest; a claim with no hard binding at all is
+  invalid rather than unverified; and a binding that could not be recomputed —
+  a byte-capped fetch, a BMFF or box-hash form, exclusion ranges that reach
+  outside the credential store — is reported as caution, never as a pass.
+- **An unsigned manifest earned the same badge as a signed one.** A hand-written
+  JUMBF box with no certificate and no signature, declaring `digitalCapture`,
+  produced a hard "captured" verdict and the page-level provenance tick. Capture,
+  human-origin and algorithmic-origin claims now count only from a manifest that
+  verified and bound; unverified ones are shown as unverified assertions and
+  change no verdict. Claims of AI generation are still read either way, being
+  disclosures against interest.
 - **A genuine signature could be replayed over a forged claim.** The COSE
   payload was verified as the signed body while the claim and assertions
   reported to the reader came from a separate box, so an attacker's claim
@@ -72,8 +264,85 @@ development branch.
   seconds-less GeneralizedTime was misread by about eighteen months.
 - The "box content" assertion hashing convention could never match, because
   the hashed range wrongly included the inner box header.
+- **"The bytes the page loaded" was read out of the HTTP cache, which does not
+  say what an element decoded.** The third condition of an exculpatory verdict
+  was satisfied by `fetch(url, {cache: 'only-if-cached'})` returning anything
+  at all, and a same-origin page can overwrite its own cache entry after the
+  `<img>` has decoded — `{cache: 'reload'}`, or the same request from a frame
+  or a worker the content script never sees. Rendering a generated picture and
+  then swapping the entry for a genuinely signed photograph therefore had the
+  extension verify the photograph while the reader looked at the picture, and
+  with a trust list installed that is the green camera badge on an AI image.
+  Nothing about the response tells the two apart, its length included: the
+  lengths only have to match, and the generated half is the half the page is
+  free to pad. The bytes are now decoded in the page and compared pixel for
+  pixel with what the element is holding, and the flag says exactly that much —
+  these bytes decode to the picture in front of the reader — with everything
+  that cannot be compared (cross-origin, truncated, oversized, animated,
+  undecodable, an element that has moved on) falling back to a separate fetch
+  whose claims are shown and not believed. A `blob:` URL is exempt, naming one
+  immutable Blob under a name nothing can re-register.
+- **The fixture server in `test/e2e/` served the whole machine.** It bound
+  every interface and joined the request path onto the fixture root with no
+  containment, so for the length of a test run — on CI runners too — anything
+  that could reach the port could read `/etc/hostname` or the checkout's own
+  `.git/config`. It now binds loopback and refuses both a path outside the
+  fixture root and any segment beginning with a dot; the suite asks over a raw
+  socket, since every normal client normalises the traversal away first.
 
 ### Fixed
+- **The extension went blind on single-page apps after sixty images.** The
+  per-document image budget was charged for the tab's life and refilled only by
+  a real navigation, so a client-side route change or an infinite feed — where
+  embedded provenance survives and this is most useful — stopped being
+  inspected entirely, with no badge and nothing to distinguish it from a clean
+  page. The volume it was guarding against is bounded by the worker's
+  per-minute request and byte budget, which no page can re-arm, so the count
+  here is now over the images the document is still tracking plus the fetches
+  still in flight: a torn-down view gives its budget back. An image skipped for
+  budget says so instead of looking uninspectable.
+- **A valid image with four megabytes of JUMBF boxes after it cost 54 s of the
+  service worker.** When a format parse finds no manifest the C2PA fallback
+  scans the whole file for the bytes `jumb`, up to 64 times, and each attempt
+  parsed the boxes from there to the end of the file. Box parsing is now
+  bounded for every caller, with one allowance shared across the scan's
+  attempts; the hostile-image test covers the shape, which it previously did
+  not while claiming image parsing was bounded.
+- **The saved report said signatures were never verified.** Cryptographic
+  verification shipped, but three user-facing strings did not follow it: the
+  exported JSON report — the artefact the reader is told to keep as evidence,
+  carrying a SHA-256 digest of its own findings — the PNG receipt's footer and
+  the Overview tab's provenance hint all still said credentials were parsed
+  and not verified, while the same popup showed a green "Signature verified"
+  row. The sentence now lives once in `lib/verdicts.js`, says what is actually
+  checked and what is not (the root is never anchored), and the exported
+  report adds what the manifests on that particular page did.
+- **Trader analysis could stall the page on VAT context words.** `findVat`
+  compiled all twenty-nine country formats afresh for every VAT-context word
+  it found, and the "stop after six numbers" guard never fires on a page that
+  has the words and no number: a 300 KB body of "vat " repeated cost about
+  400 ms of the page's own main thread, repeatable roughly once a second
+  through the SPA-navigation poller. The formats are compiled once and the
+  scan is bounded by hit count as well.
+- **Domain memory was a timestamped visit log.** Records carried a
+  millisecond `lastSeen` and never expired, so the store was a
+  hostname-granularity reading log kept until 400 other domains displaced it.
+  Times are now kept to the day and records expire after 90 days. The file's
+  own header claimed the feature was off by default while the settings said
+  otherwise; the header now matches the code.
+- **One tag could silence the whole extension.** Three attacker-reachable
+  inputs each threw out of `analyze()` before any result existed, so nothing
+  was posted to the worker, the mutation observer and the SPA-navigation poller
+  never started, and the popup reported "nothing analysed yet" for the rest of
+  the page's life: a Replit fingerprint (by hostname *or* by the dev-banner
+  script src, which any page can add) reached an undeclared variable in
+  `attributeSite`; a malformed percent-escape in an image URL — `<img src="/%">`
+  — threw `URIError` out of `analyzeImageHints`; and an unparseable
+  `<video poster="http://[">` threw `TypeError` out of `new URL`. Each input is
+  fixed, page-supplied URLs now resolve through a helper that answers null
+  rather than throwing, and `analyze()` and the per-image loop are guarded so
+  the next such defect cannot do it either. The failure is reported in the
+  popup instead of being swallowed.
 - **The tool accused ordinary pages.** An AI-disclosure meta tag holding any
   value other than a literal "false"/"no"/"none" was read as declaring AI
   content — including an empty one, and including `content="no AI was used"`.

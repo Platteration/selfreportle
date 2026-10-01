@@ -3,20 +3,64 @@
  * permissions the content script lacks), parses embedded provenance, stores
  * per-tab results for the popup and updates the toolbar badge.
  */
-importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/image-metadata.js', '../lib/history.js');
+importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/image-metadata.js', '../lib/history.js', '../lib/fetch-policy.js');
 
 const S = self.SRL;
 const results = new Map();          // tabId → page result
 const imageCache = new Map();       // url → { signals, metadata, format }
 const IMAGE_CACHE_MAX = 400;
+const MAX_IMAGES_PER_MESSAGE = 32;   // the content script sends six
 const FETCH_TIMEOUT_MS = 20000;
 const CONCURRENCY = 4;
+
+/*
+ * What one tab may spend.
+ *
+ * The content script's own cap counts URLs it has handed over, which bounds
+ * an honest page; it does not bound a page that reloads the content script,
+ * and nothing in here bounded the caller at all. Twenty ordinary batches from
+ * one tab pulled 640 requests and 2.6 GB with the reader's IP address on
+ * them. The budget is charged where the fetch is issued and where its bytes
+ * are read, refilled only by the clock, and reset when the tab navigates or
+ * closes — the two places a page stops being the same page.
+ */
+const BUDGET_WINDOW_MS = 60000;
+const BUDGET_REQUESTS = 200;
+const BUDGET_BYTES = 64 * 1024 * 1024;
+const budgets = new Map();          // tabId → { start, requests, bytes }
+
+function budgetFor(tabId) {
+  const now = Date.now();
+  let b = budgets.get(tabId);
+  if (!b || now - b.start > BUDGET_WINDOW_MS) { b = { start: now, requests: 0, bytes: 0 }; budgets.set(tabId, b); }
+  return b;
+}
+
+/* True when there is room for one more fetch, which it then charges for. */
+function chargeRequest(tabId) {
+  if (tabId == null) return true;
+  const b = budgetFor(tabId);
+  if (b.requests >= BUDGET_REQUESTS || b.bytes >= BUDGET_BYTES) return false;
+  b.requests++;
+  return true;
+}
+
+function chargeBytes(tabId, n) {
+  if (tabId == null) return;
+  budgetFor(tabId).bytes += n;
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   try {
     chrome.contextMenus.create({ id: 'srl-inspect-image', title: 'Inspect this image for AI provenance', contexts: ['image'] });
     chrome.contextMenus.create({ id: 'srl-inspect-selection', title: 'Check selected text for AI signals', contexts: ['selection'] });
   } catch (e) { /* already created */ }
+  /* The one-time copy of the flat settings items under the namespaced keys.
+   * Here and not in load(): a reader that writes can land a stale copy over
+   * a save that completed meanwhile, and here nothing else is running yet.
+   * Idempotent, so every reason is fine, and load() reads the flat items
+   * on its own until this has run. */
+  S.settings.migrate().catch(() => {});
 });
 
 chrome.commands && chrome.commands.onCommand.addListener((command, tab) => {
@@ -31,26 +75,39 @@ chrome.contextMenus && chrome.contextMenus.onClicked.addListener((info, tab) => 
   if (info.menuItemId === 'srl-inspect-selection') chrome.tabs.sendMessage(tab.id, { type: 'srl:inspect-selection' }).catch(() => {});
 });
 
+/*
+ * Only this extension's own content scripts and pages can reach onMessage —
+ * there is no externally_connectable — but a handler that acts on whatever
+ * tab id or host the caller names is still the wrong shape: srl:get-result
+ * is the one that hands back another tab's whole report. A content script
+ * gets the tab it is actually running in; only an extension page (the popup
+ * and the publisher view, which have no sender.tab) may name one.
+ */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return false;
+  if (sender.id !== chrome.runtime.id) return false;
+  const fromTab = sender.tab && sender.tab.id != null ? sender.tab.id : null;
   switch (msg.type) {
     case 'srl:analyze-images':
-      analyzeImages(msg.images || [], msg.settings || {}).then(sendResponse, (e) => sendResponse({ error: String(e) }));
+      /* Fetching happens on a page's behalf, so there has to be a page: the
+       * content script is the only sender, and its URL decides which address
+       * spaces the fetches may reach. */
+      if (fromTab == null) { sendResponse({ error: 'no sender tab' }); return false; }
+      analyzeImages(msg.images || [], msg.settings || {}, sender.url || sender.tab.url || '', fromTab)
+        .then(sendResponse, (e) => sendResponse({ error: String(e) }));
       return true;
     case 'srl:page-result': {
-      const tabId = sender.tab && sender.tab.id;
-      if (tabId != null) storeResult(tabId, msg.result);
+      if (fromTab != null) storeResult(fromTab, msg.result);
       sendResponse({ ok: true });
       return false;
     }
     case 'srl:paused': {
-      const tabId = sender.tab && sender.tab.id;
-      if (tabId != null) clearTab(tabId);
+      if (fromTab != null) clearTab(fromTab);
       sendResponse({ ok: true });
       return false;
     }
     case 'srl:get-result':
-      getResult(msg.tabId).then(sendResponse);
+      getResult(fromTab != null ? fromTab : msg.tabId).then(sendResponse);
       return true;
     case 'srl:get-history':
       S.history.get(msg.host).then((rec) => sendResponse({ record: rec, summary: S.history.summarize(rec) }));
@@ -69,6 +126,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   results.delete(tabId);
+  budgets.delete(tabId);
   chrome.storage.session.remove('tab:' + tabId).catch(() => {});
 });
 
@@ -76,6 +134,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
  * report as though it belonged to the new one. */
 function clearTab(tabId) {
   results.delete(tabId);
+  budgets.delete(tabId);
   chrome.storage.session.remove('tab:' + tabId).catch(() => {});
   chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
   chrome.action.setTitle({ tabId, title: 'Selfreportle' }).catch(() => {});
@@ -139,47 +198,63 @@ function updateBadge(tabId, result) {
 
 /* ---- image fetching ---------------------------------------------------- */
 
-async function analyzeImages(images, settings) {
-  const maxBytes = Math.max(65536, settings.maxImageBytes || S.settings.DEFAULTS.maxImageBytes);
-  const maxMedia = Math.max(65536, settings.maxMediaBytes || S.settings.DEFAULTS.maxMediaBytes);
+/* The caller's numbers go through the same normaliser the settings page
+ * uses, which is where the ceilings live: a byte cap taken on trust is a cap
+ * of whatever the caller felt like, and fetchBytes buffers to it. */
+async function analyzeImages(images, settings, pageUrl, tabId) {
+  const s = S.settings.normalize(settings || {});
+  const maxBytes = s.maxImageBytes;
+  const maxMedia = s.maxMediaBytes;
+  const list = (Array.isArray(images) ? images : []).slice(0, MAX_IMAGES_PER_MESSAGE);
   const out = [];
   let i = 0;
   const workers = Array.from({ length: CONCURRENCY }, async () => {
-    while (i < images.length) {
-      const img = images[i++];
-      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0));
+    while (i < list.length) {
+      const img = list[i++];
+      out.push(await analyzeOne(img, img.kind === 'av' ? maxMedia : maxBytes, img.kind === 'av' ? maxMedia : 0, pageUrl, tabId));
     }
   });
   await Promise.all(workers);
   return { results: out };
 }
 
-async function analyzeOne(img, maxBytes, tailBytes) {
+async function analyzeOne(img, maxBytes, tailBytes, pageUrl, tabId) {
   const url = img.url || '';
   const base = { id: img.id, url };
   if (img.base64) {
     try {
       const bytes = fromBase64(img.base64);
-      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated });
+      /* The page produced these itself. `rendered` says more than that: the
+       * content script decoded them and matched them against the picture the
+       * element is showing, which is the only basis on which a provenance
+       * claim may be read as being about what the reader is looking at. The
+       * cache alone does not say it — a page can overwrite its own entry
+       * after the <img> has decoded — so an unproven read still arrives here
+       * with base64 and without the flag. */
+      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated, rendered: !!img.rendered });
       return { ...base, format: analysed.format, bytes: bytes.length, truncated: !!img.truncated, signals: analysed.signals, metadata: analysed.metadata };
     } catch (e) {
       return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not parse image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
     }
   }
-  if (!/^(https?|data|file):/i.test(url)) {
-    return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Cannot fetch this image type', detail: url.slice(0, 12) + '…' }] };
+  const allowed = S.fetchPolicy.mayFetch(url, pageUrl);
+  if (!allowed.ok) {
+    return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Not fetched', detail: allowed.reason }] };
   }
-  const cacheKey = url.length > 2000 ? url.slice(0, 2000) + '#' + url.length : url;
-  if (imageCache.has(cacheKey)) return { ...base, ...imageCache.get(cacheKey), cached: true };
+  const cacheKey = await S.fetchPolicy.cacheKey(url);
+  if (cacheKey !== null && imageCache.has(cacheKey)) return { ...base, ...imageCache.get(cacheKey), cached: true };
+  if (!chargeRequest(tabId)) {
+    return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Not fetched', detail: 'this page has already had the extension fetch its share of media for the minute' }] };
+  }
   let outcome;
   try {
-    const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes);
+    const { bytes, truncated, contentType } = await fetchBytes(url, maxBytes, pageUrl, tabId);
     const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated });
     outcome = { format: analysed.format, contentType, bytes: bytes.length, truncated, signals: analysed.signals, metadata: analysed.metadata };
     /* Many MP4s put their index (and so the Content Credentials) at the end
      * of the file, which a prefix fetch never sees. Ask for the tail once. */
     if (tailBytes && truncated && !(analysed.metadata && analysed.metadata.c2pa) && /^isobmff/.test(analysed.format) && S.imageMeta.isobmffNeedsTail(bytes)) {
-      const tail = await fetchTail(url, tailBytes);
+      const tail = chargeRequest(tabId) ? await fetchTail(url, tailBytes, pageUrl, tabId) : null;
       if (tail) {
         const fromTail = await S.imageMeta.analyzeImageBytes(tail, { url, truncated: true });
         if (fromTail.metadata && fromTail.metadata.c2pa) {
@@ -196,7 +271,7 @@ async function analyzeOne(img, maxBytes, tailBytes) {
    * "could not fetch" for the worker's lifetime, including on an explicit
    * right-click re-inspection. */
   const failed = outcome.signals.length === 1 && outcome.signals[0].id === 'unavailable';
-  if (!failed) {
+  if (!failed && cacheKey !== null) {
     if (imageCache.size >= IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
     imageCache.set(cacheKey, outcome);
   }
@@ -205,14 +280,18 @@ async function analyzeOne(img, maxBytes, tailBytes) {
 
 /* A suffix range request. Servers that ignore Range return the whole body,
  * so the result is only used when it actually parses as a credential store. */
-async function fetchTail(url, n) {
+async function fetchTail(url, n, pageUrl, tabId) {
   if (!/^https?:/i.test(url)) return null;
+  if (!S.fetchPolicy.mayFetch(url, pageUrl).ok) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', signal: controller.signal });
+    const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', redirect: redirectMode(pageUrl), signal: controller.signal });
+    if (res.type === 'opaqueredirect') return null;
     if (res.status !== 206) return null;
+    if (!landedSomewhereAllowed(res, url, pageUrl)) return null;
     const buf = await res.arrayBuffer();
+    chargeBytes(tabId, buf.byteLength);
     return new Uint8Array(buf.byteLength > n ? buf.slice(buf.byteLength - n) : buf);
   } catch (e) {
     return null;
@@ -228,13 +307,54 @@ function fromBase64(b64) {
   return out;
 }
 
-async function fetchBytes(url, maxBytes) {
+/*
+ * Redirects.
+ *
+ * `redirect: 'follow'` has the user agent perform every hop before the fetch
+ * settles, so checking where it landed afterwards can only refuse the read:
+ * the GET has already been delivered. A page that names a redirector it
+ * controls would still get the request made to loopback or to a router on
+ * the reader's network, which is the capability this policy exists to
+ * remove, not merely to keep the bytes from.
+ *
+ * `redirect: 'manual'` does not perform the redirect at all — the fetch
+ * settles as an opaque-redirect response, with no status, headers or
+ * Location to read. Where it would have gone therefore cannot be checked,
+ * so it is refused: an image behind a redirect is reported as not fetched
+ * rather than followed blind. That is the trade, and it is the reason the
+ * mode is chosen per page rather than globally.
+ *
+ * The one page that still follows is one already sitting in the most private
+ * space there is — a local page, `file:` included — because the policy lets
+ * such a page reach every space anyway, so a redirect can take the worker
+ * nowhere the page could not have named outright. That is what keeps a
+ * file:// album and a localhost fixture reading their own images.
+ */
+function redirectMode(pageUrl) {
+  return S.fetchPolicy.callerSpace(pageUrl) === 'local' ? 'follow' : 'manual';
+}
+
+/*
+ * Where the request actually ended up, for the one case that still follows.
+ * `res.url` is the URL the bytes came from, so it catches a hop the first
+ * check never saw; it is a check on what was read, and the mode above is
+ * what decides whether a private address is reached at all.
+ */
+function landedSomewhereAllowed(res, url, pageUrl) {
+  const finalUrl = res.url || url;
+  if (finalUrl === url) return true;
+  return S.fetchPolicy.mayFetch(finalUrl, pageUrl).ok;
+}
+
+async function fetchBytes(url, maxBytes, pageUrl, tabId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const headers = /^https?:/i.test(url) ? { Range: 'bytes=0-' + (maxBytes - 1) } : {};
-    const res = await fetch(url, { headers, credentials: 'omit', redirect: 'follow', signal: controller.signal });
+    const res = await fetch(url, { headers, credentials: 'omit', redirect: redirectMode(pageUrl), signal: controller.signal });
+    if (res.type === 'opaqueredirect') throw new Error('the URL redirects, and a redirect is not followed for this page');
     if (!res.ok && res.status !== 206) throw new Error('HTTP ' + res.status);
+    if (!landedSomewhereAllowed(res, url, pageUrl)) throw new Error('redirected to an address this page may not reach');
     const contentType = res.headers.get('content-type') || '';
     const reader = res.body.getReader();
     const chunks = [];
@@ -245,6 +365,7 @@ async function fetchBytes(url, maxBytes) {
       if (done) break;
       if (total + value.length > maxBytes) {
         chunks.push(value.subarray(0, maxBytes - total));
+        chargeBytes(tabId, maxBytes - total);
         total = maxBytes;
         truncated = true;
         try { await reader.cancel(); } catch (e) { /* ignore */ }
@@ -252,6 +373,7 @@ async function fetchBytes(url, maxBytes) {
       }
       chunks.push(value);
       total += value.length;
+      chargeBytes(tabId, value.length);
     }
     const lenHeader = res.headers.get('content-range');
     if (lenHeader) {
