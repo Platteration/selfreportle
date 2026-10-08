@@ -119,13 +119,22 @@ test('no regex in lib/ or web/ backtracks superlinearly on hostile input', () =>
     for (const { re, where, src } of regexLiterals(source, path.relative(path.join(__dirname, '..'), file))) {
       checked++;
       for (const shape of Object.keys(small)) {
-        const a = timeRun(re, small[shape]);
-        const b = timeRun(re, large[shape]);
-        pairs++;
         // Below the noise floor the ratio is meaningless, but the flat budget
-        // still applies: every pair is checked against it.
-        if (b > BUDGET_MS || (a >= NOISE_MS && b / a > GROWTH)) {
-          findings.push(`${where} on "${shape}": ${a.toFixed(1)}ms at ${SMALL} → ${b.toFixed(1)}ms at ${LARGE}\n    ${src}`);
+        // still applies: every pair is checked against it. A pair that fails is
+        // measured once more and reported only if it fails again: the bounded
+        // three-item-list pattern, linear with a window of thirty, failed 1 run
+        // in 12 of the whole suite on a machine shared with other test runs
+        // (0.3 ms → 5.3 ms on "dashes", at 179f99f), when its 16 KB run met a
+        // load spike three times over. A quadratic is slow on every run.
+        const measure = () => {
+          const a = timeRun(re, small[shape]);
+          const b = timeRun(re, large[shape]);
+          return b > BUDGET_MS || (a >= NOISE_MS && b / a > GROWTH) ? { a, b } : null;
+        };
+        pairs++;
+        const hit = measure() && measure();
+        if (hit) {
+          findings.push(`${where} on "${shape}": ${hit.a.toFixed(1)}ms at ${SMALL} → ${hit.b.toFixed(1)}ms at ${LARGE}\n    ${src}`);
           break;
         }
       }
@@ -134,6 +143,168 @@ test('no regex in lib/ or web/ backtracks superlinearly on hostile input', () =>
 
   assert.ok(checked > 150, 'expected to find the pattern catalogue, only saw ' + checked);
   assert.ok(pairs > 3000, 'every regex must be measured against every shape, only saw ' + pairs + ' pairs');
+  assert.deepEqual(findings, [], 'superlinear regexes:\n  ' + findings.join('\n  '));
+});
+
+/*
+ * Shapes derived from each pattern itself. The shapes above are generic, and
+ * a pattern that opens with a token of its own — 【1†, "creator":{, Steps:,
+ * freepik, canva — never meets its worst case in them: nine such patterns
+ * were quadratic and passed every pair. 300 KB of unclosed citation markers
+ * cost the text analyser 42 s; a 256 KB C2PA claim generator of "canva " cost
+ * the shared worker 64 s; a 512 KB EXIF UserComment of "Steps: 1a" lines
+ * 43 s. Each pattern is parsed into a small tree and walked with every
+ * alternative and with its optional parts in and out; from each walk come a
+ * near miss (the text less its last character) and, for every unbounded
+ * repetition, the text up to it plus one character it accepts — the opener
+ * of a scan that never finds its closer. Each unit is repeated to the same
+ * two sizes and held to the same budgets as above.
+ */
+function patternTree(src) {
+  let i = 0;
+  const alt = () => { const branches = [seq()]; while (src[i] === '|') { i++; branches.push(seq()); } return branches.length === 1 ? branches[0] : { t: 'alt', branches }; };
+  const seq = () => {
+    const items = [];
+    while (i < src.length && src[i] !== '|' && src[i] !== ')') {
+      let node = atom();
+      const q = /^(?:\*|\+|\?|\{(\d+)(?:(,)(\d*))?\})\??/.exec(src.slice(i));
+      if (q) {
+        i += q[0].length;
+        const k = q[0][0];
+        const [min, max] = k === '*' ? [0, Infinity] : k === '+' ? [1, Infinity] : k === '?' ? [0, 1]
+          : [+q[1], q[2] ? (q[3] === '' ? Infinity : +q[3]) : +q[1]];
+        node = { t: 'rep', node, min, max };
+      }
+      items.push(node);
+    }
+    return { t: 'seq', items };
+  };
+  const ch = (c) => ({ t: 'ch', c });
+  const escape = () => {
+    const c = src[i + 1];
+    i += 2;
+    const simple = { d: '1', D: 'a', w: 'a', W: '-', s: ' ', S: 'a', n: '\n', t: '\t', r: '\r' };
+    if (Object.prototype.hasOwnProperty.call(simple, c)) return ch(simple[c]);
+    if (c === 'b' || c === 'B' || /[1-9]/.test(c)) return { t: 'empty' };
+    if (c === 'u') {
+      const m = /^\{([0-9a-fA-F]+)\}|^([0-9a-fA-F]{4})/.exec(src.slice(i));
+      if (m) { i += m[0].length; return ch(String.fromCodePoint(parseInt(m[1] || m[2], 16))); }
+    }
+    if (c === 'x') { i += 2; return ch(String.fromCharCode(parseInt(src.slice(i - 2, i), 16))); }
+    return ch(c);
+  };
+  const charClass = () => {
+    i++;
+    const negated = src[i] === '^';
+    if (negated) i++;
+    const members = [];
+    for (let first = true; i < src.length && (src[i] !== ']' || first); first = false) {
+      if (src[i] === '\\') { const e = escape(); if (e.t === 'ch') members.push(e.c); continue; }
+      members.push(src[i++]);
+      if (src[i] === '-' && src[i + 1] !== ']' && i + 1 < src.length) { i++; if (src[i] === '\\') escape(); else i++; }
+    }
+    i++;
+    if (!negated) return ch(members[0] || 'a');
+    return ch([...'a1 xZ.-q'].find((c) => !members.includes(c)));
+  };
+  const atom = () => {
+    const c = src[i];
+    if (c === '(') {
+      i++;
+      let look = false;
+      if (src[i] === '?') {
+        if (src[i + 1] === ':') i += 2;
+        else if (src[i + 1] === '<' && src[i + 2] !== '=' && src[i + 2] !== '!') i = src.indexOf('>', i) + 1;
+        else { look = true; i += src[i + 1] === '<' ? 3 : 2; }
+      }
+      const inner = alt();
+      i++;
+      return look ? { t: 'empty' } : inner;
+    }
+    if (c === '[') return charClass();
+    if (c === '\\') return escape();
+    i++;
+    if (c === '^' || c === '$') return { t: 'empty' };
+    return ch(c === '.' ? 'a' : c);
+  };
+  return alt();
+}
+
+function derivedUnits(re) {
+  let tree;
+  try { tree = patternTree(re.source); } catch (e) { return []; }
+  const widest = (n) => (n.t === 'alt' ? Math.max(n.branches.length, ...n.branches.map(widest))
+    : n.t === 'seq' ? Math.max(1, ...n.items.map(widest)) : n.t === 'rep' ? widest(n.node) : 1);
+  const once = (n) => (n.t === 'ch' ? n.c : n.t === 'seq' ? n.items.map(once).join('') : n.t === 'alt' ? once(n.branches[0]) : n.t === 'rep' ? once(n.node) : '') || 'a';
+  const units = new Set();
+  for (let k = 0; k < Math.min(widest(tree), 80); k++) {
+    for (const optional of [true, false]) {
+      let text = '';
+      const cuts = [];
+      const walk = (n) => {
+        if (n.t === 'ch') text += n.c;
+        else if (n.t === 'seq') n.items.forEach(walk);
+        else if (n.t === 'alt') walk(n.branches[Math.min(k, n.branches.length - 1)]);
+        else if (n.t === 'rep') {
+          if (n.max === Infinity) cuts.push(text + once(n.node));
+          const times = n.min > 0 ? Math.min(n.min, 3) : optional ? 1 : 0;
+          for (let r = 0; r < times; r++) walk(n.node);
+        }
+      };
+      walk(tree);
+      if (text.length >= 2) units.add(text.slice(0, -1) + (/\s/.test(text.slice(-1)) ? 'a' : ' '));
+      for (const cut of cuts) if (cut.length >= 2) units.add(cut);
+    }
+  }
+  return [...units].filter((u) => u.length <= 400);
+}
+
+/* Sizes for the derived shapes, chosen by measurement. A bounded pattern is
+ * linear but lumpy: the XMP AI-flag pattern scans up to a thousand characters
+ * past every "<", and between 2 KB and 16 KB it grew 25-29x, past the 16x
+ * above, with no quadratic in it (8 KB → 256 KB doubles with the input). A
+ * 16x step separates the two: linear measured at most 77x across ten runs of
+ * every derived unit, and quadratic is 256x. A flagged pair is measured once
+ * more and reported only if it is flagged again; a real quadratic is slow on
+ * every run. */
+const DERIVED_SMALL = 4000;
+const DERIVED_LARGE = 64000;   // 16x the input
+const DERIVED_GROWTH = 128;    // linear stays under ~77x here, quadratic is ~256x
+const DERIVED_BUDGET_MS = 500; // the slowest linear unit costs ~80 ms at 64 KB
+
+test('no regex in lib/ or web/ backtracks superlinearly on near misses of itself', () => {
+  const files = [
+    ...fs.readdirSync(LIB).filter((f) => f.endsWith('.js')).map((f) => path.join(LIB, f)),
+    ...fs.readdirSync(WEB).filter((f) => f.endsWith('.js')).map((f) => path.join(WEB, f)),
+  ];
+  const fill = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  const flagged = (re, unit) => {
+    const a = timeRun(re, fill(unit, DERIVED_SMALL));
+    const b = timeRun(re, fill(unit, DERIVED_LARGE));
+    return b > DERIVED_BUDGET_MS || (a >= NOISE_MS && b / a > DERIVED_GROWTH) ? { a, b } : null;
+  };
+  const findings = [];
+  let checked = 0;
+  let pairs = 0;
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    for (const { re, where, src } of regexLiterals(source, path.relative(path.join(__dirname, '..'), file))) {
+      checked++;
+      for (const unit of derivedUnits(re)) {
+        pairs++;
+        const hit = flagged(re, unit) && flagged(re, unit);
+        if (hit) {
+          findings.push(`${where} on ${JSON.stringify(unit.slice(0, 40))} repeated: ${hit.a.toFixed(1)}ms at ${DERIVED_SMALL} → ${hit.b.toFixed(1)}ms at ${DERIVED_LARGE}\n    ${src}`);
+          break;
+        }
+      }
+    }
+  }
+  assert.ok(checked > 150, 'expected to find the pattern catalogue, only saw ' + checked);
+  assert.ok(pairs > 2000, 'every regex must yield shapes of its own, only saw ' + pairs + ' pairs');
+  // The walk reads what it should: two patterns that were quadratic, unit for unit.
+  assert.ok(derivedUnits(/【\d+(?::\d+)?†[^】]*】/).includes('【1†a'), 'an unclosed citation marker is derived from its pattern');
+  assert.ok(derivedUnits(/"creator"\s*:\s*(?:\{[^}]*"name")?/).some((u) => u.startsWith('"creator"') && u.includes('{')), 'and an opened, unclosed object');
   assert.deepEqual(findings, [], 'superlinear regexes:\n  ' + findings.join('\n  '));
 });
 
@@ -156,6 +327,11 @@ test('whole-page analysis stays fast on a hostile body of text', () => {
     // see. test/legitimacy.test.js holds the bound that actually catches it.
     'VAT context words': 'vat '.repeat(CAP / 4),
     'NIP context words': 'nip '.repeat(CAP / 4),
+    // Derived from the patterns: a citation marker opened and never closed
+    // (42 s), and blank lines that the heading and bullet detectors' \s*
+    // crossed one start at a time (over a minute), each at this cap.
+    'unclosed citation markers': '【1†a '.repeat(CAP / 5),
+    'blank lines after a sentence': 'We baked bread today. ' + '\n '.repeat((CAP - 22) / 2),
   };
   for (const [name, body] of Object.entries(bodies)) {
     for (const [label, run] of [
@@ -237,6 +413,15 @@ test('image parsing stays fast and bounded on a hostile image', async () => {
     // The same lattice with no format in front of it, which takes the generic
     // scan as well as the fallback, so the allowance has to cover both.
     'JUMBF lattice and no format at all': jumbfLattice(CAP),
+    /* Derived from the patterns (see "near misses of itself" above), through the
+     * worker's own entry point: an EXIF UserComment of generation-parameter
+     * lines that never name a sampler, which a PNG eXIf chunk carries at any
+     * length (43 s at this size), and a signed claim whose generator repeats a
+     * tool-name prefix the generator pattern then scanned to the end from each
+     * time (64 s and 46 s). */
+    'PNG eXIf UserComment of parameters that never name a sampler': H.png([H.pngChunk('eXIf', H.tiff([{ tag: 0x9286, type: 7, value: H.concat([H.str('ASCII\0\0\0'), H.str('Steps: 1a\n'.repeat(52429))]) }]))]),
+    'C2PA claim generator of "canva " repeated': (await H.signedC2paAsset({ container: 'png', generator: 'canva '.repeat(43691) })).bytes,
+    'C2PA claim generator of "adobe express " repeated': (await H.signedC2paAsset({ container: 'png', generator: 'adobe express '.repeat(18725) })).bytes,
   };
 
   const before = process.memoryUsage().rss;
@@ -267,4 +452,69 @@ test('image parsing stays fast and bounded on a hostile image', async () => {
   const quarter = await xmpCost(64 * 1024);
   const whole = await xmpCost(256 * 1024);
   assert.ok(whole < Math.max(150, quarter * 8), 'XMP parsing grew from ' + quarter + 'ms at 64 KB to ' + whole + 'ms at 256 KB');
+});
+
+/*
+ * Linear is not cheap enough when the constant is the scan length. A packet of
+ * self-closing tags that never close, or of tags inside a value that never
+ * close, had every "<" scan a thousand characters past it, the next "<"
+ * included: 1.2 s and 0.4 s at the packet cap, per image, in the shared
+ * worker, against 14 ms and 30 ms for the same packets closed — growth checks
+ * see nothing, since doubling the packet doubles the cost. One of the two
+ * patterns is built with `new RegExp`, which no literal scan sees. Each is
+ * held here to the packet with its tags closed, measured in the same run.
+ */
+test('an XMP packet of tags that never close costs about what the same tags closed do', async () => {
+  const M = require('../lib/image-metadata.js');
+  const H = require('./helpers.js');
+  const riff = (chunks) => {
+    const body = H.concat([H.str('WEBP'), ...chunks]);
+    const hdr = new Uint8Array(8);
+    hdr.set(H.str('RIFF'), 0);
+    new DataView(hdr.buffer).setUint32(4, body.length, true);
+    return H.concat([hdr, body]);
+  };
+  const webpXmp = (xml) => riff([H.webpChunk('VP8 ', new Uint8Array(64)), H.webpChunk('XMP ', H.str(xml))]);
+  const N = 250 * 1024;   // under the packet cap, so the closing tag of the value is read
+  const fill = (unit) => unit.repeat(Math.floor(N / unit.length));
+  const once = async (bytes) => {
+    const t0 = Date.now();
+    await M.analyzeImageBytes(bytes, {});
+    return Date.now() - t0;
+  };
+  for (const [what, open, closed] of [
+    ['self-closing tags', fill('<xmp:CreatorTool rdf:resource="a" '), fill('<xmp:CreatorTool rdf:resource="a"/>')],
+    ['tags inside a value', '<xmp:CreatorTool>' + fill('<a ') + '</xmp:CreatorTool>', '<xmp:CreatorTool>' + fill('<a>') + '</xmp:CreatorTool>'],
+  ]) {
+    // Alternately and five times each, the fastest of each kept: a load spike
+    // from the suites running beside this one lands on one run, not on five.
+    let control = Infinity;
+    let crafted = Infinity;
+    for (let i = 0; i < 5; i++) {
+      control = Math.min(control, await once(webpXmp(closed)));
+      crafted = Math.min(crafted, await once(webpXmp(open)));
+    }
+    assert.ok(crafted <= 4 * control + 50, what + ' that never close: ' + crafted + 'ms against ' + control + 'ms closed');
+  }
+});
+
+/* The other two entry points the derived shapes reach: structured data at the
+ * snapshot's own cap (40 blocks of 50,000 characters; 8 s when each opened
+ * "creator" object was scanned to the end for a "name"), and the alt text of a
+ * picture in a saved page, which the website reads at any length (13 s for
+ * 256 KB of "freepik "). */
+test('structured data and alt text at their caps stay fast', () => {
+  const S = require('../lib/site-analyzer.js');
+  const IH = require('../lib/image-hints.js');
+  const fill = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  let t0 = Date.now();
+  S.analyzeSite({ hostname: 'a', lang: 'en', bodyText: '', jsonLd: Array.from({ length: 40 }, () => fill('"creator":{"a" ', 50000)) });
+  let ms = Date.now() - t0;
+  assert.ok(ms < 1000, 'JSON-LD of unclosed creator objects took ' + ms + 'ms');
+  for (const unit of ['freepik ', 'photoshop ', 'canva ']) {
+    t0 = Date.now();
+    IH.analyzeImageHints({ url: 'https://a.example/x.png', alt: fill(unit, 300000) });
+    ms = Date.now() - t0;
+    assert.ok(ms < 1000, 'alt text of "' + unit + '" repeated took ' + ms + 'ms');
+  }
 });

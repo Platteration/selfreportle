@@ -18,8 +18,11 @@ more). See README.md for what it looks at and what it cannot tell.
   (`test/e2e/run.js`) and then the website's (`test/e2e/site.js`).
 - Two suites are guards, not examples: `test/redos.test.js` runs every regex literal in
   `lib/` and `web/` against hostile input at 2 KB and 16 KB and holds each to a flat budget,
-  because the patterns run on the page's own thread over text the page chose (on the
-  website, over a file a hostile site may have written for the purpose), and
+  and again against near misses derived from the pattern itself (its own opening token,
+  repeated and never closed) at 4 KB and 64 KB, because the patterns run on the page's own
+  thread over text the page chose (on the website, over a file a hostile site may have
+  written for the purpose); a pattern built with `new RegExp` is out of its sight and is
+  held through its analyser's entry point instead. And
   `test/false-positives.test.js` keeps every page an earlier version wrongly accused.
   Do not widen either bound to make a pattern pass.
 - Every `lib/*.js` is a plain script in the extension and a CommonJS module under Node

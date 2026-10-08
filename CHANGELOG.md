@@ -89,6 +89,28 @@ development branch.
   Every `<` in the JSON is now written `\u003c`, which JSON reads back as
   the same character, and the snippet is inserted as it is. Reachable only
   with the fix below.
+- **Nine patterns rescanned to the end of their input from every opening.**
+  Each opened with a token of its own that the ReDoS guard's generic inputs
+  never contain, so each passed it while being quadratic: an unclosed ChatGPT
+  citation marker (300 KB of text cost the text analyser 42 s, in the
+  content script and on the website), blank lines before a Markdown heading
+  or bullet (`\s*` crossed lines; over a minute at the same size), a JSON-LD
+  `"creator": {` never closed (8 s per page), an EXIF UserComment of
+  `Steps:` lines that never name a sampler (43 s for 512 KB in a PNG `eXIf`
+  chunk, in the worker every tab shares), and `freepik`, `photoshop`,
+  `canva` and `adobe express` followed by anything but the word completing
+  them (64 s for a 256 KB C2PA claim generator in the worker; 13 s for
+  256 KB of alt text in a saved page on the website). Two XMP patterns were
+  linear but scanned a thousand characters past every `<` (1.2 s per image
+  at the packet cap). Each gap is now bounded (a tool name and its
+  completing word within 60 characters, `Steps:` and a sampler within 200)
+  or stops at the next opener; the same inputs take milliseconds. The guard
+  now also derives near misses from every pattern and runs them at 4 KB and
+  64 KB. Both of its sweeps measure a failing pair a second time and report
+  it only if it fails again, with the same budgets: the bounded three-item-
+  list pattern, which is linear, failed the existing sweep in 1 run of 12 at
+  the previous commit on a machine shared with other test runs, and the
+  historical unbounded form of it is still caught (5 ms → 330 ms).
 
 ### Fixed
 - **The publisher self-check showed nothing.** Since the message handlers
