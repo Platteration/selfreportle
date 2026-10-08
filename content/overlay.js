@@ -9,6 +9,18 @@
   const S = globalThis.SRL;
   const V = S.verdicts;
 
+  /* A marker's element belongs to the page, and can be a <form> (a text
+   * selection inside one), which answers a property lookup with its own
+   * control of that name first: <input name="setAttribute"> made
+   * form.setAttribute that input, and the inspection threw before it drew
+   * anything. Every read of a page element here goes through the prototype. */
+  const call = Function.prototype.call;
+  const PAGE_EL = {
+    rect: call.bind(Element.prototype.getBoundingClientRect),
+    setAttribute: call.bind(Element.prototype.setAttribute),
+    removeAttribute: call.bind(Element.prototype.removeAttribute),
+  };
+
   const CSS = `
     :host { all: initial; }
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -99,7 +111,7 @@
   function onQuietHover(e) {
     for (const m of markers.values()) {
       if (!m.node || m.node.hidden) continue;
-      const r = m.el.getBoundingClientRect();
+      const r = PAGE_EL.rect(m.el);
       const near = e.clientX >= r.left - 24 && e.clientX <= r.right + 24 && e.clientY >= r.top - 24 && e.clientY <= r.bottom + 24;
       m.node.classList.toggle('near', near);
     }
@@ -159,7 +171,7 @@
       const node = m.node;
       if (!node) continue;
       if (!m.el.isConnected) { node.hidden = true; continue; }
-      const r = m.el.getBoundingClientRect();
+      const r = PAGE_EL.rect(m.el);
       if (r.width < 8 || r.height < 8 || r.bottom < -40 || r.top > vh + 40 || r.right < 0 || r.left > vw) { node.hidden = true; continue; }
       node.hidden = false;
       const bw = node.offsetWidth || 40;
@@ -194,7 +206,7 @@
     node.setAttribute('aria-label', (m.kind === 'image' ? 'Image: ' : 'Text: ') + info.label + '. Click for details.');
     node.title = info.label;
     if (m.kind === 'text') {
-      m.el.setAttribute('data-srl-text', m.verdict);
+      PAGE_EL.setAttribute(m.el, 'data-srl-text', m.verdict);
     }
     schedule();
   }
@@ -203,7 +215,7 @@
     const m = markers.get(key);
     if (!m) return;
     if (m.node) m.node.remove();
-    if (m.kind === 'text') m.el.removeAttribute('data-srl-text');
+    if (m.kind === 'text') PAGE_EL.removeAttribute(m.el, 'data-srl-text');
     markers.delete(key);
   }
 
@@ -243,7 +255,7 @@
     meta.textContent = m.meta || (m.kind === 'image' ? 'Embedded metadata can be stripped or forged; absence of signals is not proof of human origin.' : 'Stylometric signals are heuristics, not proof. Disclosures are self-reported.');
     pop.appendChild(meta);
     pop.hidden = false;
-    const r = anchor.getBoundingClientRect();
+    const r = PAGE_EL.rect(anchor);
     const w = 320, h = Math.min(pop.offsetHeight || 200, window.innerHeight * 0.6);
     let left = r.left, top = r.bottom + 6;
     if (left + w > window.innerWidth - 8) left = Math.max(8, window.innerWidth - w - 8);
@@ -412,7 +424,7 @@
     layer.hidden = !v;
     pill.hidden = !v || !settings.showPill;
     if (!v) { panel.hidden = true; pop.hidden = true; }
-    for (const m of markers.values()) if (m.kind === 'text') { if (v) m.el.setAttribute('data-srl-text', m.verdict); else m.el.removeAttribute('data-srl-text'); }
+    for (const m of markers.values()) if (m.kind === 'text') { if (v) PAGE_EL.setAttribute(m.el, 'data-srl-text', m.verdict); else PAGE_EL.removeAttribute(m.el, 'data-srl-text'); }
     if (v) schedule();
   }
 

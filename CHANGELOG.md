@@ -43,6 +43,24 @@ development branch.
   licence and source link (opened beside the page), and what the extension
   sends where.
 
+### Security
+- **One form control stopped the analysis.** A `<form>` answers a property
+  lookup with its own control of that name before the property itself, and
+  the page chooses the names: `<form><input name="attributes"></form>`
+  anywhere on a page stopped the content script before any verdict was made,
+  so a page of AI text that disclosed ChatGPT was stored as "none" with
+  "Analysis stopped early"; `name="matches"` inside a list item and
+  `name="contains"` on a form that is the page's `role="main"` did the same,
+  and `name="nodeType"` wrote "null" into a block's text. A text selection
+  inside a form whose controls were named `setAttribute` or
+  `getBoundingClientRect` drew nothing when inspected from the context menu.
+  On the website the same controls in a saved page made the whole report
+  fail ("The file could not be analysed"), let a hidden form's text into it,
+  or took a form's line break away so the words either side ran together.
+  Every element a walk can meet, and every marker element the overlay
+  measures or marks, is now read through the prototype, which no control
+  shadows.
+
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
   are verified with WebCrypto against the embedded leaf certificate

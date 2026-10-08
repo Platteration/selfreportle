@@ -15,6 +15,24 @@
   const BLOCK_SEL = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd, dt, figcaption, td, th, pre, summary';
   const SKIP_SEL = 'srl-overlay, [data-srl-ui], script, style, noscript, template, textarea, [contenteditable="true"], svg';
 
+  /*
+   * A <form> answers a property lookup with its own control of that name
+   * before the property itself — <form><input name="attributes"></form>
+   * makes form.attributes that <input> — and the page chooses the names. One
+   * such control stopped the whole analysis, so the walks below read every
+   * element they can meet through the prototype, which no control shadows.
+   * Measured in Chromium: a form's controls reach this script's world; the
+   * document's named elements (<img name="title">) do not.
+   */
+  const call = Function.prototype.call;
+  const DOM = {
+    nodeType: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType').get),
+    parentNode: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get),
+    matches: call.bind(Element.prototype.matches),
+    contains: call.bind(Node.prototype.contains),
+    attributeNames: call.bind(Element.prototype.getAttributeNames),
+  };
+
   /* location.hostname keeps a trailing dot when the page was reached by its
    * fully qualified name ("example.com."). It is the same host, but it
    * matches no rule written against the name — the reader's paused-host
@@ -152,7 +170,7 @@
     if (attr) details.unshift({ label: 'Likely tool: ' + attr.name, detail: S.attribution.CONFIDENCE_LABEL[attr.confidence] + (attr.evidence ? ' · ' + attr.evidence : '') });
     if (!details.length) details.push({ label: 'No AI signals in the selection', detail: r.words + ' words analysed. Short selections carry little signal.' });
     let anchor = sel.anchorNode;
-    while (anchor && anchor.nodeType !== 1) anchor = anchor.parentNode;
+    while (anchor && DOM.nodeType(anchor) !== 1) anchor = DOM.parentNode(anchor);
     if (!anchor) return;
     const key = 'sel' + (++textCounter);
     S.overlay.upsertMarker({ key, el: anchor, kind: 'text', verdict: r.verdict, details, raw: text.slice(0, 4000) });
@@ -268,7 +286,7 @@
     const attrs = new Set();
     const all = document.getElementsByTagName('*');
     const step = Math.max(1, Math.floor(all.length / 4000));
-    for (let i = 0; i < all.length; i += step) for (const a of all[i].attributes) attrs.add(a.name);
+    for (let i = 0; i < all.length; i += step) for (const name of DOM.attributeNames(all[i])) attrs.add(name);
     let bodyText = '';
     try { bodyText = document.body ? document.body.innerText.slice(0, 300000) : ''; } catch (e) { bodyText = ''; }
     return {
@@ -283,8 +301,8 @@
     let out = '';
     const walker = document.createTreeWalker(elm, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
       acceptNode(node) {
-        if (node.nodeType === 1) {
-          if (node !== elm && (node.matches(BLOCK_SEL) || node.matches(SKIP_SEL))) return NodeFilter.FILTER_REJECT;
+        if (DOM.nodeType(node) === 1) {
+          if (node !== elm && (DOM.matches(node, BLOCK_SEL) || DOM.matches(node, SKIP_SEL))) return NodeFilter.FILTER_REJECT;
           if (node.tagName === 'BR') { out += '\n'; }
           return NodeFilter.FILTER_SKIP;
         }
@@ -358,7 +376,7 @@
     let page = null;
     if (!onlyNew) {
       const mainEl = document.querySelector('main, article, [role="main"]');
-      const pageText = blocks.filter((b) => !mainEl || mainEl.contains(b.el)).map((b) => b.text.replace(/\s+/g, ' ').trim()).filter((t) => S.textAnalyzer.countWords(t) >= 8).join('\n\n');
+      const pageText = blocks.filter((b) => !mainEl || DOM.contains(mainEl, b.el)).map((b) => b.text.replace(/\s+/g, ' ').trim()).filter((t) => S.textAnalyzer.countWords(t) >= 8).join('\n\n');
       page = S.textAnalyzer.analyzeText(pageText, { ...opts, mode: 'page' });
       verdicts.push(page.verdict);
     } else if (result && result.text) {

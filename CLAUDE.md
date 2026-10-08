@@ -35,8 +35,8 @@ more). See README.md for what it looks at and what it cannot tell.
 
 ## Invariants worth not breaking
 
-Each came from a reproduced finding in REVIEW.md or SECURITY-AUDIT.md; a change that
-undoes one passes every test it did not add.
+Each came from a reproduced finding in REVIEW.md, SECURITY-AUDIT.md or the commit that
+added it; a change that undoes one passes every test it did not add.
 
 - **The worker fetches with `<all_urls>`, outside the page's CSP, mixed-content and
   Private Network Access checks, from URLs the page wrote.** `lib/fetch-policy.js`
@@ -57,6 +57,15 @@ undoes one passes every test it did not add.
   to the picture the element is showing, compared pixel for pixel in the page.
   Everything that cannot answer answers no, and the saved report says what was not
   checked rather than implying it was.
+- **A page's forms can rename what a walk reads.** A `<form>` answers a property lookup
+  with its own control of that name first — `<input name="attributes">` makes
+  `form.attributes` that input — in the content script's world and in the document
+  DOMParser builds for the website, and the page chooses the names: one such control
+  stopped the whole analysis. The walks in `content/content.js` and `web/app.js`, and the
+  overlay's reads of a marker's element, go through the prototype (`DOM`, `PAGE_EL`), and
+  `test/e2e/run.js` and `test/e2e/site.js` drive each read against a real form. A
+  document's own named elements (`<img name="title">`) reach neither a content script nor a
+  DOMParser document (measured), so `document.*` is read directly.
 
 ## Website
 

@@ -133,3 +133,30 @@ test('no bytes are called rendered until they are shown to be the picture', () =
   assert.match(SRC, /await addPageBytes\(entry\.msg, entry\.st\.el\)/);
   assert.match(SRC, /await addPageBytes\(msg, target\)/);
 });
+
+/*
+ * A <form> answers a property lookup with its own control of that name before
+ * the property itself, in the content script's world and in a document
+ * DOMParser builds: <form><input name="attributes"></form> made
+ * form.attributes an <input>, and the for...of over it stopped the whole
+ * analysis — an AI page with a disclosure was stored as "none". The page (or
+ * the saved page the website reads) chooses the names, so the walks that can
+ * meet a form read it through the prototype. test/e2e/run.js and
+ * test/e2e/site.js drive each of these against real forms; this keeps the
+ * unit suite from going green on a revert.
+ */
+test('the walks read a form through the prototype, not through its own properties', () => {
+  const OVERLAY = fs.readFileSync(path.join(__dirname, '..', 'content', 'overlay.js'), 'utf8');
+  const APP = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  for (const [name, src] of [['content/content.js', SRC], ['web/app.js', APP]]) {
+    assert.match(src, /attributeNames: call\.bind\(Element\.prototype\.getAttributeNames\)/, name);
+    assert.ok(!/\.attributes\)/.test(src), name + ': no for...of over an element\'s own attributes property');
+    assert.ok(!/node\.matches\(|mainEl\.contains\(/.test(src), name + ': matches and contains come from the prototype');
+    assert.match(src, /if \(DOM\.nodeType\(node\) === 1\) \{\n\s+if \(node !== elm && \(DOM\.matches\(node, BLOCK_SEL\) \|\| DOM\.matches\(node, SKIP_SEL\)\)\)/, name + ': ownText');
+  }
+  assert.match(SRC, /while \(anchor && DOM\.nodeType\(anchor\) !== 1\) anchor = DOM\.parentNode\(anchor\);/, 'the selection anchor walk');
+  assert.match(APP, /DOM\.nodeType\(node\) === 1 && DOM\.matches\(node, SKIP_SEL\)/, "the website's body walk");
+  assert.match(APP, /BREAK_TAGS\.has\(DOM\.tagName\(node\)\)/, 'where a form is a line break');
+  assert.ok(!/m\.el\.(setAttribute|removeAttribute|getBoundingClientRect)\(|anchor\.getBoundingClientRect\(\)/.test(OVERLAY),
+    'the overlay reads a marker\'s page element through the prototype');
+});

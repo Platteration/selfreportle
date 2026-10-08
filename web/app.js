@@ -56,6 +56,23 @@
   const BREAK_TAGS = new Set(['BR', 'P', 'DIV', 'LI', 'UL', 'OL', 'DL', 'DT', 'DD', 'TR', 'TABLE', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'MAIN', 'NAV', 'ASIDE', 'BLOCKQUOTE', 'PRE', 'FIGURE', 'FIGCAPTION', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'FORM', 'FIELDSET', 'DETAILS', 'SUMMARY', 'ADDRESS', 'HR']);
 
   /*
+   * A <form> answers a property lookup with its own control of that name before the property
+   * itself — <form><input name="matches"></form> makes form.matches that <input> — and the
+   * saved page chooses the names. One such control made the whole report fail, so the walks
+   * below read every element they can meet through the prototype, which no control shadows.
+   * (A document DOMParser builds does not expose its named <img>/<form> elements as
+   * properties of the document the way a browsing context's does: measured in Chromium.)
+   */
+  const call = Function.prototype.call;
+  const DOM = {
+    nodeType: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType').get),
+    tagName: call.bind(Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get),
+    matches: call.bind(Element.prototype.matches),
+    contains: call.bind(Node.prototype.contains),
+    attributeNames: call.bind(Element.prototype.getAttributeNames),
+  };
+
+  /*
    * Trusted Types. The policy (require-trusted-types-for 'script') makes every HTML string
    * sink throw, DOMParser included, and names this one policy as the only one that may be
    * created. It exists for parseSavedPage alone and is never exported: the document it makes
@@ -391,7 +408,7 @@
     const attrs = new Set();
     const all = doc.getElementsByTagName('*');
     const step = Math.max(1, Math.floor(all.length / 4000));
-    for (let i = 0; i < all.length; i += step) for (const a of all[i].attributes) attrs.add(a.name);
+    for (let i = 0; i < all.length; i += step) for (const name of DOM.attributeNames(all[i])) attrs.add(name);
     const title = (doc.title || '').trim().slice(0, 300);
     return {
       url: origin ? origin.href : '', hostname: origin ? origin.hostname.replace(/\.+$/, '').toLowerCase() : '',
@@ -407,12 +424,12 @@
     if (!doc.body) return '';
     let out = '';
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => (node.nodeType === 1 && node.matches(SKIP_SEL) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      acceptNode: (node) => (DOM.nodeType(node) === 1 && DOM.matches(node, SKIP_SEL) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
     });
     let node;
     while ((node = walker.nextNode()) && out.length < MAX_BODY_TEXT) {
       if (node.nodeType === 3) out += node.nodeValue;
-      else if (BREAK_TAGS.has(node.tagName)) out += '\n';
+      else if (BREAK_TAGS.has(DOM.tagName(node))) out += '\n';
     }
     // Runs of spaces become one, then the space either side of a line break and the empty
     // lines go: fixed-width patterns, so a page of nothing but blanks costs one pass.
@@ -424,8 +441,8 @@
     let out = '';
     const walker = doc.createTreeWalker(elm, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
       acceptNode(node) {
-        if (node.nodeType === 1) {
-          if (node !== elm && (node.matches(BLOCK_SEL) || node.matches(SKIP_SEL))) return NodeFilter.FILTER_REJECT;
+        if (DOM.nodeType(node) === 1) {
+          if (node !== elm && (DOM.matches(node, BLOCK_SEL) || DOM.matches(node, SKIP_SEL))) return NodeFilter.FILTER_REJECT;
           if (node.tagName === 'BR') out += '\n';
           return NodeFilter.FILTER_SKIP;
         }
@@ -463,7 +480,7 @@
     }
     return combineBlocks(blocks, opts, (b) => {
       const mainEl = doc.querySelector('main, article, [role="main"]');
-      return !mainEl || mainEl.contains(b.el);
+      return !mainEl || DOM.contains(mainEl, b.el);
     });
   }
 
