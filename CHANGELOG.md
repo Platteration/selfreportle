@@ -71,6 +71,15 @@ development branch.
   inflated once the budget is spent: the same files take 0.1 s and 0.3 s. A
   PNG whose compressed text has already used the budget has its later
   compressed chunks skipped, with the existing "too large to inspect" note.
+- **A saved page could hold the website's checker for minutes.** The block
+  walk asked `closest()` of every candidate element, which walks its
+  ancestors, and looked the page's `<main>` up again for every block: 8 MB
+  of nested `<span>`s (half a second for Chromium to parse) took 123 s, and
+  600 paragraphs followed by a million empty elements with no `<main>` 38 s,
+  with the tab frozen throughout. The walk is now one pass that steps over a
+  skipped subtree whole, and `<main>` is looked up once: 5.6 s and 3 s, in
+  proportion to the file's size. The blocks found, and their order, are the
+  same.
 
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures

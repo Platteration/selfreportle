@@ -96,6 +96,13 @@ Apache's `ErrorDocument` are stamped with), and the site's module list is read o
   them first (`<noframes>`, `data-srl-style`, `<meta data-srl-base>`, each parsed where the
   original would be). Addresses in the page are read as attributes and resolved against the
   address the file says it was saved from, never against this site.
+- **A saved page chooses its own shape**, up to 8 MB of it. A walk over it is one pass
+  (`unskipped` steps over a skipped subtree whole), never a `closest()` per candidate nor a
+  whole-document lookup per block: 8 MB of `<span>`s nested as deep as the parser allows
+  (512) held the checker two minutes the first way, 600 paragraphs and no `<main>` 38 s the
+  second. `test/e2e/site.js` reads each such page beside a control with as many elements and
+  fails when it costs over four times as much. (Nested `<blockquote>`s are slow in Chromium's
+  own parser, opened as a tab or through DOMParser alike, which is not the checker's to fix.)
 - **Four modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
   `fetch-policy.js` (the worker's fetches), `platform-labels.js` (needs layout) — and the
   website test fails when a new `lib/` module is neither loaded nor added to that list.

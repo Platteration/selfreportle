@@ -454,34 +454,44 @@
     return out;
   }
 
+  /* The elements under the body that `sel` names and that sit inside nothing SKIP_SEL names,
+   * in document order, from one walk that steps over a skipped subtree whole. Asking closest()
+   * of every candidate instead walked its ancestors each time, and the saved page chooses how
+   * deep they go: 8 MB of nested <span>s, which Chromium parses in half a second, held the
+   * checker for two minutes. */
+  function* unskipped(doc, sel) {
+    const body = doc.body;
+    if (!body || body.closest(SKIP_SEL)) return;
+    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (node) => (DOM.matches(node, SKIP_SEL) ? NodeFilter.FILTER_REJECT : DOM.matches(node, sel) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+    });
+    let node;
+    while ((node = walker.nextNode())) yield node;
+  }
+
   /* The content script's block analysis (analyzeTextBlocks), on the saved document. */
   function analyseBlocks(doc, snapshot, language) {
     const declared = snapshot.lang;
     const opts = { lang: declared, language, sensitivity: SENSITIVITY };
     const blocks = [];
-    const nodes = doc.body ? doc.body.querySelectorAll(BLOCK_SEL) : [];
-    for (const elm of nodes) {
+    for (const elm of unskipped(doc, BLOCK_SEL)) {
       if (blocks.length >= 600) break;
-      if (elm.closest(SKIP_SEL)) continue;
       const text = ownText(doc, elm);
       if (!text || text.trim().length < 2) continue;
       blocks.push({ el: elm, text });
     }
     const total = blocks.reduce((n, b) => n + b.text.length, 0);
-    if (total < 600 && doc.body) {
-      for (const elm of doc.body.querySelectorAll('div, span, section, article')) {
+    if (total < 600) {
+      for (const elm of unskipped(doc, 'div, span, section, article')) {
         if (blocks.length >= 600) break;
-        if (elm.closest(SKIP_SEL)) continue;
         let direct = '';
         for (const c of elm.childNodes) if (c.nodeType === 3) direct += c.nodeValue;
         if (direct.trim().length < 120) continue;
         blocks.push({ el: elm, text: direct });
       }
     }
-    return combineBlocks(blocks, opts, (b) => {
-      const mainEl = doc.querySelector('main, article, [role="main"]');
-      return !mainEl || DOM.contains(mainEl, b.el);
-    });
+    const mainEl = doc.querySelector('main, article, [role="main"]');
+    return combineBlocks(blocks, opts, (b) => !mainEl || DOM.contains(mainEl, b.el));
   }
 
   function combineBlocks(blocks, opts, inMain) {

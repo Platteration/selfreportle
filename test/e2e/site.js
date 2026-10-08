@@ -156,6 +156,20 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
   await buildFixtures(fx);
   fs.writeFileSync(path.join(fx, 'hostile.html'), HOSTILE);
   fs.writeFileSync(path.join(fx, 'forms.html'), FORMS);
+  /* Pairs of saved pages with as many elements each, built so that a walk whose cost grows with
+   * depth, or a lookup repeated for every block, shows as one page of a pair costing many times
+   * the other: 350,000 <span>s nested (the parser stops nesting at 512, which is as deep as a
+   * page can make it) against the same number side by side; and 600 paragraphs followed by
+   * 300,000 empty elements with no <main>, against the same with the paragraphs in a <main>,
+   * where looking the main element up again for every paragraph costs nothing. Measured in
+   * Chromium 141 before the walk was fixed: 30 s against 0.5 s, and 9 s against 0.5 s. */
+  const SPANS = 350000;
+  const htmlPage = (body) => '<!doctype html><html lang="en"><head><title>Depth</title></head><body>' + body + '</body></html>';
+  fs.writeFileSync(path.join(fx, 'flat.html'), htmlPage('<span></span>'.repeat(SPANS)));
+  fs.writeFileSync(path.join(fx, 'deep.html'), htmlPage('<span>'.repeat(SPANS)));
+  const paras = Array.from({ length: 600 }, (_, i) => '<p>Paragraph ' + i + ' of our shop page, with a few words in it.</p>').join('');
+  fs.writeFileSync(path.join(fx, 'main.html'), htmlPage('<main>' + paras + '</main>' + '<i></i>'.repeat(SPANS - 50000)));
+  fs.writeFileSync(path.join(fx, 'nomain.html'), htmlPage('<div>' + paras + '</div>' + '<i></i>'.repeat(SPANS - 50000)));
   fs.writeFileSync(path.join(fx, 'chat.txt'), 'Certainly! Here is a summary of the quarterly results.\n\nAs an AI language model, I cannot verify these figures, but here they are anyway.\n\nRevenue grew by twelve percent.');
   fs.writeFileSync(path.join(fx, 'archive.bin'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]));
   fs.writeFileSync(path.join(fx, 'midjourney_render_0_0.png'), H.png([]));
@@ -309,6 +323,18 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     check(/AI use is disclosed/.test(r.banner), "a form is still a line break: the disclosure either side of it is read (" + r.banner.slice(0, 40) + ')');
     check(!/Gemini/.test(r.report), "a hidden form's text stays out of the report though its nodeType is renamed");
     check(!/\bnull\b/.test(r.report), "and no form's nodeValue is written into a list item's text");
+
+    // What a saved page's shape may cost: each pair is read in the same run, so only their ratio
+    // is checked, and a pick that does not finish within pick()'s 20 s counts as never.
+    const timed = async (name) => {
+      const t0 = Date.now();
+      try { const res = await pick(page, name); return { ms: Date.now() - t0, ok: !res.error }; } catch (e) { return { ms: Infinity, ok: false }; }
+    };
+    for (const [control, crafted, what] of [['flat.html', 'deep.html', 'a page nested as deep as the parser allows'], ['main.html', 'nomain.html', '600 paragraphs and no <main>']]) {
+      const ctl = await timed(control);
+      const bad = await timed(crafted);
+      check(ctl.ok && bad.ok && bad.ms <= 4 * ctl.ms + 1000, what + ' costs about what the same elements do in the control (' + bad.ms + ' ms against ' + ctl.ms + ' ms)');
+    }
 
     r = await pick(page, 'latin.html');
     check(/Title: Über uns · Bäckerei Müller/.test(r.report), 'a saved page is read in the encoding it declares');

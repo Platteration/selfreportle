@@ -304,3 +304,19 @@ test('the files every site has: robots.txt, the security contact, the not-found 
   assert.ok(read('web/index.html').includes('<a href="https://github.com/Platteration/selfreportle" rel="noopener noreferrer">MIT licence · source</a>'), 'the licence and source link');
   assert.match(read('web/index.html'), /<html lang="en" class="no-js">/, 'the page starts as no-js, which the safety net takes off');
 });
+
+/* A saved page chooses its own shape, up to the 8 MB the checker reads. Asking closest() of every
+ * candidate walked each one's ancestors — 512 of them on a page nested as deep as the parser
+ * allows, two minutes on 8 MB — and looking <main> up again for every block scanned the whole
+ * document 600 times (38 s). test/e2e/site.js times each such page beside a control; this keeps
+ * the unit suite from going green on a revert. */
+test('a saved page is walked once: no closest() per candidate, no lookup per block', () => {
+  const app = read('web/app.js');
+  assert.ok(!/\.closest\(SKIP_SEL\)\) continue/.test(app), 'no candidate asks its ancestors whether to skip it');
+  assert.match(app, /for \(const elm of unskipped\(doc, BLOCK_SEL\)\)/);
+  assert.match(app, /for \(const elm of unskipped\(doc, 'div, span, section, article'\)\)/);
+  assert.match(app, /acceptNode: \(node\) => \(DOM\.matches\(node, SKIP_SEL\) \? NodeFilter\.FILTER_REJECT : DOM\.matches\(node, sel\) \? NodeFilter\.FILTER_ACCEPT : NodeFilter\.FILTER_SKIP\)/,
+    'a skipped subtree is stepped over whole');
+  assert.match(app, /const mainEl = doc\.querySelector\('main, article, \[role="main"\]'\);\n\s+return combineBlocks\(blocks, opts, \(b\) => !mainEl \|\| DOM\.contains\(mainEl, b\.el\)\);/,
+    '<main> is looked up once, before the blocks are filtered');
+});
