@@ -1,0 +1,22 @@
+# Response headers for Netlify and Cloudflare Pages, which read this file from the folder they
+# publish (`node scripts/build-site.js <folder> --host=netlify`, or `--host=cloudflare`). The
+# same values are in .htaccess (Apache) and deploy/nginx.conf (nginx), and the policy and the
+# referrer policy are in the <meta> of index.html and 404.html for a host that sends no headers
+# (GitHub Pages); test/website.test.js holds every copy equal. Why each value is there:
+# README.md, "The website". No file name carries a version, so everything is revalidated on
+# every load (an unchanged file costs a 304) and a deploy never mixes old scripts with new HTML.
+
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; frame-ancestors 'none'; upgrade-insecure-requests
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Cache-Control: no-cache
+
+# The licence has no extension; serve it as text rather than a download.
+/LICENSE
+  Content-Type: text/plain; charset=utf-8

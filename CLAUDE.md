@@ -6,22 +6,27 @@ Manifest V3 browser extension (Chromium 116 or newer) that reads AI-provenance a
 disclosure signals from a page's code, text and images — C2PA Content Credentials
 verified in the browser, IPTC/XMP metadata, generator fingerprints, hidden Unicode
 watermarks — in the context of EU AI Act Article 50. Plain scripts: no build step, no
-bundler, no dependencies. See README.md for what it looks at and what it cannot tell.
+bundler, no dependencies (the website's `scripts/build-site.js` copies files into a folder
+as written, and writes the base path into the not-found page and Apache's config, nothing
+more). See README.md for what it looks at and what it cannot tell.
 
 - `npm test` runs the node:test suites in `test/`, built on synthetic JPEG/PNG/WebP/C2PA
   fixtures from `test/helpers.js`; `npm run lint` is `node --check` over every script,
   and that is all the linting there is by design; `npm run test:e2e` loads the unpacked
   extension into Chromium via Playwright against a fixture site it serves itself;
-  `npm run check` is the gate before a push.
+  `npm run check` is the gate before a push. `test:e2e` runs the extension's suite
+  (`test/e2e/run.js`) and then the website's (`test/e2e/site.js`).
 - Two suites are guards, not examples: `test/redos.test.js` runs every regex literal in
-  `lib/` against hostile input at 2 KB and 16 KB and holds each to a flat budget, because
-  the patterns run on the page's own thread over text the page chose, and
+  `lib/` and `web/` against hostile input at 2 KB and 16 KB and holds each to a flat budget,
+  because the patterns run on the page's own thread over text the page chose (on the
+  website, over a file a hostile site may have written for the purpose), and
   `test/false-positives.test.js` keeps every page an earlier version wrongly accused.
   Do not widen either bound to make a pattern pass.
 - Every `lib/*.js` is a plain script in the extension and a CommonJS module under Node
   (the wrapper at the top of each file), which is what makes the analysers testable at
   all. A new module keeps that wrapper and is listed in `manifest.json` (content
-  scripts) or the `importScripts` line of `background/service-worker.js` (the worker).
+  scripts) or the `importScripts` line of `background/service-worker.js` (the worker), and
+  in `web/index.html` or the website test's list of modules left out (see Website).
 - `lib/` holds the analysers and parsers; `background/service-worker.js` fetches image
   bytes cross-origin, caches them and stores per-tab results; `content/` runs the
   analyses on the page and draws the overlay; `popup/`, `options/` and `publisher/` are
@@ -52,6 +57,39 @@ undoes one passes every test it did not add.
   to the picture the element is showing, compared pixel for pixel in the page.
   Everything that cannot answer answers no, and the saved report says what was not
   checked rather than implying it was.
+
+## Website
+
+The analysers are also a website (README, "The website"): `web/index.html` loads twelve
+`lib/` modules and `web/app.js`, which runs them on one file the visitor picks — media through
+`analyzeImageBytes`, a saved page through the site, text, trader and image-hint analysers on
+the content script's snapshot shape, text through the text analyser. The extension stays as it
+is; nothing in `lib/` knows about the page. `scripts/build-site.js` writes the site into an
+empty folder (`--host` adds that host's config, `--base` the sub-path the not-found page and
+Apache's `ErrorDocument` are stamped with), and the site's module list is read out of
+`index.html`'s `<script>` tags, so a module added there is published without a second edit.
+
+- **One policy, five places**: `web/_headers`, `web/.htaccess`, `deploy/nginx.conf`, and the
+  `<meta>` of `web/index.html` and `web/404.html` (less `frame-ancestors`).
+  `test/website.test.js` holds them equal, pins every source, the site's file list, the
+  allowlist Apache and nginx answer from (every other repository file is a 404), the security
+  contact's `Expires` (the test fails once it passes: renew it, a year ahead at most) and the
+  version against `manifest.json`. `test/e2e/site.js` serves the built site at a sub-path
+  under the headers and fails on any violation, console error, page error or request outside
+  the site; every source was measured there by removing it. Change one copy and change all five.
+- **Trusted Types are enforced**, and the one policy, `selfreportle-saved-page`, exists for
+  `parseSavedPage` alone: the test allows exactly one line that turns a string into a
+  document. Everything else is `createElement` and `textContent`.
+- **A saved page is data.** DOMParser builds it a document with no window, so its scripts,
+  handlers, meta refresh, meta policy and every fetching element stay inert (the e2e's hostile
+  page proves each). Chromium still checks that document's `<style>`, `style=""` and `<base>`
+  against this site's policy and reports every one as a violation, so `quietStyles` renames
+  them first (`<noframes>`, `data-srl-style`, `<meta data-srl-base>`, each parsed where the
+  original would be). Addresses in the page are read as attributes and resolved against the
+  address the file says it was saved from, never against this site.
+- **Four modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
+  `fetch-policy.js` (the worker's fetches), `platform-labels.js` (needs layout) — and the
+  website test fails when a new `lib/` module is neither loaded nor added to that list.
 
 ## Settings
 

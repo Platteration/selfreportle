@@ -5,6 +5,20 @@ development branch.
 
 ## Unreleased
 
+### Added
+- **A website.** `web/index.html` runs the extension's own analysers on one file the visitor
+  picks — an image, video or audio file, a web page saved as HTML, or plain text — in the
+  page, with nothing uploaded and no request made (`connect-src 'none'`). Content
+  Credentials are verified with WebCrypto there, hard binding included. A saved page is
+  parsed into a document with no window, so nothing in it runs, loads or navigates; its
+  pictures are judged by caption, alt text and file name. `npm run build:site` writes the
+  site, and the config its host reads, into an empty folder; the same headers (a strict
+  Content-Security-Policy with Trusted Types, no framing, no referrer, every browser feature
+  denied, HSTS) are written for Netlify and Cloudflare Pages (`web/_headers`), Apache
+  (`web/.htaccess`) and nginx (`deploy/nginx.conf`), and the policy in the pages' `<meta>`
+  for a host that sends none. A not-found page, `robots.txt` and `.well-known/security.txt`
+  come with it. The extension itself is unchanged.
+
 ### Changed
 - **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
   (one object) and `selfreportle.disabledHosts.v1` (its own item, so the

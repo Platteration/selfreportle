@@ -25,6 +25,9 @@ const path = require('path');
  */
 
 const LIB = path.join(__dirname, '..', 'lib');
+/* The website's own scripts run their patterns over a file the visitor picked, which may be a
+ * page a hostile site wrote for exactly this, so they are held to the same budget. */
+const WEB = path.join(__dirname, '..', 'web');
 
 /* Tolerant JS regex-literal scanner: good enough for this codebase, and any
  * literal it cannot compile is skipped rather than guessed at. */
@@ -99,8 +102,12 @@ const BUDGET_MS = 120;   // flat ceiling at 16 KB, applied to every pair
 const GROWTH = 16;       // 8x input should cost ~8x, not 64x
 const NOISE_MS = 0.1;    // below this the small measurement is jitter
 
-test('no regex in lib/ backtracks superlinearly on hostile input', () => {
-  const files = fs.readdirSync(LIB).filter((f) => f.endsWith('.js'));
+test('no regex in lib/ or web/ backtracks superlinearly on hostile input', () => {
+  const files = [
+    ...fs.readdirSync(LIB).filter((f) => f.endsWith('.js')).map((f) => path.join(LIB, f)),
+    ...fs.readdirSync(WEB).filter((f) => f.endsWith('.js')).map((f) => path.join(WEB, f)),
+  ];
+  assert.ok(files.some((f) => f.endsWith(path.join('web', 'app.js'))), 'the walk reaches the website\'s scripts');
   const small = adversarialInputs(SMALL);
   const large = adversarialInputs(LARGE);
   const findings = [];
@@ -108,8 +115,8 @@ test('no regex in lib/ backtracks superlinearly on hostile input', () => {
   let pairs = 0;
 
   for (const file of files) {
-    const source = fs.readFileSync(path.join(LIB, file), 'utf8');
-    for (const { re, where, src } of regexLiterals(source, file)) {
+    const source = fs.readFileSync(file, 'utf8');
+    for (const { re, where, src } of regexLiterals(source, path.relative(path.join(__dirname, '..'), file))) {
       checked++;
       for (const shape of Object.keys(small)) {
         const a = timeRun(re, small[shape]);

@@ -1,0 +1,89 @@
+/* The website's one stylesheet: the checker (index.html) and the not-found page (404.html).
+   The same look as the extension's popup and publisher view, at page width. No style is
+   written inline anywhere: the policy's style-src is 'self', and the verdict colours the
+   script sets go through the style object (a custom property), which the policy allows. */
+:root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2430; --muted: #5f6875; --line: #e3e6ec; --card: #f5f6f9; --hi: #eef0f5;
+  --info: #0f6fa8; --warn-bg: #fff4d6; --warn-fg: #5c4700; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1b1f27; --fg: #e8eaf0; --muted: #9aa3b2; --line: #2e3440; --card: #232834; --hi: #2a3140;
+  --info: #67b7ea; --warn-bg: #3a3214; --warn-fg: #f3df8f; } }
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body { margin: 0 auto; padding: 0 16px 40px; max-width: 860px;
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); }
+a { color: var(--info); }
+a:focus-visible, button:focus-visible, .pick:focus-within { outline: 2px solid var(--info); outline-offset: 2px; }
+
+header.top { display: flex; align-items: center; gap: 12px; padding: 24px 0 8px; }
+.logo { width: 32px; height: 32px; border-radius: 10px; flex: none; background: linear-gradient(135deg, #0f6fa8, #0b7a5b); box-shadow: inset 0 0 0 5px rgba(255,255,255,.4); }
+h1 { margin: 0; font-size: 22px; line-height: 1.2; }
+.pitch { margin: 8px 0 4px; }
+.privacy { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+
+/* The safety net (guard.js). With no-js still on <html> (JavaScript off, or guard.js never
+   ran) or start-failed set by guard.js, the note shows and the controls that cannot work do
+   not; once the app has started the note stays hidden whatever happens later. */
+.start-note { display: none; margin: 12px 0 18px; padding: 12px 14px; border-radius: 10px; background: var(--warn-bg); color: var(--warn-fg); font-weight: 600; }
+.no-js .start-note, .start-failed .start-note { display: block; }
+.no-js .app, .start-failed .app { display: none; }
+
+/* The file picker: the whole box is the label, so a click or a tap anywhere opens the dialog. */
+.pick { display: block; position: relative; padding: 28px 18px; border: 2px dashed var(--line); border-radius: 14px; background: var(--card); text-align: center; cursor: pointer; }
+.pick:hover, .pick.over { border-color: var(--info); background: var(--hi); }
+.pick strong { display: block; font-size: 17px; }
+.pick span { color: var(--muted); font-size: 14px; }
+.pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.status { min-height: 1.5em; margin: 12px 0 0; color: var(--muted); font-size: 14px; }
+.status.error { background: var(--warn-bg); color: var(--warn-fg); padding: 8px 12px; border-radius: 8px; }
+
+/* The report. */
+.report { margin-top: 8px; }
+.report:empty { display: none; }
+.file { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin: 6px 0 12px; }
+.file .name { font-weight: 600; word-break: break-all; }
+.file .meta { color: var(--muted); font-size: 13px; }
+.preview { max-width: 220px; max-height: 220px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); }
+.overall { margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; color: #fff; font-weight: 600; background: var(--c, #5a6472); display: flex; gap: 10px; align-items: flex-start; }
+.overall .ic { font-size: 18px; line-height: 1.3; }
+.overall small { display: block; font-weight: 400; }
+section.panel { border-top: 1px solid var(--line); padding: 4px 0 10px; }
+h2 { font-size: 17px; margin: 14px 0 8px; }
+h3 { font-size: 12px; margin: 14px 0 5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.tag { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.tag .ic { color: var(--c, #5a6472); }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 12px; color: #fff; background: var(--c, #5a6472); margin: 0 4px 4px 0; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); margin: 6px 0 10px; overflow: hidden; max-width: 320px; }
+.bar i { display: block; height: 100%; width: var(--w, 0); background: var(--c, #5a6472); }
+.sig { display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.sig:first-of-type { border-top: 0; }
+.sig .k { text-align: center; color: var(--muted); }
+.sig .l { font-weight: 600; }
+.sig .d, .attr .d, .item .d { color: var(--muted); font-size: 13px; word-break: break-word; }
+.item { padding: 8px 0; border-top: 1px solid var(--line); }
+.item .u { font-size: 13px; color: var(--muted); word-break: break-all; }
+.item .ex { font-style: italic; color: var(--muted); font-size: 13px; }
+.note { font-size: 13px; color: var(--muted); margin: 6px 0; }
+.attr { padding: 8px 10px; margin: 0 0 10px; border-radius: 8px; background: var(--card); }
+.conf { color: var(--muted); font-weight: 400; font-size: 13px; }
+details summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.skew { padding: 6px 0 4px; border-top: 1px solid var(--line); font-size: 13px; }
+.skew b { display: block; }
+.skew .basis { color: var(--muted); font-size: 12px; }
+.check { display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+.check .k { text-align: center; font-weight: 700; color: var(--c, var(--muted)); }
+.check .l { font-weight: 600; }
+.check .d { color: var(--muted); font-size: 13px; word-break: break-word; }
+/* A verdict colour drawn on the page background rather than under white text: the palette's
+   lighter twin on a dark page (lib/verdicts.js, COLORS_DARK), which the script sets as --cd. */
+@media (prefers-color-scheme: dark) { .tag .ic, .check .k { color: var(--cd, var(--c, var(--muted))); } }
+
+.limits { margin-top: 28px; border-top: 1px solid var(--line); }
+.limits ul { padding-left: 20px; margin: 6px 0; }
+.limits li { margin: 4px 0; font-size: 14px; }
+footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+footer p { margin: 4px 0; }
+
+/* The not-found page. */
+.not-found { padding: 40px 0; }
+.not-found h1 { margin-bottom: 10px; }
+.not-found .btn { display: inline-block; margin-top: 8px; padding: 8px 14px; border-radius: 8px; background: var(--info); color: var(--bg); text-decoration: none; font-weight: 600; }

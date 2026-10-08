@@ -1,0 +1,65 @@
+<!doctype html>
+<!-- Selfreportle, the website: the extension's analysers run on a file the visitor picks, in
+     this page, and nothing is uploaded. MIT License: see LICENSE. The policy below is the one
+     the hosts send as a header (web/_headers, web/.htaccess, deploy/nginx.conf), less
+     frame-ancestors, which a <meta> cannot carry; test/website.test.js holds them equal. -->
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; upgrade-insecure-requests">
+<meta name="referrer" content="no-referrer">
+<title>Selfreportle: check a file for AI provenance</title>
+<meta name="description" content="Check an image, a video or a saved web page for AI-generation markers and disclosures: C2PA Content Credentials verified in your browser, IPTC/XMP metadata, generator fingerprints and hidden Unicode watermarks. Nothing is uploaded.">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1f27" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icons/icon32.png" sizes="32x32" type="image/png">
+<script src="guard.js"></script>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="top">
+  <span class="logo" aria-hidden="true"></span>
+  <h1>Selfreportle</h1>
+</header>
+<p class="pitch">Check an image, a video or a saved web page for signs that it was made with AI, and whether that is disclosed: C2PA Content Credentials verified in your browser, IPTC and XMP metadata, generator fingerprints, hidden Unicode watermarks and the wording of disclosures, in the context of the EU AI Act's Article 50.</p>
+<p class="privacy">Everything runs in this page. The file you pick is read by your browser and never uploaded; this site makes no request of its own after it has loaded.</p>
+<p id="startNote" class="start-note" role="alert">Selfreportle has not started. It reads your file with JavaScript, in this page, and uploads nothing, so it needs JavaScript to be on for this site. Turn it on, or check your connection, and reload the page.</p>
+<main class="app" id="app">
+  <label class="pick" id="drop" for="file">
+    <strong>Choose a file, or drop it here</strong>
+    <span>An image, a video or audio file, a saved web page or plain text</span>
+    <input type="file" id="file" accept="image/*,video/mp4,video/quicktime,audio/mp4,.m4a,.mov,.mp4,.avif,.heic,.html,.htm,.xhtml,.txt,.md,text/html,text/plain">
+  </label>
+  <p class="hint">Images: JPEG, PNG, WebP, AVIF, HEIC, GIF and SVG. Video and audio: MP4, MOV and M4A. A web page: save it from your browser as HTML (File, Save Page As…). Text: a .txt or .md file.</p>
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+  <div id="report" class="report"></div>
+</main>
+<section class="limits" aria-labelledby="limits-heading">
+  <h2 id="limits-heading">What it can and cannot tell</h2>
+  <ul>
+    <li>Content Credentials are checked four ways: the signature, every assertion against the signed claim, the certificate chain, and the claim's binding to this file's own bytes. No trust list is shipped, so a valid signature shows the manifest is intact, not who signed it, and no file earns a camera-provenance tick.</li>
+    <li>Invisible watermarks such as SynthID need the vendor's keys and are not detected. No signal is not proof of human origin: most platforms strip metadata on upload.</li>
+    <li>Wording and rhythm (stylometry) are heuristics, capped below the strongest verdict. A disclosure on a page is a self-report.</li>
+    <li>A saved web page is read as a file: none of its scripts run and none of its pictures or styles load. Its pictures are judged by their captions, alt text and file names; pick a picture's own file to read its metadata. With no layout, text a stylesheet hides is read as if it were shown.</li>
+  </ul>
+</section>
+<footer>
+  <p><strong>Selfreportle</strong> <span id="version">0.1.0</span> · <a href="https://github.com/Platteration/selfreportle" rel="noopener noreferrer">MIT licence · source</a></p>
+  <p>Also a Chromium extension that reads the pages you browse, from the same source.</p>
+</footer>
+<script src="lib/lexicons.js"></script>
+<script src="lib/signals.js"></script>
+<script src="lib/verdicts.js"></script>
+<script src="lib/text-analyzer.js"></script>
+<script src="lib/site-analyzer.js"></script>
+<script src="lib/image-hints.js"></script>
+<script src="lib/legitimacy.js"></script>
+<script src="lib/attribution.js"></script>
+<script src="lib/cbor.js"></script>
+<script src="lib/x509.js"></script>
+<script src="lib/c2pa-verify.js"></script>
+<script src="lib/image-metadata.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

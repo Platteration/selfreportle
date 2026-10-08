@@ -1,0 +1,5 @@
+# Selfreportle: the browser extension and its website. How to report a problem: SECURITY.md.
+Contact: https://github.com/Platteration/selfreportle/security/advisories/new
+Expires: 2027-10-08T00:00:00.000Z
+Preferred-Languages: en
+Policy: https://github.com/Platteration/selfreportle/blob/HEAD/SECURITY.md

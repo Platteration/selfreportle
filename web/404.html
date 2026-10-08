@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Selfreportle, the website: the page a host answers any address the site does not have
+     with, at whatever depth it was asked for, so every address in it starts from the site's
+     root: scripts/build-site.js writes that root in where the addresses below start (`--base`,
+     "/" by default). No script: the page has nothing to do. The policy is the site's
+     (test/website.test.js). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; upgrade-insecure-requests">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1f27" media="(prefers-color-scheme: dark)">
+<title>Page not found · Selfreportle</title>
+<link rel="icon" href="%BASE%icons/icon32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="%BASE%site.css">
+</head>
+<body>
+<header class="top">
+  <span class="logo" aria-hidden="true"></span>
+  <p><strong>Selfreportle</strong></p>
+</header>
+<main class="not-found">
+  <h1>That page isn’t here</h1>
+  <p>The address may be mistyped, or the page may have moved. Selfreportle’s checker is one page: pick an image, a video or a saved web page there, and it is read in your browser without being uploaded.</p>
+  <p><a class="btn" href="%BASE%">Open the checker</a></p>
+</main>
+</body>
+</html>

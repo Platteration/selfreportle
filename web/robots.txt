@@ -1,0 +1,3 @@
+# Selfreportle: one page, the checker. Everything public is the site's root.
+User-agent: *
+Allow: /

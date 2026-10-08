@@ -1,0 +1,47 @@
+# Selfreportle, the website: Apache 2.4 settings (mod_rewrite, mod_headers, mod_mime). Netlify
+# and Cloudflare Pages read _headers instead; nginx: deploy/nginx.conf. The headers are the same
+# in all three and in the pages' <meta>, and test/website.test.js holds them equal. Publish the
+# folder `node scripts/build-site.js <folder> --host=apache --base=/<path>/` writes, never a
+# checkout; the build writes the base path into the two ErrorDocument lines below.
+
+Options -Indexes
+ServerSignature Off
+AddDefaultCharset utf-8
+DirectoryIndex index.html
+# A missing page, a folder and a refused file all show the site's own not-found page.
+ErrorDocument 404 %BASE%404.html
+ErrorDocument 403 %BASE%404.html
+
+<IfModule mod_mime.c>
+  AddType text/javascript .js
+  AddType image/png .png
+  # the licence has no extension; serve it as text rather than a download
+  <Files "LICENSE">
+    ForceType text/plain
+  </Files>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # everything over https
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+  # The site's own files and nothing else: this file, the extension's other scripts, the
+  # repository's notes and tests, dotfiles (.git above all) and folders all answer 404, so a
+  # server pointed at the wrong folder still publishes only the site.
+  RewriteRule !^(index\.html|404\.html|app\.js|guard\.js|site\.css|robots\.txt|LICENSE|icons/icon32\.png|\.well-known/security\.txt|lib/(lexicons|signals|verdicts|text-analyzer|site-analyzer|image-hints|legitimacy|attribution|cbor|x509|c2pa-verify|image-metadata)\.js)?$ - [R=404,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; frame-ancestors 'none'; upgrade-insecure-requests"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "no-referrer"
+  Header always set Permissions-Policy "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  Header always set Cross-Origin-Resource-Policy "same-origin"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
+  # no file name carries a version: revalidate every load (an unchanged file is a 304)
+  Header always set Cache-Control "no-cache"
+</IfModule>

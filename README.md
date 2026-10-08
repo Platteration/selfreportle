@@ -4,6 +4,8 @@ A Chromium (Manifest V3) extension that inspects the page you are looking at and
 
 Everything runs locally in the browser. No data leaves your machine except the media fetches to the sites you visit, made without cookies, and any reverse-image-lookup link you choose to click.
 
+The same analysers are also a website: one page where you pick an image, a video, a saved web page or a text file and the report is drawn in that page, from that file, with nothing uploaded (see [The website](#the-website)).
+
 ## What it looks at
 
 | Layer | Evidence (strong → weak) | Shown as |
@@ -123,6 +125,50 @@ Providers of generative AI systems must ensure their outputs are marked in a mac
 
 Requires Chrome/Chromium 116 or newer.
 
+### The website
+
+The website is a static page, `web/index.html`, that runs the extension's own `lib/` analysers on one file the visitor picks: an image, video or audio file (C2PA Content Credentials verified with WebCrypto in the page, with the hard binding recomputed over the whole file up to 32 MB — past that the head is read, and for MP4/MOV the tail, and a binding over bytes that were not read is reported as not recomputed; XMP/IPTC; EXIF; PNG generator chunks; the file name), a web page saved as HTML (site fingerprints, disclosures, text signals, hidden characters, trader identification, and its pictures judged by caption, alt text and file name), or plain text. The file is read with the File API and never uploaded; the page makes no request after it has loaded, and its policy forbids one (`connect-src 'none'`). A saved page is parsed into a document with no window: none of its scripts run and none of its pictures, styles or frames load, so a picture inside it is judged by what the page says about it, and its own file has to be picked to read its metadata. Four `lib/` modules are not part of it: `settings.js` and `history.js` keep their records in `chrome.storage` (the page keeps nothing), `fetch-policy.js` governs the extension worker's cross-origin fetches (the page fetches nothing), and `platform-labels.js` pairs a platform's label with a post's media by on-screen position, which a saved file has no layout to answer.
+
+The host does only the hosting: the files, the response headers, the not-found page, and refusing everything that is not part of the site. Build the site into an empty folder and publish that folder, never the checkout:
+
+```
+npm run build:site -- site --host=netlify                       # Netlify: adds _headers and _redirects
+npm run build:site -- site --host=cloudflare                    # Cloudflare Pages: adds _headers
+npm run build:site -- site --host=apache --base=/selfreportle/  # Apache: adds .htaccess; --base for a sub-folder
+npm run build:site -- site --host=nginx                         # nginx: the site alone; the server takes deploy/nginx.conf
+npm run build:site -- site --host=pages --base=/selfreportle/   # GitHub Pages or any host that sends no headers
+```
+
+The site is the page and what it loads (`web/`), the twelve `lib/` modules the page names, the favicon, `404.html`, `robots.txt`, `.well-known/security.txt` and `LICENSE`, and nothing else; `node scripts/build-site.js --list` prints it. `--base` is the path the site is served under, which the not-found page (answered at any depth) and Apache's `ErrorDocument` need. The Apache and nginx configs also answer 404 to every path outside that list, so a server pointed at the wrong folder still publishes only the site.
+
+**Response headers.** The same set is in `web/_headers` (Netlify, Cloudflare Pages), `web/.htaccess` (Apache) and `deploy/nginx.conf` (nginx), and the policy and referrer policy are in the `<meta>` of `index.html` and `404.html` for a host that sends no headers; `test/website.test.js` holds every copy equal.
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; frame-ancestors 'none'; upgrade-insecure-requests` | Only the site's own scripts and stylesheet; the favicon, and the preview drawn from the picked file (`blob:`); no connection of any kind. Trusted Types make every HTML string sink throw; the one policy named is the one that hands a saved page to `DOMParser`. Each source was measured in Chromium with the policy sent as a header: without `blob:` the preview is refused, without the policy name the checker cannot start. |
+| `X-Content-Type-Options` | `nosniff` | Files are what their type says. |
+| `X-Frame-Options` | `DENY` | The old browsers' half of `frame-ancestors 'none'`: no other site may frame the checker. |
+| `Referrer-Policy` | `no-referrer` | The page links to its source and nowhere else, and has nothing to tell anyone. |
+| `Permissions-Policy` | thirty features, each `()`: camera, microphone, geolocation, the clipboard, payment, USB, sensors, the Topics API and the rest | The checker uses no browser feature a policy governs. Only names Chromium recognises are listed, since an unknown one is a console warning. |
+| `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy` | `same-origin` | Other windows cannot reach this one, and other sites cannot embed its files. |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | Browsers remember to use HTTPS. |
+| `Cache-Control` | `no-cache` | No file name carries a version, so every load revalidates (an unchanged file is a 304) and a deploy never mixes old scripts with new HTML. |
+
+**GitHub Pages, and one origin for every app.** Pages sends no headers, so there the `<meta>` policy is the protection, without `frame-ancestors` (a `<meta>` cannot carry it): the checker can be framed by another site there, and the other headers above are missing. A project site on Pages also shares its origin, `platteration.github.io`, with every other app the account publishes, and storage, caches and service workers are per origin. This page stores nothing, but a page published next to it could; a custom domain or subdomain per app gives each its own origin. After a deploy there, check that `/.well-known/security.txt` answers: a branch build runs Jekyll, which skips dot-folders unless a `_config.yml` says `include: [".well-known"]`.
+
+**Launch checklist**, with `SITE` the host name and `URL` the site's https address, ending in `/` (`https://SITE/` or `https://SITE/selfreportle/`):
+
+```sh
+curl -sI http://SITE/ | head -1                       # a 301 to https
+curl -sI "$URL" | grep -iE 'content-security|strict-transport|nosniff|referrer|permissions|frame-options|cache-control'
+curl -sI "${URL}.git/config" | head -1                 # 404
+curl -sI "${URL}_headers" | head -1                    # 404
+curl -sI "${URL}lib/settings.js" | head -1             # 404: not part of the site
+curl -s  "${URL}no/such/page" | grep -c 'Page not found'   # 1
+```
+
+Then open the site, pick an image and a saved page, and check the console shows no `Content Security Policy` line. Problems are reported as `SECURITY.md` says; `/.well-known/security.txt` carries the same route, and its `Expires` date (8 October 2027) needs renewing before then — the website test fails once it has passed.
+
 ## Development
 
 ```
@@ -130,12 +176,13 @@ npm test                   # unit tests (Node 22, no dependencies)
 npm run lint               # syntax check of every script
 npm run test:conventions   # the conventions shared with the sibling repositories
 npm run check              # lint, unit tests and conventions: the gate before a push
-npm run test:e2e           # loads the extension into Chromium via Playwright and checks a fixture site
+npm run test:e2e           # loads the extension into Chromium via Playwright and checks a fixture site, then the website
 npm run test:all           # unit and end-to-end suites together
 npm run icons              # regenerate icons/*.png
+npm run build:site -- <folder> [--host=…] [--base=…]   # the website (see "The website")
 ```
 
-The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
+The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Its second half (`test/e2e/site.js`) builds the website, serves it at `/selfreportle/` with the headers `web/_headers` writes, and drives the checker under that policy: every kind of file, a hostile saved page, the not-found page two folders deep, a framing attempt from another origin, JavaScript off, a module that fails to load, and the same site from a host that sends no headers. It fails on any policy violation, page or console error, Permissions-Policy complaint, or request outside the site. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
 
 ## Project layout
 
@@ -163,8 +210,13 @@ content/overlay.js          shadow-DOM pill, panel, badges and popovers
 popup/                      toolbar report
 publisher/                  self-check for site owners: readiness checklist and snippets
 options/                    settings page
+web/                        the website: the checker page (index.html, app.js), its safety net (guard.js),
+                            stylesheet, not-found page, robots.txt, security.txt and the host configs
+                            (_headers, _redirects, .htaccess)
+deploy/nginx.conf           the website's nginx server blocks
+scripts/build-site.js       writes the website into a folder, with the config the host reads
 test/                       node:test suites with synthetic JPEG/PNG/WebP/C2PA fixtures
-test/e2e/                   Playwright run against a fixture site with the extension loaded
+test/e2e/                   Playwright runs: the extension against a fixture site (run.js), and the website (site.js)
 ```
 
 Every `lib/*.js` file is a plain script in the extension and a CommonJS module under Node, so the analysers are unit-tested with synthetic fixtures (`test/helpers.js` builds PNG chunks, TIFF/EXIF blocks, XMP packets, JUMBF boxes and CBOR claims from scratch).
@@ -173,7 +225,7 @@ Every `lib/*.js` file is a plain script in the extension and a CommonJS module u
 
 The analysers are regular expressions run over whatever a page happens to contain, on the page's own thread. A pattern that backtracks quadratically is therefore a denial of service any site can trigger: one long run of the wrong character freezes the tab. Three shipped that way and were found by fuzzing — an unbounded compound-street prefix, an unbounded e-mail local part, and an unbounded word class in the three-item-list detector. Each was quadratic; at the 300 KB body-text cap the street one would have hung a tab for minutes.
 
-`test/redos.test.js` is the permanent guard. It scans every regex literal in `lib/`, runs each against nineteen input shapes designed to make a backtracking engine work hard, at 2 KB and again at 16 KB, and fails if any pattern exceeds a flat budget or grows superlinearly. A second test runs the whole text, legitimacy and site analysers over 300 KB bodies of hostile input and requires each to finish in under four seconds.
+`test/redos.test.js` is the permanent guard. It scans every regex literal in `lib/` and in the website's `web/` scripts, runs each against nineteen input shapes designed to make a backtracking engine work hard, at 2 KB and again at 16 KB, and fails if any pattern exceeds a flat budget or grows superlinearly. A second test runs the whole text, legitimacy and site analysers over 300 KB bodies of hostile input and requires each to finish in under four seconds.
 
 The binary parsers were fuzzed separately with random bytes behind each container magic, a truncation sweep over every byte offset of valid files, and crafted structures: huge declared chunk lengths, zero-length box loops, six-hundred-deep nesting, twenty thousand empty JPEG segments, a TIFF claiming four hundred oversized entries, and an XML bomb. Nothing threw, and the slowest case was 20 ms.
 

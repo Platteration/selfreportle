@@ -121,7 +121,7 @@ test('About: the name, the manifest version (equal to package.json), the source 
  * with the tab, not a record, and are built where they are used. */
 test('no storage key string is spelled outside lib/settings.js', () => {
   const files = [];
-  for (const dir of ['lib', 'background', 'content', 'popup', 'options', 'publisher']) {
+  for (const dir of ['lib', 'background', 'content', 'popup', 'options', 'publisher', 'web']) {
     for (const name of fs.readdirSync(path.join(root, dir))) if (name.endsWith('.js')) files.push(path.join(dir, name));
   }
   assert.ok(files.length > 15, 'the walk found the shipped scripts');

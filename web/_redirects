@@ -1,0 +1,8 @@
+# Netlify. The folder `node scripts/build-site.js <folder> --host=netlify` writes holds the site
+# and these two configs and nothing else, so the only files it could serve that are not the
+# site are the configs themselves: Netlify reads both, and these rules make sure neither is
+# also answered as a file. Forced (404!), because Netlify otherwise serves a file that exists
+# ahead of any rule for its path. Cloudflare Pages takes no 404 rule from this file, and gets
+# _headers alone (--host=cloudflare). test/website.test.js checks both rules are here.
+/_headers           /404.html  404!
+/_redirects         /404.html  404!
