@@ -313,6 +313,46 @@ test('compressed PNG text is bounded, per chunk and per image', async () => {
 });
 
 /*
+ * The budget above was charged only for text that was kept. A chunk that ran
+ * past its ceiling, or whose stream turned out corrupt part way, had still
+ * been inflated that far and cost nothing, so a 4 MB PNG of two thousand
+ * 2 KB chunks, each inflating past a megabyte, cost the shared worker 2 GB of
+ * inflating and 6.7 s; the website reads 32 MB of a picked file, and the same
+ * shape took 68 s there. Counted here as the bytes that actually come out of
+ * DecompressionStream, which is what the work is, against a file far smaller
+ * than the fetch it rides in.
+ */
+test('every inflate is charged to the image text budget, kept or not', async () => {
+  const zlib = require('zlib');
+  const CAP = require('../lib/settings.js').DEFAULTS.maxImageBytes;
+  const Real = globalThis.DecompressionStream;
+  let inflated = 0;
+  globalThis.DecompressionStream = class {
+    constructor(format) {
+      const ds = new Real(format);
+      this.writable = ds.writable;
+      this.readable = ds.readable.pipeThrough(new TransformStream({ transform(c, out) { inflated += c.length; out.enqueue(c); } }));
+    }
+  };
+  try {
+    const past = zlib.deflateSync(Buffer.alloc(2 << 20, 0x41), { level: 9 });   // past the per-chunk ceiling
+    const whole = zlib.deflateSync(Buffer.alloc(1000 << 10, 0x41), { level: 9 });
+    const cut = whole.subarray(0, whole.length - 6);                                // under it, then cut off
+    for (const [what, stream] of [['chunks that overflow', past], ['chunks that turn out corrupt', cut]]) {
+      inflated = 0;
+      const chunks = Array.from({ length: 500 }, (_, i) => H.pngChunk('zTXt', H.concat([H.str('C' + i + '\0'), Uint8Array.from([0]), new Uint8Array(stream)])));
+      const file = H.png(chunks);
+      const r = await M.analyzeImageBytes(file, {});
+      assert.ok(file.length < CAP / 4, 'the file is a quarter of one fetch');
+      assert.ok(inflated <= 2 * CAP, what + ': ' + chunks.length + ' of them inflated ' + Math.round(inflated / (1 << 20)) + ' MB out of a ' + Math.round(file.length / 1024) + ' KB file');
+      assert.ok(r.signals.some((s) => /too large to inspect/.test(s.label)), what + ': and the reader says it stopped');
+    }
+  } finally {
+    globalThis.DecompressionStream = Real;
+  }
+});
+
+/*
  * The same defect as L5-1 reached by a shorter path.
  *
  * Making a Content Credentials capture claim count now takes a manifest that

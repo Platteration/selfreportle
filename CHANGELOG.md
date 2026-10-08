@@ -60,6 +60,17 @@ development branch.
   Every element a walk can meet, and every marker element the overlay
   measures or marks, is now read through the prototype, which no control
   shadows.
+- **Compressed PNG text that was not kept cost nothing against its budget.**
+  Each image's text chunks share a 4 MB budget, but only text that was kept
+  was charged: a chunk that ran past its 1 MB ceiling, or whose stream turned
+  out corrupt part way, had still been inflated that far for free. A 4 MB PNG
+  (the default per-image fetch) of two thousand such chunks cost the shared
+  worker about 2 GB of inflating and 6.7 s, and 12 s with truncated streams;
+  the website, which reads up to 32 MB of a picked file, took 68 s. What is
+  inflated is now charged whether it is kept or not, and nothing more is
+  inflated once the budget is spent: the same files take 0.1 s and 0.3 s. A
+  PNG whose compressed text has already used the budget has its later
+  compressed chunks skipped, with the existing "too large to inspect" note.
 
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
