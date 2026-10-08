@@ -272,13 +272,39 @@ test('the settings normaliser really does cap what the worker now runs through i
  * handed back any tab id the caller named. Nothing outside this extension can
  * reach onMessage, but a content script has no business naming a tab other
  * than its own, and the pattern was already in use two cases further down.
+ *
+ * The first fix told the two apart by whether the sender had a tab, on the
+ * belief that the extension's pages have none. The popup has none; the
+ * publisher view is a tab the popup opens, so it was answered with its own
+ * empty tab and has shown "No analysis is available" ever since. Which kind
+ * of sender it is, is read off the URL the browser supplies instead, and the
+ * rule is the same: a content script gets its own tab, and only the
+ * extension's own pages may name one (now also refused to a sender that is
+ * neither). test/e2e/run.js asks from inside the content script's world and
+ * opens the publisher the way the popup does.
  */
-test('message handlers derive the tab from the sender when there is one', () => {
+test('message handlers derive the tab from the sender unless it is one of the extension\'s own pages', () => {
   const SW = fs.readFileSync(path.join(__dirname, '..', 'background', 'service-worker.js'), 'utf8');
   assert.match(SW, /sender\.id !== chrome\.runtime\.id/, 'the sender is checked');
-  assert.match(SW, /getResult\(fromTab != null \? fromTab : msg\.tabId\)/,
+  assert.match(SW, /const OWN_PAGES = chrome\.runtime\.getURL\(''\);/);
+  assert.match(SW, /const ownPage = typeof sender\.url === 'string' && sender\.url\.startsWith\(OWN_PAGES\);/,
+    'an extension page is known by the URL the browser reports for it');
+  assert.match(SW, /getResult\(ownPage \? msg\.tabId : fromTab\)/,
     'a content script gets its own tab; only an extension page may name one');
   assert.ok(!/getResult\(msg\.tabId\)/.test(SW), 'the caller-named tab id is no longer taken on trust');
+  assert.ok(!/fromTab != null \? fromTab : msg\.tabId/.test(SW), 'and having a tab is not what decides it');
+});
+
+/*
+ * The publisher's JSON-LD snippet carries the checked page's own <title>, and
+ * the site owner pastes it into a <script> element: a title holding
+ * </script><script>… ran in the owner's page, and $' or $` in it was read by
+ * String#replace as the text either side of the match.
+ */
+test('the publisher snippet cannot end the script element it is pasted into', () => {
+  const pub = fs.readFileSync(path.join(__dirname, '..', 'publisher', 'publisher.js'), 'utf8');
+  assert.match(pub, /\}, null, 2\)\.replace\(\/<\/g, '\\\\u003c'\)/, 'every < in the JSON is spelled as an escape');
+  assert.match(pub, /sn\.wrap\.replace\('%s', \(\) => sn\.code\)/, 'and the code goes in as it is, never as a replacement pattern');
 });
 
 /*

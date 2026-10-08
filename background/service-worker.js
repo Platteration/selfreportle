@@ -80,13 +80,19 @@ chrome.contextMenus && chrome.contextMenus.onClicked.addListener((info, tab) => 
  * there is no externally_connectable — but a handler that acts on whatever
  * tab id or host the caller names is still the wrong shape: srl:get-result
  * is the one that hands back another tab's whole report. A content script
- * gets the tab it is actually running in; only an extension page (the popup
- * and the publisher view, which have no sender.tab) may name one.
+ * gets the tab it is actually running in; only the extension's own pages may
+ * name one. Which of the two a sender is, is read off its URL, which the
+ * browser supplies and no content script can carry (<all_urls> does not
+ * reach chrome-extension: pages). Not off sender.tab: the popup has none,
+ * but the publisher view is a tab the popup opens, so asking "is there a
+ * sender.tab" sent that view its own empty tab's report, every time.
  */
+const OWN_PAGES = chrome.runtime.getURL('');
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return false;
   if (sender.id !== chrome.runtime.id) return false;
   const fromTab = sender.tab && sender.tab.id != null ? sender.tab.id : null;
+  const ownPage = typeof sender.url === 'string' && sender.url.startsWith(OWN_PAGES);
   switch (msg.type) {
     case 'srl:analyze-images':
       /* Fetching happens on a page's behalf, so there has to be a page: the
@@ -107,7 +113,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
     }
     case 'srl:get-result':
-      getResult(fromTab != null ? fromTab : msg.tabId).then(sendResponse);
+      getResult(ownPage ? msg.tabId : fromTab).then(sendResponse);
       return true;
     case 'srl:get-history':
       S.history.get(msg.host).then((rec) => sendResponse({ record: rec, summary: S.history.summarize(rec) }));

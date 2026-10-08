@@ -80,6 +80,26 @@ development branch.
   skipped subtree whole, and `<main>` is looked up once: 5.6 s and 3 s, in
   proportion to the file's size. The blocks found, and their order, are the
   same.
+- **The publisher's JSON-LD snippet could carry script into the site it was
+  pasted into.** Its `headline` is the checked page's own `<title>`, which is
+  text on that page; written into the snippet with `JSON.stringify`, a title
+  holding `</script><script>…</script>` ended the snippet's `<script>`
+  element and ran in whatever page the owner pasted it into, and `$'` or
+  `` $` `` in a title made `String#replace` rewrite the snippet around it.
+  Every `<` in the JSON is now written `\u003c`, which JSON reads back as
+  the same character, and the snippet is inserted as it is. Reachable only
+  with the fix below.
+
+### Fixed
+- **The publisher self-check showed nothing.** Since the message handlers
+  stopped taking a caller's tab id on trust, a sender that had a tab was
+  answered with that tab, on the belief that the extension's own pages have
+  none. The popup has none, but the publisher view is a tab the popup opens,
+  so it was answered with its own empty tab and said "No analysis is
+  available for that tab" every time. The worker now tells the extension's
+  own pages from content scripts by the URL the browser reports for the
+  sender: a content script still gets only its own tab, and a sender that is
+  neither can no longer name one.
 
 ### Added
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures

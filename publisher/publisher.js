@@ -262,6 +262,10 @@
     out.push({
       title: 'Structured data with the IPTC digital source type',
       why: 'The IPTC vocabulary is the same one C2PA and XMP use, so a single value means the same thing across images, metadata and structured data. Drop the digitalSourceType line if nothing on the page is AI-made.',
+      /* The headline is the page's own <title>, text there and markup here: a
+       * title holding "</script><script>…" ended this element and ran in the
+       * page the snippet was pasted into. Inside a <script> only "<" can do
+       * that (</script, <!--, <script), and JSON may spell it \u003c. */
       code: JSON.stringify({
         '@context': 'https://schema.org',
         '@type': 'Article',
@@ -273,7 +277,7 @@
         digitalSourceType: aiText || aiImages
           ? 'http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia'
           : 'http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation',
-      }, null, 2).replace(/^/gm, '  ').replace(/^ {2}/, ''),
+      }, null, 2).replace(/</g, '\\u003c').replace(/^/gm, '  ').replace(/^ {2}/, ''),
       wrap: '<script type="application/ld+json">\n%s\n</script>',
     });
 
@@ -343,7 +347,9 @@
   }
 
   function snippetBlock(sn) {
-    const code = sn.wrap ? sn.wrap.replace('%s', sn.code) : sn.code;
+    /* A function, not a string: a replacement string reads $' and $` as the
+     * text either side of the match, and the code carries the page's title. */
+    const code = sn.wrap ? sn.wrap.replace('%s', () => sn.code) : sn.code;
     const d = el('div', 'snippet');
     const hd = el('div', 'hd');
     hd.appendChild(el('b', null, sn.title));
