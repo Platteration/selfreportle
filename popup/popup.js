@@ -149,7 +149,7 @@
       case 'undisclosed-ai': return 'AI-generation markers were found but no disclosure statement. Verify the operator before relying on this content or doing business.';
       case 'disclosed-ai': return 'AI use is declared on the page or in metadata. Decide whether that is acceptable for your purpose.';
       case 'weak-ai': return 'Only heuristic or indirect signals. Treat as a prompt to look closer, not a verdict.';
-      case 'provenance': return 'Some content carries capture or human-creation credentials. Credentials were parsed, not cryptographically verified.';
+      case 'provenance': return 'Some content carries capture or human-origin metadata. Check the evidence: C2PA claims require a verified signature and asset binding, while EXIF and XMP can be copied or forged.';
       default: return 'No markers found. Many AI systems still emit nothing detectable, so this is not proof of human origin.';
     }
   }
@@ -470,7 +470,8 @@
     const sum = v.summary || {};
     const state = sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
       : sum.caution ? { icon: '!', color: V.COLORS.gold, word: 'Signed, assertions unreconciled' }
-        : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Signature verified' }
+        : sum.ok && !sum.assetVerified ? { icon: '!', color: V.COLORS.gold, word: 'Signature valid; asset binding unchecked' }
+          : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Signature and asset binding verified' }
           : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
     const d = el('div', 'attr');
     const t = tint(el('div', 'tag'), state.color);
@@ -483,7 +484,7 @@
     det.appendChild(el('summary', null, 'What this does and does not prove'));
     const body = el('div', 'skew');
     body.appendChild(el('div', null, sum.ok
-      ? 'The manifest has not been altered since it was signed. It does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.'
+      ? (sum.assetVerified ? 'The manifest signature and supported asset hard binding verified. This does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.' : 'The manifest signature verified, but its binding to this media did not. Camera and human-origin claims are not authenticated for this asset; complete data-hash bytes are required, and BMFF or other binding formats remain unsupported.')
       : sum.broken
         ? 'Something verifiably does not add up: the signature, an assertion hash or the certificate chain. Treat the claims inside the manifest as unreliable.'
         : sum.caution

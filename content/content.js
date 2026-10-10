@@ -421,10 +421,11 @@
     for (const entry of toFetch) {
       if (!/^blob:/i.test(entry.msg.url)) continue;
       try {
-        const buf = await (await fetch(entry.msg.url)).arrayBuffer();
-        const cap = Math.min(buf.byteLength, settings.maxImageBytes);
-        entry.msg.base64 = toBase64(new Uint8Array(buf, 0, cap));
-        entry.msg.truncated = cap < buf.byteLength;
+        const response = await fetch(entry.msg.url);
+        const cap = entry.msg.kind === 'av' ? settings.maxMediaBytes : settings.maxImageBytes;
+        const bounded = await S.byteBudget.read(response.body, cap);
+        entry.msg.base64 = toBase64(bounded.bytes);
+        entry.msg.truncated = bounded.truncated;
       } catch (e) { entry.msg.base64 = null; }
     }
     pendingImages += toFetch.length;

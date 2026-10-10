@@ -105,10 +105,11 @@ test('PNG caBX C2PA manifest with generative edit is AI-edited', async () => {
   assert.ok(r.signals.some((s) => s.id === 'c2pa-ai-edited'));
 });
 
-test('C2PA manifest from a camera is captured', async () => {
+test('an unverified camera manifest cannot authenticate the media', async () => {
   const manifest = H.c2paManifest({ generator: 'Leica M11-P', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] });
-  const { verdict } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
-  assert.equal(verdict, 'captured');
+  const { verdict, r } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+  assert.equal(verdict, 'no-signal');
+  assert.ok(r.signals.some((s) => s.id === 'c2pa-binding-unchecked'));
 });
 
 test('WebP with C2PA chunk and EXIF', async () => {

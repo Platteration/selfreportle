@@ -14,15 +14,16 @@ Everything runs locally in the browser. No data leaves your machine except the m
 
 ### Verifying Content Credentials
 
-Reading a manifest and trusting it are different things, so the extension answers three separate questions and reports them separately.
+Reading a manifest and trusting it are different things, so the extension answers four separate questions and reports them separately.
 
 1. **Is the signature valid?** The COSE_Sign1 signature is checked with WebCrypto against the public key in the embedded leaf certificate, covering ES256/384/512, PS256/384/512, RS256/384/512 and Ed25519, with detached payloads reconstructed from the claim bytes. A valid signature proves the claim has not been altered since it was signed.
 2. **Do the assertions match the claim?** Each assertion's JUMBF box is re-hashed and compared with the hash the claim recorded. This is what stops someone swapping "made by a camera" for "made by AI" while leaving the signature intact. Producers differ over whether that hash covers the whole box or only its content, so both are tried; if neither reconciles, the result is reported as inconclusive rather than as tampering, because a false accusation would be worse than an unanswered question.
 3. **Does the certificate chain mean anything?** The chain is checked for internal consistency (each certificate actually signed by the next, verified cryptographically) and for validity dates.
+4. **Does the credential belong to this media?** A signed, hash-verified `c2pa.hash.data` assertion is checked against the complete PNG bytes only when every excluded range consists of complete `caBX` Content Credentials chunks. The PNG signature, image header, pixel chunks and all other chunks must be covered by the hash. A mismatch is reported as broken credentials. Other formats, exclusions covering pixels or unvalidated regions, byte-capped reads, missing bindings, and format-specific BMFF/box bindings remain explicitly **asset binding unchecked**. Camera and human-origin C2PA badges require both a valid signature and a verified asset binding; a signature alone receives an amber state.
 
 **This build ships no C2PA trust list, so the root is never anchored and the extension never says it is.** A verified signature is reported as "the manifest is intact since signing", never as "this really is Adobe". That distinction is stated in the interface, not buried here.
 
-Outcomes are three, kept visually distinct: **verified**, **broken** (the signature, an assertion hash or the chain verifiably does not add up), and **caution** (the claim is authentic but its assertions could not be fully reconciled, or the fetch was byte-capped before reaching them). Nothing here touches the network, and an unanswered question is never reported as a pass.
+The interface distinguishes **signature and asset binding verified**, **broken** (the signature, an assertion hash, asset hash or chain verifiably does not add up), **caution** (assertions could not be reconciled), and **asset binding unchecked**. Nothing in the verifier touches the network, and an unanswered question is never reported as a pass.
 
 Three rules keep a valid signature from vouching for the wrong thing:
 

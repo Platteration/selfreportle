@@ -267,7 +267,7 @@
         digitalSourceType: aiText || aiImages
           ? 'http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia'
           : 'http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation',
-      }, null, 2).replace(/^/gm, '  ').replace(/^ {2}/, ''),
+      }, null, 2).replace(/[<>&\u2028\u2029]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).replace(/^/gm, '  ').replace(/^ {2}/, ''),
       wrap: '<script type="application/ld+json">\n%s\n</script>',
     });
 
@@ -337,7 +337,8 @@
   }
 
   function snippetBlock(sn) {
-    const code = sn.wrap ? sn.wrap.replace('%s', sn.code) : sn.code;
+    // A function replacement keeps page-controlled $', $` and $& literal.
+    const code = sn.wrap ? sn.wrap.replace('%s', () => sn.code) : sn.code;
     const d = el('div', 'snippet');
     const hd = el('div', 'hd');
     hd.appendChild(el('b', null, sn.title));
@@ -357,10 +358,11 @@
     for (const it of (r.images || {}).items || []) {
       const v = it.metadata && it.metadata.c2pa && it.metadata.c2pa.verification;
       if (!v || !v.summary) continue;
-      if (v.summary.ok) continue;
+      if (v.summary.ok && v.summary.assetVerified) continue;
       const state = v.signature === 'absent' ? 'No signature in the manifest'
         : v.summary.broken ? 'Does not verify'
-          : v.summary.caution ? 'Signed, but assertions could not be reconciled'
+          : v.summary.ok && !v.summary.assetVerified ? 'Signature valid, asset binding unchecked'
+            : v.summary.caution ? 'Signed, but assertions could not be reconciled'
             : 'Signature could not be checked';
       const advice = v.signature === 'absent'
         ? 'A manifest without a signature carries no guarantee at all. Sign it, or readers have only your word for it.'
