@@ -28,6 +28,50 @@ test('a genuine signature verifies, with its assertions and chain', async () => 
   assert.ok(ids.includes('c2pa-ai-created'), 'the claim is still read');
 });
 
+test('replayed camera credentials retain their signature but fail the media hard binding', async () => {
+  const { subtle } = require('node:crypto').webcrypto;
+  const zlib = require('node:zlib');
+  const bound = H.png([]);
+  const hash = new Uint8Array(await subtle.digest('SHA-256', bound));
+  const manifest = await H.signedC2paManifest({
+    generator: 'Test Camera',
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+    extraAssertions: [['c2pa.hash.data', { alg: 'sha256', hash, exclusions: [{ start: 33, length: 4096 }] }]],
+  });
+  assert.ok(manifest.length + 12 <= 4096, 'fixture fits the excluded metadata chunk');
+  const credential = H.pngChunk('caBX', H.concat([manifest, new Uint8Array(4096 - manifest.length - 12)]));
+  const original = H.concat([bound.slice(0, 33), credential, bound.slice(33)]);
+  const honest = await M.analyzeImageBytes(original);
+  assert.equal(honest.metadata.c2pa.verification.signature, 'valid');
+  assert.equal(honest.metadata.c2pa.verification.assetBinding.status, 'verified');
+  assert.equal(V.combineImageSignals(honest.signals).verdict, 'captured');
+
+  const tampered = H.concat([bound.slice(0, 33), credential,
+    H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 255, 0, 0])))), bound.slice(-12)]);
+  const replay = await M.analyzeImageBytes(tampered);
+  assert.equal(replay.metadata.c2pa.verification.signature, 'valid', 'manifest and signature are unchanged');
+  assert.equal(replay.metadata.c2pa.verification.assertions.matched, 2);
+  assert.equal(replay.metadata.c2pa.verification.assetBinding.status, 'mismatch');
+  assert.equal(V.combineImageSignals(replay.signals).verdict, 'suspected');
+  assert.ok(!replay.signals.some((s) => s.id === 'c2pa-capture'));
+
+  const truncated = await M.analyzeImageBytes(original, { truncated: true });
+  assert.equal(truncated.metadata.c2pa.verification.assetBinding.status, 'unchecked');
+  assert.notEqual(V.combineImageSignals(truncated.signals).verdict, 'captured');
+});
+
+test('a valid camera signature with unsupported binding is visibly unchecked', async () => {
+  const manifest = await H.signedC2paManifest({
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+    extraAssertions: [['c2pa.hash.bmff', { hash: new Uint8Array(32) }]],
+  });
+  const r = await M.analyzeImageBytes(H.png([H.pngChunk('caBX', manifest)]));
+  assert.equal(r.metadata.c2pa.verification.signature, 'valid');
+  assert.equal(r.metadata.c2pa.verification.assetBinding.status, 'unchecked');
+  assert.match(r.metadata.c2pa.verification.summary.text, /Asset binding unchecked/);
+  assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
+});
+
 test('the root is never reported as anchored, because no trust list ships', async () => {
   const { v } = await analyse({ chain: 'full' });
   assert.equal(v.chain.anchored, false);
@@ -231,3 +275,66 @@ function corruptSecondCertificate(manifest) {
   }
   return out;
 }
+
+
+test('signed exclusions covering pixels cannot authenticate modified camera media', async () => {
+  const { subtle } = require('node:crypto').webcrypto;
+  const zlib = require('node:zlib');
+  const header = H.png([]).slice(0, 33), end = H.pngChunk('IEND', new Uint8Array());
+  const hash = new Uint8Array(await subtle.digest('SHA-256', H.concat([header, end])));
+  const manifest = await H.signedC2paManifest({ generator: 'Test Camera',
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+    extraAssertions: [['c2pa.hash.data', { alg: 'sha256', hash, exclusions: [{ start: 33, length: 4096 }] }]],
+  });
+  const credential = H.pngChunk('caBX', manifest);
+  const red = H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 255, 0, 0]))));
+  const blue = H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 0, 0, 255]))));
+  assert.equal(red.length, blue.length);
+  const padding = H.pngChunk('npAD', new Uint8Array(4096 - credential.length - red.length - 12));
+  for (const pixels of [red, blue]) {
+    const r = await M.analyzeImageBytes(H.concat([header, credential, padding, pixels, end]));
+    assert.equal(r.metadata.c2pa.verification.signature, 'valid');
+    assert.equal(r.metadata.c2pa.verification.assetBinding.status, 'unchecked');
+    assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
+    assert.ok(!r.signals.some((signal) => signal.id === 'c2pa-capture'));
+  }
+});
+
+test('PNG bindings reject partial credentials, media/header exclusions and unvalidated layouts', async () => {
+  const { subtle } = require('node:crypto').webcrypto;
+  const credentials = H.pngChunk('caBX', new Uint8Array([1, 2, 3]));
+  const pixels = H.pngChunk('IDAT', new Uint8Array([1, 2, 3, 4]));
+  const png = H.png([credentials, pixels]);
+  const cases = [
+    { name: 'partial credential', bytes: png, exclusions: [{ start: 34, length: credentials.length - 1 }] },
+    { name: 'image header', bytes: png, exclusions: [{ start: 8, length: 25 }] },
+    { name: 'credential and first pixel byte', bytes: png, exclusions: [{ start: 33, length: credentials.length + 1 }] },
+    { name: 'noncredential metadata', bytes: H.png([H.pngChunk('tEXt', new Uint8Array([65, 0, 66])), pixels]), exclusions: [{ start: 33, length: 15 }] },
+    { name: 'trailing unvalidated bytes', bytes: H.concat([png, new Uint8Array([7])]), exclusions: [] },
+    { name: 'incomplete PNG', bytes: png.slice(0, -1), exclusions: [] },
+    { name: 'unsupported JPEG layout', bytes: H.jpeg([]), exclusions: [] },
+  ];
+  for (const fixture of cases) {
+    const included = [];
+    let offset = 0;
+    for (const range of fixture.exclusions) {
+      included.push(fixture.bytes.subarray(offset, range.start));
+      offset = range.start + range.length;
+    }
+    included.push(fixture.bytes.subarray(offset));
+    const hash = new Uint8Array(await subtle.digest('SHA-256', H.concat(included)));
+    const binding = await CV._internal.checkAssetBinding({ assertionBoxes: [{ label: 'c2pa.hash.data', value: { alg: 'sha256', hash, exclusions: fixture.exclusions } }] },
+      { signature: 'valid', assertions: { trustedLabels: ['c2pa.hash.data'] } }, { assetBytes: fixture.bytes });
+    assert.equal(binding.status, 'unchecked', fixture.name + ' must not pass even though its signed digest matches');
+  }
+});
+
+test('a binding may exclude adjacent complete credential chunks while covering pixels', async () => {
+  const { subtle } = require('node:crypto').webcrypto;
+  const credentials = H.concat([H.pngChunk('caBX', new Uint8Array([1])), H.pngChunk('caBX', new Uint8Array([2]))]);
+  const pixels = H.pngChunk('IDAT', new Uint8Array([1, 2, 3, 4]));
+  const hash = new Uint8Array(await subtle.digest('SHA-256', H.png([pixels])));
+  const binding = await CV._internal.checkAssetBinding({ assertionBoxes: [{ label: 'c2pa.hash.data', value: { alg: 'sha256', hash, exclusions: [{ start: 33, length: credentials.length }] } }] },
+    { signature: 'valid', assertions: { trustedLabels: ['c2pa.hash.data'] } }, { assetBytes: H.png([credentials, pixels]) });
+  assert.equal(binding.status, 'verified');
+});

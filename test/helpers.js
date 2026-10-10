@@ -228,7 +228,7 @@ async function makeKeyPair() {
  * A manifest with a genuine COSE_Sign1 over the claim, real assertion hashes
  * and a real certificate chain. `tamper` lets a test break exactly one thing.
  */
-async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null } = {}) {
+async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null, extraAssertions = [] } = {}) {
   const leafKeys = await makeKeyPair();
   const now = new Date();
   const nb = notBefore || new Date(now.getTime() - 86400000);
@@ -255,7 +255,7 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
   }
 
   // Assertions first, so the claim can record their real hashes.
-  const assertionValues = [['c2pa.actions.v2', { actions }]];
+  const assertionValues = [['c2pa.actions.v2', { actions }], ...extraAssertions];
   const assertionBoxes = assertionValues.map(([label, value]) => jumb(UUID.cbor, label, [cborBox(value)]));
   const hashes = [];
   for (let i = 0; i < assertionBoxes.length; i++) {
