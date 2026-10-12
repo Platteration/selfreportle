@@ -149,7 +149,7 @@
       case 'undisclosed-ai': return 'AI-generation markers were found but no disclosure statement. Verify the operator before relying on this content or doing business.';
       case 'disclosed-ai': return 'AI use is declared on the page or in metadata. Decide whether that is acceptable for your purpose.';
       case 'weak-ai': return 'Only heuristic or indirect signals. Treat as a prompt to look closer, not a verdict.';
-      case 'provenance': return 'Some content carries capture or human-creation credentials that verified and that bind to the file they arrived in. The signer is not checked against any trust list.';
+      case 'provenance': return 'Some content carries capture or human-creation credentials that verified, bind to the file they arrived in, chain to a signer on this build\'s trust list and decode to the picture on the page. Camera EXIF and XMP never count here: they can be copied or forged.';
       default: return 'No markers found. Many AI systems still emit nothing detectable, so this is not proof of human origin.';
     }
   }

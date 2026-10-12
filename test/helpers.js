@@ -266,7 +266,7 @@ async function makeSigner({ cn = 'Test Signer', org = 'Test Org', chain = 'leaf'
   return { certs, leafKeys };
 }
 
-async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null, dataHash = null, signer = null } = {}) {
+async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null, dataHash = null, signer = null, extraAssertions = [] } = {}) {
   const made = signer || await makeSigner({ cn, org, chain, notBefore, notAfter });
   const certs = made.certs;
   const leafKeys = made.leafKeys;
@@ -275,6 +275,8 @@ async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'T
    * hash, so it cannot be added or edited after signing. */
   const assertionValues = [['c2pa.actions.v2', { actions }]];
   if (dataHash) assertionValues.push(['c2pa.hash.data', { exclusions: dataHash.exclusions, name: 'jumbf manifest', alg: 'sha256', hash: dataHash.hash, pad: new Uint8Array(0) }]);
+  // Any other assertion a test needs signed into the claim, [label, value].
+  assertionValues.push(...extraAssertions);
   const assertionBoxes = assertionValues.map(([label, value]) => jumb(UUID.cbor, label, [cborBox(value)]));
   const hashes = [];
   for (let i = 0; i < assertionBoxes.length; i++) {

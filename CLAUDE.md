@@ -48,15 +48,19 @@ added it; a change that undoes one passes every test it did not add.
   following at all; anything unrecognised fails closed. The policy cannot resolve DNS,
   so it is the second line, not the first — the content script only hands over a URL
   the page's own loader already fetched. What one tab may spend is a budget charged
-  where the fetch is issued and where its bytes are read, refilled by the clock alone;
-  and the parsers carry their own ceilings (inflate size, XMP, the JUMBF scan's 25 ms)
-  rather than trusting a caller's cap, because the worker is shared by every tab.
+  where the fetch is issued and where its bytes are read (chunk by chunk, through
+  `lib/byte-budget.js`, which stops a body at its cap and refuses a tail longer than
+  asked), refilled by the clock alone; and the parsers carry their own ceilings (256 KB
+  of PNG text inflated or kept per image, XMP, the JUMBF scan's 25 ms) rather than
+  trusting a caller's cap, because the worker is shared by every tab.
 - **An exculpatory verdict has to be earned.** A valid COSE signature proves only that
   the claim was not altered since it was signed. The camera badge needs, separately:
   every assertion hashed against the claim; a chain anchored in `TRUST_ANCHORS`, which
   ships empty, so no manifest earns the badge until a trust list is chosen; a hard
   binding recomputed over the file's own bytes, with the excluded extent checked rather
-  than taken from the manifest; and `rendered` — the bytes the worker verified decode
+  than taken from the manifest (exactly the credential store, whole; one binding per
+  claim; and in a PNG whole `caBX` chunks of a file that walks cleanly to its final
+  `IEND`); and `rendered` — the bytes the worker verified decode
   to the picture the element is showing, compared pixel for pixel in the page.
   Everything that cannot answer answers no, and the saved report says what was not
   checked rather than implying it was.
@@ -106,8 +110,9 @@ Apache's `ErrorDocument` are stamped with), and the site's module list is read o
   second. `test/e2e/site.js` reads each such page beside a control with as many elements and
   fails when it costs over four times as much. (Nested `<blockquote>`s are slow in Chromium's
   own parser, opened as a tab or through DOMParser alike, which is not the checker's to fix.)
-- **Four modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
-  `fetch-policy.js` (the worker's fetches), `platform-labels.js` (needs layout) — and the
+- **Five modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
+  `fetch-policy.js` (the worker's fetches), `byte-budget.js` (streamed reads; the site
+  slices the picked file instead), `platform-labels.js` (needs layout) — and the
   website test fails when a new `lib/` module is neither loaded nor added to that list.
 
 ## Settings

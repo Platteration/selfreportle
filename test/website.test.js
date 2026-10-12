@@ -196,7 +196,7 @@ function repositoryFiles() {
   }
 }
 
-const EXCLUDED_MODULES = ['lib/settings.js', 'lib/history.js', 'lib/fetch-policy.js', 'lib/platform-labels.js'];
+const EXCLUDED_MODULES = ['lib/settings.js', 'lib/history.js', 'lib/fetch-policy.js', 'lib/byte-budget.js', 'lib/platform-labels.js'];
 
 test('the site is the checker, the lib/ modules it names, and the files every site has', () => {
   assert.deepEqual(site.siteFiles(), [

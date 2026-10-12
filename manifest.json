@@ -51,6 +51,7 @@
         "lib/platform-labels.js",
         "lib/legitimacy.js",
         "lib/attribution.js",
+        "lib/byte-budget.js",
         "content/overlay.js",
         "content/content.js"
       ],

@@ -265,7 +265,9 @@
       /* The headline is the page's own <title>, text there and markup here: a
        * title holding "</script><script>…" ended this element and ran in the
        * page the snippet was pasted into. Inside a <script> only "<" can do
-       * that (</script, <!--, <script), and JSON may spell it \u003c. */
+       * that (</script, <!--, <script); ">" and "&" are spelled as escapes
+       * too, and U+2028/2029, which older JavaScript parsers read as line
+       * ends. JSON may spell every one of them \uXXXX and still mean it. */
       code: JSON.stringify({
         '@context': 'https://schema.org',
         '@type': 'Article',
@@ -277,7 +279,7 @@
         digitalSourceType: aiText || aiImages
           ? 'http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia'
           : 'http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation',
-      }, null, 2).replace(/</g, '\\u003c').replace(/^/gm, '  ').replace(/^ {2}/, ''),
+      }, null, 2).replace(/[<>&\u2028\u2029]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).replace(/^/gm, '  ').replace(/^ {2}/, ''),
       wrap: '<script type="application/ld+json">\n%s\n</script>',
     });
 

@@ -11,12 +11,13 @@
  *   plain text                          → lib/text-analyzer
  *
  * Nothing is uploaded and nothing is fetched: the policy's connect-src is 'none', and the file
- * is read with the File API. Four lib/ modules are not loaded, each for a reason the page
+ * is read with the File API. Five lib/ modules are not loaded, each for a reason the page
  * cannot work around: settings.js and history.js keep their records in chrome.storage (this
  * page keeps nothing), fetch-policy.js governs the extension worker's cross-origin fetches
- * (this page fetches nothing), and platform-labels.js pairs a platform's "Made with AI" label
- * with the media in the same post by where each sits on screen, which a saved file parsed
- * without layout cannot answer.
+ * (this page fetches nothing), byte-budget.js bounds a stream whose other end chooses its
+ * length (this page slices the picked file to its cap, so there is no stream to bound), and
+ * platform-labels.js pairs a platform's "Made with AI" label with the media in the same post
+ * by where each sits on screen, which a saved file parsed without layout cannot answer.
  *
  * Everything the file says reaches the page as text: elements are built with createElement
  * and filled with textContent, never from a string of HTML. The one place a string becomes a

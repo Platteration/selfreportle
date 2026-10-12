@@ -303,7 +303,8 @@ test('message handlers derive the tab from the sender unless it is one of the ex
  */
 test('the publisher snippet cannot end the script element it is pasted into', () => {
   const pub = fs.readFileSync(path.join(__dirname, '..', 'publisher', 'publisher.js'), 'utf8');
-  assert.match(pub, /\}, null, 2\)\.replace\(\/<\/g, '\\\\u003c'\)/, 'every < in the JSON is spelled as an escape');
+  assert.match(pub, /\}, null, 2\)\.replace\(\/\[<>&\\u2028\\u2029\]\/g, \(ch\) => '\\\\u' \+ ch\.charCodeAt\(0\)\.toString\(16\)\.padStart\(4, '0'\)\)/,
+    'every <, and >, & and U+2028/2029 with it, in the JSON is spelled as an escape');
   assert.match(pub, /sn\.wrap\.replace\('%s', \(\) => sn\.code\)/, 'and the code goes in as it is, never as a replacement pattern');
 });
 
@@ -413,9 +414,13 @@ test('the worker meters what one tab may fetch', () => {
   assert.match(code, /const BUDGET_REQUESTS = \d+;/, 'a request ceiling per tab');
   assert.match(code, /const BUDGET_BYTES = [\d *]+;/, 'and a byte ceiling');
   assert.match(code, /if \(!chargeRequest\(tabId\)\)/, 'charged before the fetch is issued, not after');
-  // Three call sites, plus the definition: the streamed chunk, the last
-  // partial chunk at the cap, and the tail range request.
-  assert.equal((code.match(/(?<!function )chargeBytes\(tabId, /g) || []).length, 3, 'and charged for every byte read, head and tail');
+  // Two call sites, plus the definition: the head read and the tail range
+  // request, each charging every chunk as the bounded reader receives it —
+  // the one past the cap included. test/media-security.test.js checks the
+  // amounts charged.
+  assert.equal((code.match(/(?<!function )chargeBytes\(tabId, /g) || []).length, 2, 'and charged for every byte read, head and tail');
+  assert.match(code, /S\.byteBudget\.read\(res\.body, maxBytes, false, \(k\) => chargeBytes\(tabId, k\)\)/, 'the head, chunk by chunk');
+  assert.match(code, /S\.byteBudget\.read\(res\.body, n, true, \(k\) => chargeBytes\(tabId, k\)\)/, 'and the tail');
   // Spent budget is released by navigating or closing, the two places a page
   // stops being the same page — not by sending another message.
   assert.match(code, /function clearTab\(tabId\) \{[\s\S]*?budgets\.delete\(tabId\)/);

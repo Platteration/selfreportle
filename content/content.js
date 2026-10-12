@@ -711,10 +711,12 @@
     try {
       const res = isBlob ? await fetch(msg.url) : await fetch(msg.url, { mode: 'same-origin', cache: 'only-if-cached' });
       if (!res || !res.ok) return;
-      const buf = await res.arrayBuffer();
-      const cap = Math.min(buf.byteLength, settings.maxImageBytes);
-      msg.base64 = toBase64(new Uint8Array(buf, 0, cap));
-      msg.truncated = cap < buf.byteLength;
+      /* Read up to the cap and no further: a blob is whatever size the page
+       * made it, and reading it whole only to keep a prefix held all of it. */
+      const { bytes, truncated } = await S.byteBudget.read(res.body, settings.maxImageBytes);
+      const buf = bytes.buffer;          // exactly the bytes read: read() allocates them whole
+      msg.base64 = toBase64(bytes);
+      msg.truncated = truncated;
       msg.rendered = !msg.truncated && (isBlob ? namesOneBlob(el, msg.url) : await showsTheseBytes(el, msg.url, buf));
     } catch (e) { msg.base64 = null; }
   }

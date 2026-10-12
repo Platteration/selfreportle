@@ -20,6 +20,13 @@ development branch.
   come with it. The extension itself is unchanged.
 
 ### Changed
+- **PNG text is kept to 256 KB per image** (merged from #2; was 4 MB, and
+  1 MB out of any one compressed chunk). What is inflated and what is kept
+  share that budget, a caller may only lower it, and text past it is cut
+  before it is decoded, with the "too large to inspect" note. The rest of
+  the file is still read: a credential chunk after a large text chunk is
+  found. An `iTXt` chunk whose language tag or translated keyword is never
+  terminated is skipped rather than read from the wrong offset.
 - **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
   (one object) and `selfreportle.disabledHosts.v1` (its own item, so the
   browser's per-item quota bounds the host list alone), instead of one sync
@@ -44,6 +51,31 @@ development branch.
   sends where.
 
 ### Security
+- **Media is read only up to its cap, as it streams** (merged from #2). The
+  worker's head and tail reads and the content script's read of a page's own
+  bytes (a `blob:` URL, or the browser's cached copy) stop at the cap and
+  cancel the source, through the new `lib/byte-budget.js`; a `blob:` used to
+  be read whole before its prefix was kept, and a tail range read whole
+  before its last bytes were. A suffix range answered with more than was
+  asked for is refused rather than read. Every chunk received is charged to
+  the tab's byte budget as it arrives. Page bytes handed to the worker are
+  refused, before they are decoded, when they are longer than the cap.
+- **A partial answer is not taken for the whole file** (merged from #2). A
+  206 response counts as complete only when its `Content-Range` runs from
+  byte 0 to the end of exactly what was read; one with no such header, an
+  unknown length or another range leaves the hard binding not recomputed,
+  where before only a stated total larger than the bytes read did.
+- **The hard binding is held to the credential store, whole, and to one
+  binding per claim** (merged from #2, onto this branch's binding check). An
+  exclusion that leaves part of the store hashed, a claim carrying two hard
+  bindings, more than 512 exclusion ranges or a `c2pa.hash.data` version
+  other than the first two now leave the binding unchecked. In a PNG the
+  excluded ranges must also be whole `caBX` chunks of a file that walks
+  cleanly from `IHDR` to an `IEND` that ends it; one with bytes after
+  `IEND`, an incomplete last chunk or no image data is unchecked too.
+- **The publisher's JSON-LD snippet escapes `>`, `&`, U+2028 and U+2029** as
+  well as `<` (merged from #2), and a test now builds the snippet and parses
+  the title back out of the markup that would be pasted.
 - **One form control stopped the analysis.** A `<form>` answers a property
   lookup with its own control of that name before the property itself, and
   the page chooses the names: `<form><input name="attributes"></form>`

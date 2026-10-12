@@ -3,7 +3,7 @@
  * permissions the content script lacks), parses embedded provenance, stores
  * per-tab results for the popup and updates the toolbar badge.
  */
-importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/image-metadata.js', '../lib/history.js', '../lib/fetch-policy.js');
+importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/byte-budget.js', '../lib/image-metadata.js', '../lib/history.js', '../lib/fetch-policy.js');
 
 const S = self.SRL;
 const results = new Map();          // tabId → page result
@@ -229,7 +229,9 @@ async function analyzeOne(img, maxBytes, tailBytes, pageUrl, tabId) {
   const base = { id: img.id, url };
   if (img.base64) {
     try {
+      if (img.base64.length > Math.ceil(maxBytes / 3) * 4) throw new S.byteBudget.BudgetExceeded();
       const bytes = fromBase64(img.base64);
+      if (bytes.length > maxBytes) throw new S.byteBudget.BudgetExceeded();
       /* The page produced these itself. `rendered` says more than that: the
        * content script decoded them and matched them against the picture the
        * element is showing, which is the only basis on which a provenance
@@ -296,10 +298,11 @@ async function fetchTail(url, n, pageUrl, tabId) {
     if (res.type === 'opaqueredirect') return null;
     if (res.status !== 206) return null;
     if (!landedSomewhereAllowed(res, url, pageUrl)) return null;
-    const buf = await res.arrayBuffer();
-    chargeBytes(tabId, buf.byteLength);
-    return new Uint8Array(buf.byteLength > n ? buf.slice(buf.byteLength - n) : buf);
+    /* A suffix range of n bytes that answers with more is refused, not
+     * buffered: the read stops at the first chunk past n. */
+    return (await S.byteBudget.read(res.body, n, true, (k) => chargeBytes(tabId, k))).bytes;
   } catch (e) {
+    if (e && e.name === 'BudgetExceeded') throw e;
     return null;
   } finally {
     clearTimeout(timer);
@@ -362,33 +365,19 @@ async function fetchBytes(url, maxBytes, pageUrl, tabId) {
     if (!res.ok && res.status !== 206) throw new Error('HTTP ' + res.status);
     if (!landedSomewhereAllowed(res, url, pageUrl)) throw new Error('redirected to an address this page may not reach');
     const contentType = res.headers.get('content-type') || '';
-    const reader = res.body.getReader();
-    const chunks = [];
-    let total = 0;
-    let truncated = false;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (total + value.length > maxBytes) {
-        chunks.push(value.subarray(0, maxBytes - total));
-        chargeBytes(tabId, maxBytes - total);
-        total = maxBytes;
-        truncated = true;
-        try { await reader.cancel(); } catch (e) { /* ignore */ }
-        break;
-      }
-      chunks.push(value);
-      total += value.length;
-      chargeBytes(tabId, value.length);
-    }
+    const bounded = await S.byteBudget.read(res.body, maxBytes, false, (k) => chargeBytes(tabId, k));
+    const bytes = bounded.bytes;
+    const total = bytes.length;
+    let truncated = bounded.truncated;
+    /* A 206 is the whole file only when its Content-Range runs from byte 0 to
+     * the end of exactly what was read; anything else — no header, an unknown
+     * length, another range — leaves it a part, and the hard binding a digest
+     * over the whole file is then not recomputed over it. */
     const lenHeader = res.headers.get('content-range');
-    if (lenHeader) {
-      const m = /\/(\d+)$/.exec(lenHeader);
-      if (m && parseInt(m[1], 10) > total) truncated = true;
+    if (res.status === 206) {
+      const range = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(lenHeader || '');
+      if (!range || Number(range[1]) !== 0 || Number(range[2]) + 1 !== total || Number(range[3]) !== total) truncated = true;
     }
-    const bytes = new Uint8Array(total);
-    let o = 0;
-    for (const c of chunks) { bytes.set(c, o); o += c.length; }
     return { bytes, truncated, contentType };
   } finally {
     clearTimeout(timer);
