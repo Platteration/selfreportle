@@ -116,10 +116,24 @@ const FEED = `<!doctype html>
 </article>
 </body></html>`;
 
+/* The clip, and a blob: picture longer than the image cap (sd.png with 4.5 MB
+ * after its IEND, which a decoder never reads). The content script reads a
+ * blob itself, up to the cap: read whole, it is more than the worker will
+ * take, and the picture goes unread. Shown after the first analysis, and
+ * followed by a second change, for the reason given in PAGE's script. */
 const MEDIA = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Clip</title></head><body>
 <video src="clip.mp4" poster="sd.png" width="480" height="270" controls></video>
 <p>A short clip.</p>
+<figure><img id="big" alt="Still" width="200" height="150"><figcaption>Still</figcaption></figure>
+<div id="later"></div>
+<script>
+  fetch('sd.png').then((r) => r.arrayBuffer()).then((b) => {
+    const big = URL.createObjectURL(new Blob([b, new Uint8Array(4.5 * 1024 * 1024)], { type: 'image/png' }));
+    setTimeout(() => { document.getElementById('big').src = big; }, 1200);
+    setTimeout(() => { document.getElementById('later').appendChild(document.createElement('p')).textContent = 'Loaded.'; }, 2600);
+  });
+</script>
 </body></html>`;
 
 const SIGNED = `<!doctype html>

@@ -45,18 +45,75 @@ test('the real Node zlib fallback also enforces its output limit', async () => {
   } finally { globalThis.DecompressionStream = previous; }
 });
 
-test('the PNG metadata budget accumulates across compressed and plain text chunks', async () => {
+test('the PNG metadata budget accumulates across compressed and plain text chunks, keys included', async () => {
   const compressed = zlib.deflateSync(Buffer.alloc(24, 65));
   const bytes = H.png([
     H.pngChunk('zTXt', H.concat([H.str('First\0'), new Uint8Array([0]), compressed])),
     H.tEXt('Second', 'x'.repeat(24)),
   ]);
-  const r = await M.analyzeImageBytes(bytes, { maxMetadataBytes: 32 });
+  const r = await M.analyzeImageBytes(bytes, { maxMetadataBytes: 40 });
   assert.equal(r.metadata.pngText.First.length, 24);
-  // Cut at the 8 bytes the first chunk left, not kept whole and not the
-  // parse abandoned: 32 kept in all, which is the budget.
-  assert.equal(r.metadata.pngText.Second, 'x'.repeat(8));
+  // Cut at the 5 bytes the first chunk and the two keys left (40 - 5 - 24 - 6),
+  // not kept whole and not the parse abandoned: 40 kept in all, keys included,
+  // which is the budget.
+  assert.equal(r.metadata.pngText.Second, 'x'.repeat(5));
   assert.ok(r.signals.some((s) => /too large to inspect/.test(s.label)));
+});
+
+/* A key was kept free of the budget, in any number: a 4 MB PNG of empty tEXt
+ * chunks under distinct keys kept 198,429 of them (2.6 MB of report, cached
+ * in the worker every tab shares), with no note. Now a key is charged before
+ * it is kept, one longer than the 79 bytes the specification allows is not
+ * read, and no more than 100 text chunks are read in all. */
+test('PNG text keys are charged to the budget, and a file of many keys keeps a bounded few', async () => {
+  const many = H.png(Array.from({ length: 5000 }, (_, i) => H.tEXt('k' + i, '')));
+  const r = await M.analyzeImageBytes(many);
+  assert.equal(Object.keys(r.metadata.pngText).length, 100, 'the first 100 text chunks are read');
+  assert.deepEqual(Object.keys(r.metadata.pngText).slice(0, 3), ['k0', 'k1', 'k2'], 'in file order');
+  assert.ok(r.signals.some((s) => /too large to inspect/.test(s.label)), 'and the rest is said to be skipped');
+
+  const full = await M.analyzeImageBytes(H.png([H.tEXt('parameters', 'Steps: 20, ' + 'x'.repeat(256 * 1024)), H.tEXt('Software', '')]));
+  assert.equal(full.metadata.pngText.parameters.length, 300, 'a value that fills the budget is kept');
+  assert.ok(!Object.prototype.hasOwnProperty.call(full.metadata.pngText, 'Software'), 'and a key after it is not: there is no budget left for it');
+
+  const at = (n) => 'K'.repeat(n);
+  const long = await M.analyzeImageBytes(H.png([H.tEXt(at(80), 'too long'), H.tEXt(at(79), 'fits')]));
+  assert.deepEqual(long.metadata.pngText, { [at(79)]: 'fits' }, 'a key of 80 bytes is skipped, one of 79 is read');
+  assert.ok(long.signals.some((s) => /too large to inspect/.test(s.label)), 'and the skip is reported');
+  const plain = await M.analyzeImageBytes(H.png([H.tEXt(at(79), 'fits')]));
+  assert.ok(!plain.signals.some((s) => /too large to inspect/.test(s.label)), 'control: nothing skipped, nothing reported');
+});
+
+/* Each compressed chunk is an inflate, and one that fails at once costs the
+ * budget nothing: a 4 MB file of tiny zTXt chunks held the worker 21 s, one
+ * whose streams were garbage 55 s. Only the first 100 text chunks are read,
+ * so only they are inflated. */
+test('a PNG of thousands of compressed text chunks inflates no more than 100 of them', async () => {
+  const previous = globalThis.DecompressionStream;
+  let streams = 0;
+  globalThis.DecompressionStream = class extends previous { constructor(...a) { super(...a); streams++; } };
+  try {
+    const garbage = H.png(Array.from({ length: 3000 }, (_, i) => H.pngChunk('zTXt', H.concat([H.str('k' + i + '\0'), new Uint8Array([0, 0xff])]))));
+    const r = await M.analyzeImageBytes(garbage);
+    assert.equal(streams, 100, 'the first 100 are inflated, and no more');
+    assert.ok(r.signals.some((s) => /too large to inspect/.test(s.label)));
+    streams = 0;
+    const tiny = zlib.deflateSync(Buffer.from('a'));
+    const itxt = H.png(Array.from({ length: 3000 }, (_, i) => H.pngChunk('iTXt', H.concat([H.str('k' + i + '\0'), new Uint8Array([1, 0, 0, 0]), tiny]))));
+    const kept = await M.analyzeImageBytes(itxt);
+    assert.equal(streams, 100, 'iTXt the same');
+    assert.equal(Object.keys(kept.metadata.pngText).length, 100);
+  } finally { globalThis.DecompressionStream = previous; }
+});
+
+/* A caller may lower the budget, never raise it: asked for a megabyte, the
+ * parser still stops at 256 KB, key and value together. */
+test('a caller asking for more PNG text than 256 KB still gets 256 KB', async () => {
+  const cut = (n) => M.analyzeImageBytes(H.png([H.tEXt('parameters', 'x'.repeat(n))]), { maxMetadataBytes: 1024 * 1024 })
+    .then((r) => r.signals.some((s) => /too large to inspect/.test(s.label)));
+  const room = 256 * 1024 - 'parameters'.length;
+  assert.equal(await cut(room - 1), false, 'a byte short of 256 KB is read whole');
+  assert.equal(await cut(room + 1), true, 'a byte past it is cut, and the cut reported');
 });
 
 /* What does not fit is skipped, and the file is still read past it: a caBX
@@ -94,6 +151,37 @@ test('an oversized 206 tail is canceled and rejected rather than fully buffered'
   assert.equal(source.canceled, true);
   assert.equal(source.reads, 1);
   assert.equal(w.budgetsForTest.get(TAB).bytes, 12, 'what arrived before the refusal is charged to the tab');
+});
+
+/* The refusal is the tail's alone. A video whose head says what made it, cut
+ * at the cap with no index read, asks for its tail; a host that answers with
+ * one byte more than was asked lost the head's finished verdict to "Could not
+ * fetch image bytes", where one that answers exactly kept it. */
+test('a refused tail leaves the head\'s analysis standing', async () => {
+  const xmp = H.xmpPacket('<rdf:Description xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/" Iptc4xmpExt:DigitalSourceType="http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"/>');
+  const head = H.concat([H.isoBox('ftyp', H.concat([H.str('mp42'), new Uint8Array(4), H.str('mp42isom')])), H.isoBox('free', H.str(xmp)), H.isoBox('mdat', new Uint8Array(4096))]);
+  const cap = head.length;
+  const run = async (extra) => {
+    const asked = [];
+    const tail = body([new Uint8Array(cap + extra)]);
+    const w = worker(async (url, init) => {
+      asked.push(init.headers.Range);
+      if (asked.length === 1) return { ok: false, status: 206, type: 'basic', url, redirected: false, body: body([head]), headers: { get: (n) => (n === 'content-range' ? 'bytes 0-' + (cap - 1) + '/999999' : n === 'content-type' ? 'video/mp4' : null) } };
+      return { ok: false, status: 206, type: 'basic', url, redirected: false, body: tail, headers: { get: () => null } };
+    });
+    const r = await w.analyzeOneForTest({ id: 'v1', url: 'https://media.example/clip.mp4', kind: 'av' }, cap, cap, PAGE, TAB);
+    return { r, asked, tail, charged: w.budgetsForTest.get(TAB).bytes };
+  };
+  const exact = await run(0);
+  assert.deepEqual(exact.asked, ['bytes=0-' + (cap - 1), 'bytes=-' + cap], 'control: the head, then the tail, are asked for');
+  assert.ok(exact.r.signals.some((s) => s.id === 'xmp-dst'), 'control: a tail of the size asked keeps the head\'s verdict');
+  const over = await run(1);
+  assert.equal(over.asked.length, 2, 'the tail was asked for');
+  assert.equal(over.tail.canceled, true, 'and refused as it arrived');
+  assert.equal(over.charged, cap + cap + 1, 'what arrived of it is charged to the tab');
+  assert.ok(over.r.signals.some((s) => s.id === 'xmp-dst'), 'the head\'s verdict stands');
+  assert.ok(!over.r.signals.some((s) => s.id === 'unavailable'), 'not "could not fetch"');
+  assert.equal(over.r.tailRead, undefined, 'and nothing of the tail was used');
 });
 
 test('a correctly sized 206 tail is retained', async () => {

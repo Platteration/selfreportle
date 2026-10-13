@@ -17,16 +17,33 @@ development branch.
   denied, HSTS) are written for Netlify and Cloudflare Pages (`web/_headers`), Apache
   (`web/.htaccess`) and nginx (`deploy/nginx.conf`), and the policy in the pages' `<meta>`
   for a host that sends none. A not-found page, `robots.txt` and `.well-known/security.txt`
-  come with it. The extension itself is unchanged.
+  come with it. The extension itself is unchanged. Apache needs `mod_rewrite`,
+  `mod_headers` and `mod_mime` and `AllowOverride All` (or `FileInfo Indexes Options`): the
+  file's rules are not wrapped in `<IfModule>`, so a missing module is a 500 and a line in
+  the error log, where the wrapped rules served the whole folder, `.git/` included, with no
+  header and no log line. It sends HSTS on every response, as the other two do, where it
+  had sent it only when Apache terminated TLS itself. `deploy/nginx.conf` asks for HTTP/2
+  on its `listen` lines, which nginx 1.22 and 1.24 load, where `http2 on;` made the nginx
+  Ubuntu 24.04 ships refuse the whole file. `npm run test:e2e` now runs both files in the
+  nginx and Apache installed where it runs (`test/e2e/hosts.js`).
 
 ### Changed
 - **PNG text is kept to 256 KB per image** (merged from #2; was 4 MB, and
-  1 MB out of any one compressed chunk). What is inflated and what is kept
-  share that budget, a caller may only lower it, and text past it is cut
-  before it is decoded, with the "too large to inspect" note. The rest of
-  the file is still read: a credential chunk after a large text chunk is
-  found. An `iTXt` chunk whose language tag or translated keyword is never
-  terminated is skipped rather than read from the wrong offset.
+  1 MB out of any one compressed chunk). What is inflated and what is kept,
+  keys as well as values, share that budget, and a caller may only lower it.
+  Plain text past it is cut before it is decoded; compressed text that does
+  not fit is skipped whole. No more than 100 text chunks are read, and a
+  key longer than the 79 bytes the PNG specification allows is skipped.
+  Each of these carries the "too large to inspect" note. A key used to cost
+  nothing, in any number: a 4 MB PNG of empty text chunks under distinct
+  keys kept 198,429 of them, 2.6 MB of report that the worker caches, and
+  one of tiny compressed chunks held the worker 21 s (55 s when the streams
+  were garbage, since a stream that fails at once spends no budget); the
+  same files now keep 100 keys and take about 0.15 s, which is what any PNG
+  of that many chunks costs to walk. The rest of the file is still read: a
+  credential chunk after a large text chunk is found. An `iTXt` chunk whose
+  language tag or translated keyword is never terminated is skipped rather
+  than read from the wrong offset.
 - **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
   (one object) and `selfreportle.disabledHosts.v1` (its own item, so the
   browser's per-item quota bounds the host list alone), instead of one sync
@@ -57,7 +74,10 @@ development branch.
   cancel the source, through the new `lib/byte-budget.js`; a `blob:` used to
   be read whole before its prefix was kept, and a tail range read whole
   before its last bytes were. A suffix range answered with more than was
-  asked for is refused rather than read. Every chunk received is charged to
+  asked for is refused rather than read, and only the tail with it: the
+  verdict already read from the head of the file stands (as merged, the
+  refusal replaced it with "Could not fetch image bytes", which is not
+  cached, so every visit asked again). Every chunk received is charged to
   the tab's byte budget as it arrives. Page bytes handed to the worker are
   refused, before they are decoded, when they are longer than the cap.
 - **A partial answer is not taken for the whole file** (merged from #2). A
@@ -68,11 +88,13 @@ development branch.
 - **The hard binding is held to the credential store, whole, and to one
   binding per claim** (merged from #2, onto this branch's binding check). An
   exclusion that leaves part of the store hashed, a claim carrying two hard
-  bindings, more than 512 exclusion ranges or a `c2pa.hash.data` version
-  other than the first two now leave the binding unchecked. In a PNG the
+  bindings or more than 512 exclusion ranges now leave the binding
+  unchecked, and a `c2pa.hash.data` version other than the first two is
+  reported as unsupported ("not checkable by this reader"). In a PNG the
   excluded ranges must also be whole `caBX` chunks of a file that walks
-  cleanly from `IHDR` to an `IEND` that ends it; one with bytes after
-  `IEND`, an incomplete last chunk or no image data is unchecked too.
+  cleanly from one `IHDR` to an `IEND` that ends it; one with bytes after
+  `IEND`, an incomplete last chunk, no image data, a missing, short or
+  second `IHDR`, or a chunk type that is not four letters is unchecked too.
 - **The publisher's JSON-LD snippet escapes `>`, `&`, U+2028 and U+2029** as
   well as `<` (merged from #2), and a test now builds the snippet and parses
   the title back out of the markup that would be pasted.

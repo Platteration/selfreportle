@@ -42,7 +42,7 @@ The verifier is tested against real cryptography, not stubs: the test suite gene
 
 ### Video and audio
 
-Video and audio carry Content Credentials in the same JUMBF store as images, so they go through the same pipeline. The ISOBMFF reader walks the box tree rather than only the top level, so credentials nested in `moov/udta` are found, and MP4, M4A, MOV, AVIF and HEIC are all covered. Many MP4s put their index, and therefore their credentials, at the end of the file where a prefix fetch never reaches; when the head shows no index, the extension makes one suffix range request for the tail, and refuses an answer longer than it asked for rather than reading it. Poster frames are inspected as separate images. Byte budgets for media are separate from images and default to 512 KB per fetch.
+Video and audio carry Content Credentials in the same JUMBF store as images, so they go through the same pipeline. The ISOBMFF reader walks the box tree rather than only the top level, so credentials nested in `moov/udta` are found, and MP4, M4A, MOV, AVIF and HEIC are all covered. Many MP4s put their index, and therefore their credentials, at the end of the file where a prefix fetch never reaches; when the head shows no index, the extension makes one suffix range request for the tail, and refuses an answer longer than it asked for rather than reading it; what the head already said stands. Poster frames are inspected as separate images. Byte budgets for media are separate from images and default to 512 KB per fetch.
 
 
 ### Which AI, and what it tends to do
@@ -139,7 +139,7 @@ npm run build:site -- site --host=nginx                         # nginx: the sit
 npm run build:site -- site --host=pages --base=/selfreportle/   # GitHub Pages or any host that sends no headers
 ```
 
-The site is the page and what it loads (`web/`), the twelve `lib/` modules the page names, the favicon, `404.html`, `robots.txt`, `.well-known/security.txt` and `LICENSE`, and nothing else; `node scripts/build-site.js --list` prints it. `--base` is the path the site is served under, which the not-found page (answered at any depth) and Apache's `ErrorDocument` need. The Apache and nginx configs also answer 404 to every path outside that list, so a server pointed at the wrong folder still publishes only the site.
+The site is the page and what it loads (`web/`), the twelve `lib/` modules the page names, the favicon, `404.html`, `robots.txt`, `.well-known/security.txt` and `LICENSE`, and nothing else; `node scripts/build-site.js --list` prints it. `--base` is the path the site is served under, which the not-found page (answered at any depth) and Apache's `ErrorDocument` need. The Apache and nginx configs also answer 404 to every path outside that list, so a server pointed at the wrong folder still publishes only the site. Apache needs `mod_rewrite`, `mod_headers` and `mod_mime` (`a2enmod rewrite headers`: Debian and Ubuntu leave the first two off) and `AllowOverride All`, or at least `FileInfo Indexes Options`, on the folder; nothing in `.htaccess` is wrapped in `<IfModule>`, so without a module every request is a 500 with a line in the error log, never the folder served bare. `deploy/nginx.conf` asks for HTTP/2 on its `listen` lines, the form nginx 1.22 and 1.24 load (1.25.1 and later load it with a deprecation warning; `http2 on;` would refuse the whole file before 1.25.1).
 
 **Response headers.** The same set is in `web/_headers` (Netlify, Cloudflare Pages), `web/.htaccess` (Apache) and `deploy/nginx.conf` (nginx), and the policy and referrer policy are in the `<meta>` of `index.html` and `404.html` for a host that sends no headers; `test/website.test.js` holds every copy equal.
 
@@ -176,13 +176,14 @@ npm test                   # unit tests (Node 22, no dependencies)
 npm run lint               # syntax check of every script
 npm run test:conventions   # the conventions shared with the sibling repositories
 npm run check              # lint, unit tests and conventions: the gate before a push
-npm run test:e2e           # loads the extension into Chromium via Playwright and checks a fixture site, then the website
+npm run test:e2e           # loads the extension into Chromium via Playwright and checks a fixture site, then the website,
+                           # then the website's nginx and Apache configs in the servers installed here
 npm run test:all           # unit and end-to-end suites together
 npm run icons              # regenerate icons/*.png
 npm run build:site -- <folder> [--host=…] [--base=…]   # the website (see "The website")
 ```
 
-The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Its second half (`test/e2e/site.js`) builds the website, serves it at `/selfreportle/` with the headers `web/_headers` writes, and drives the checker under that policy: every kind of file, a hostile saved page, the not-found page two folders deep, a framing attempt from another origin, JavaScript off, a module that fails to load, and the same site from a host that sends no headers. It fails on any policy violation, page or console error, Permissions-Policy complaint, or request outside the site. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
+The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Its second half (`test/e2e/site.js`) builds the website, serves it at `/selfreportle/` with the headers `web/_headers` writes, and drives the checker under that policy: every kind of file, a hostile saved page, the not-found page two folders deep, a framing attempt from another origin, JavaScript off, a module that fails to load, and the same site from a host that sends no headers. It fails on any policy violation, page or console error, Permissions-Policy complaint, or request outside the site. Its third (`test/e2e/hosts.js`) loads `deploy/nginx.conf` into the nginx installed on the machine and the built site's `.htaccess` into its Apache, with the repository's files planted beside the site, and checks every path's status and headers there, Apache behind a TLS-terminating proxy and Apache without `mod_rewrite` and `mod_headers` included; where either server is missing it says so and passes, unless `CI` is set. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
 
 ## Project layout
 
@@ -217,7 +218,8 @@ web/                        the website: the checker page (index.html, app.js), 
 deploy/nginx.conf           the website's nginx server blocks
 scripts/build-site.js       writes the website into a folder, with the config the host reads
 test/                       node:test suites with synthetic JPEG/PNG/WebP/C2PA fixtures
-test/e2e/                   Playwright runs: the extension against a fixture site (run.js), and the website (site.js)
+test/e2e/                   Playwright runs: the extension against a fixture site (run.js), and the website (site.js);
+                            and the website's nginx and Apache configs in real servers (hosts.js)
 ```
 
 Every `lib/*.js` file is a plain script in the extension and a CommonJS module under Node, so the analysers are unit-tested with synthetic fixtures (`test/helpers.js` builds PNG chunks, TIFF/EXIF blocks, XMP packets, JUMBF boxes and CBOR claims from scratch).

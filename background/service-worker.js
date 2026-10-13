@@ -262,7 +262,11 @@ async function analyzeOne(img, maxBytes, tailBytes, pageUrl, tabId) {
     /* Many MP4s put their index (and so the Content Credentials) at the end
      * of the file, which a prefix fetch never sees. Ask for the tail once. */
     if (tailBytes && truncated && !(analysed.metadata && analysed.metadata.c2pa) && /^isobmff/.test(analysed.format) && S.imageMeta.isobmffNeedsTail(bytes)) {
-      const tail = chargeRequest(tabId) ? await fetchTail(url, tailBytes, pageUrl, tabId) : null;
+      /* A tail answered with more than was asked for is refused, and only the
+       * tail: the head's analysis stands, as it does when a host ignores the
+       * range. Let through, the refusal replaced a finished verdict with
+       * "could not fetch", which is not cached, so every visit asked again. */
+      const tail = chargeRequest(tabId) ? await fetchTail(url, tailBytes, pageUrl, tabId).catch((e) => { if (e && e.name === 'BudgetExceeded') return null; throw e; }) : null;
       if (tail) {
         const fromTail = await S.imageMeta.analyzeImageBytes(tail, { url, truncated: true });
         if (fromTail.metadata && fromTail.metadata.c2pa) {

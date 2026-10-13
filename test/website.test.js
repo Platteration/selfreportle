@@ -35,11 +35,12 @@ function netlifyHeaders() {
   return rules;
 }
 
-/** Every `Header always set` in web/.htaccess, as { Header: value }. */
+/** Every `Header always set` in web/.htaccess, as { Header: value }. A condition after the value
+ *  (`env=HTTPS` left HSTS off everything a TLS-terminating proxy forwarded) fails the count below. */
 function apacheHeaders() {
   const conf = read('web/.htaccess');
   const out = {};
-  for (const m of conf.matchAll(/^\s*Header\s+always\s+set\s+([A-Za-z-]+)\s+"([^"]*)"(?:\s+env=HTTPS)?\s*$/gm)) {
+  for (const m of conf.matchAll(/^Header always set ([A-Za-z-]+) "([^"]*)"$/gm)) {
     assert.ok(!Object.prototype.hasOwnProperty.call(out, m[1]), '.htaccess: ' + m[1] + ' is set once');
     out[m[1]] = m[2];
   }
@@ -249,6 +250,39 @@ test('Apache and nginx serve the site and refuse everything else in the reposito
   for (const line of ['server_tokens off;', 'autoindex off;', 'error_page 403 404 =404 /404.html;', 'return 301 https://$host$request_uri;', 'location / {']) {
     assert.ok(conf.includes(line), 'nginx.conf: ' + line);
   }
+});
+
+/* Apache reads .htaccess whole, and so does this: a line it does not know fails here. Each
+ * line is one of these forms, with nothing wrapped round it and nothing after a header's value.
+ * The rules sat in <IfModule> once, and Debian and Ubuntu ship mod_rewrite and mod_headers off:
+ * there the folder was served whole, .git/ included, with none of the headers and nothing in the
+ * log. test/e2e/hosts.js runs the file in a real Apache with and without the modules. */
+test('.htaccess wraps nothing in <IfModule> and holds only the lines this test reads', () => {
+  const lines = read('web/.htaccess').split('\n').filter((l) => l.trim() && !l.trimStart().startsWith('#'));
+  const KNOWN = [
+    /^Options -Indexes$/, /^ServerSignature Off$/, /^AddDefaultCharset utf-8$/, /^DirectoryIndex index\.html$/,
+    /^ErrorDocument 40[34] %BASE%404\.html$/, /^AddType [a-z]+\/[a-z]+ \.[a-z]+$/,
+    /^<Files "LICENSE">$/, /^ {2}ForceType text\/plain$/, /^<\/Files>$/,
+    /^RewriteEngine On$/, /^RewriteCond /, /^RewriteRule /, /^Header always set [A-Za-z-]+ "[^"]*"$/,
+  ];
+  assert.deepEqual(lines.filter((l) => !KNOWN.some((re) => re.test(l))), [], 'every line is one this test knows');
+  assert.deepEqual(lines.filter((l) => /<\/?IfModule/i.test(l)), [], 'no <IfModule>');
+  // the redirect's two conditions, then the redirect, then the allowlist the test above reads
+  assert.deepEqual(lines.filter((l) => /^Rewrite/.test(l)).map((l) => l.replace(/^(RewriteRule !\^).*$/, '$1…')), [
+    'RewriteEngine On',
+    'RewriteCond %{HTTPS} !=on',
+    'RewriteCond %{HTTP:X-Forwarded-Proto} !=https',
+    'RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]',
+    'RewriteRule !^…',
+  ]);
+});
+
+/* `http2 on;` is nginx 1.25.1 and later; 1.24, which Ubuntu 24.04 ships, refused the whole file
+ * over it. test/e2e/hosts.js loads the file into the nginx installed where it runs. */
+test('nginx.conf asks for HTTP/2 the way nginx 1.22 and 1.24 read it', () => {
+  const conf = read('deploy/nginx.conf').replace(/^\s*#.*$/gm, '');
+  assert.doesNotMatch(conf, /^\s*http2\b/m, 'no `http2` directive');
+  assert.deepEqual([...conf.matchAll(/^\s*listen\b.*$/gm)].map((m) => m[0].trim()), ['listen 80;', 'listen [::]:80;', 'listen 443 ssl http2;', 'listen [::]:443 ssl http2;']);
 });
 
 test('Netlify refuses its own configs, forced', () => {

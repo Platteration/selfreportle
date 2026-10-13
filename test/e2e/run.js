@@ -240,6 +240,21 @@ function rawGet(port, target, host) {
     assert.equal(clip.metadata.c2pa.claimGenerator, 'Sora');
     const poster = (mediaResult.images.items || []).find((i) => i.kind === 'poster');
     assert.ok(poster && poster.verdict === 'ai-generated', 'poster frame inspected separately');
+    /* A blob past the image cap is read up to the cap and inspected as a
+     * prefix; read whole, the worker refuses it and it is left out of the
+     * report. Waited for, since it is shown after the first analysis. */
+    let big = null;
+    for (let waited = 0; !big && waited <= 10000; waited += 500) {
+      const now = waited ? await sw.evaluate(async () => {
+        const t = (await chrome.tabs.query({})).find((x) => x.url && x.url.endsWith('/media.html'));
+        return (await chrome.storage.session.get('tab:' + t.id))['tab:' + t.id];
+      }) : mediaResult;
+      big = ((now && now.images.items) || []).find((i) => i.url.startsWith('blob:'));
+      if (!big) await media.waitForTimeout(500);
+    }
+    assert.ok(big, 'the long blob: picture was read up to the cap and reported');
+    assert.equal(big.verdict, 'ai-generated', 'its first 4 MB were read: ' + JSON.stringify(big.signals.map((s) => s.label)));
+    assert.ok(big.signals.some((s) => s.label === 'Only the first 4096 KB were inspected'), 'and said to be a prefix');
 
     // Cryptographic verification runs inside the extension, not just in tests.
     const creds = await ctx.newPage();

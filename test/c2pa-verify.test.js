@@ -774,9 +774,10 @@ async function bindPng(bytes, exclusions, store) {
 /*
  * Each of these digests matches, so nothing but the rule under test can stop
  * it. The layout cases exclude the whole credential chunk, as an honest
- * binding would, so only the PNG walk (trailing bytes, a cut-off IEND) or
- * the reach of the exclusion is left to refuse them; the control at the top
- * is the same file, whole, and verifies.
+ * binding would, so only the PNG walk (trailing bytes, a cut-off IEND, no
+ * image data, a header that is missing, short or repeated, a chunk type that
+ * is not four letters) or the reach of the exclusion is left to refuse them;
+ * each control is the same layout, clean, and verifies.
  */
 test('PNG bindings reject partial credentials, media/header exclusions and unvalidated layouts', async () => {
   const credentials = H.pngChunk('caBX', new Uint8Array([1, 2, 3]));
@@ -796,6 +797,25 @@ test('PNG bindings reject partial credentials, media/header exclusions and unval
     { name: 'incomplete PNG', bytes: png.slice(0, -1), exclusions: whole, store: chunk },
     { name: 'unsupported JPEG layout', bytes: H.jpeg([]), exclusions: [], store: [] },
   ];
+  /* The walk's other refusals, each a file that is clean but for the one
+   * thing under test, the credential chunk at the offset its exclusion and
+   * store name. */
+  const header = png.slice(0, 8), ihdr = png.slice(8, 33), end = H.pngChunk('IEND', new Uint8Array(0));
+  const laidOut = (name, before, after) => {
+    const start = header.length + before.reduce((n, c) => n + c.length, 0);
+    return { name, bytes: H.concat([header, ...before, credentials, ...after, end]), exclusions: [{ start, length: credentials.length }], store: [{ start, end: start + credentials.length }] };
+  };
+  const clean = laidOut('control', [ihdr], [pixels]);
+  assert.equal((await bindPng(clean.bytes, clean.exclusions, clean.store)).status, 'valid', 'control: built this way, a clean file verifies');
+  cases.push(
+    laidOut('no image data', [ihdr], []),
+    // thirteen bytes, as long as a header, so only its type gives it away
+    laidOut('no IHDR', [H.tEXt('Comment', 'hello')], [pixels]),
+    laidOut('a chunk before IHDR', [text, ihdr], [pixels]),
+    laidOut('a header of the wrong length', [H.pngChunk('IHDR', ihdr.slice(8, 20))], [pixels]),
+    laidOut('a second IHDR', [ihdr], [ihdr, pixels]),
+    laidOut('a chunk type that is not four letters', [ihdr], [H.pngChunk('ab1D', new Uint8Array([1])), pixels]),
+  );
   for (const fixture of cases) {
     const binding = await bindPng(fixture.bytes, fixture.exclusions, fixture.store);
     assert.equal(binding.status, 'unchecked', fixture.name + ' must not pass even though its signed digest matches');

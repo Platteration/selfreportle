@@ -15,7 +15,9 @@ more). See README.md for what it looks at and what it cannot tell.
   and that is all the linting there is by design; `npm run test:e2e` loads the unpacked
   extension into Chromium via Playwright against a fixture site it serves itself;
   `npm run check` is the gate before a push. `test:e2e` runs the extension's suite
-  (`test/e2e/run.js`) and then the website's (`test/e2e/site.js`).
+  (`test/e2e/run.js`), then the website's (`test/e2e/site.js`), then the website's host
+  configs in the nginx and Apache installed where it runs (`test/e2e/hosts.js`, which skips
+  where they are missing unless `CI` is set).
 - Two suites are guards, not examples: `test/redos.test.js` runs every regex literal in
   `lib/` and `web/` against hostile input at 2 KB and 16 KB and holds each to a flat budget,
   and again against near misses derived from the pattern itself (its own opening token,
@@ -51,8 +53,11 @@ added it; a change that undoes one passes every test it did not add.
   where the fetch is issued and where its bytes are read (chunk by chunk, through
   `lib/byte-budget.js`, which stops a body at its cap and refuses a tail longer than
   asked), refilled by the clock alone; and the parsers carry their own ceilings (256 KB
-  of PNG text inflated or kept per image, XMP, the JUMBF scan's 25 ms) rather than
-  trusting a caller's cap, because the worker is shared by every tab.
+  of PNG text inflated or kept per image, keys included, out of at most 100 text chunks
+  with keys of at most 79 bytes; XMP; the JUMBF scan's 25 ms) rather than trusting a
+  caller's cap, because the worker is shared by every tab. A key once went uncharged: a
+  4 MB PNG of empty text chunks kept 198,429 of them, and one of tiny compressed chunks
+  held the worker 21 s.
 - **An exculpatory verdict has to be earned.** A valid COSE signature proves only that
   the claim was not altered since it was signed. The camera badge needs, separately:
   every assertion hashed against the claim; a chain anchored in `TRUST_ANCHORS`, which
@@ -93,6 +98,15 @@ Apache's `ErrorDocument` are stamped with), and the site's module list is read o
   version against `manifest.json`. `test/e2e/site.js` serves the built site at a sub-path
   under the headers and fails on any violation, console error, page error or request outside
   the site; every source was measured there by removing it. Change one copy and change all five.
+- **The host configs are run, not only read.** `test/e2e/hosts.js` loads `deploy/nginx.conf`
+  into a real nginx and the built `.htaccess` into a real Apache, with checkout files planted
+  beside the site. Each was found doing something other than it said: `http2 on;` made nginx
+  1.24 (Ubuntu 24.04) refuse the file, so HTTP/2 is asked for on the `listen` lines; the
+  `.htaccess` rules sat in `<IfModule>`, so a stock Apache, with `mod_rewrite` and
+  `mod_headers` off, served `.git/` and every file with no header and logged nothing, and now
+  nothing is wrapped (a missing module is a 500 and a log line), which `test/website.test.js`
+  holds by reading the file whole; and HSTS under `env=HTTPS` was left off behind a
+  TLS-terminating proxy, so it is sent unconditionally, as `_headers` and nginx send it.
 - **Trusted Types are enforced**, and the one policy, `selfreportle-saved-page`, exists for
   `parseSavedPage` alone: the test allows exactly one line that turns a string into a
   document. Everything else is `createElement` and `textContent`.
