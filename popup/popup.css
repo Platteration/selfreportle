@@ -41,6 +41,7 @@ h3:first-child { margin-top: 0; }
 .sig .k { font-size: 11px; text-align: center; line-height: 18px; color: var(--muted); }
 .sig .l { font-weight: 600; }
 .sig .d { color: var(--muted); font-size: 12px; word-break: break-word; }
+.sig .note a { color: var(--info); }
 .item { padding: 7px 0; border-top: 1px solid var(--line); }
 .item .u { font-size: 11px; color: var(--muted); word-break: break-all; }
 .item .ex { font-style: italic; color: var(--muted); font-size: 12px; }

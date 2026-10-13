@@ -168,6 +168,7 @@
     const metaText = snapshot.metas.filter((m) => /generator|ai/i.test(m.name || m.property || '')).map((m) => (m.name || m.property) + '=' + m.content).join(' | ');
     const textHints = { disclosures: disclosures.filter((d) => d.scope === 'text' || d.scope === 'general'), metaText };
     text.attribution = S.attribution.attributeText(text, textHints);
+    text.attributions = S.attribution.attributeTextSystems(text, textHints);
     result = {
       url: location.href, hostname: location.hostname, title: document.title, at: Date.now(),
       site, text, trader, disclosures, textHints,
@@ -305,14 +306,22 @@
       if (r.verdict === 'no-signal') continue;
       verdicts.push(r.verdict);
       const key = 't' + (++textCounter);
-      const blockAttr = S.attribution.attributeText({ verdict: r.verdict, disclosures: r.disclosures, page: { signals: r.signals } });
+      const blockEvidence = { verdict: r.verdict, disclosures: r.disclosures, page: { signals: r.signals } };
+      const blockSystems = S.attribution.attributeTextSystems(blockEvidence);
+      const blockAttr = blockSystems[0] || S.attribution.attributeText(blockEvidence);
       const details = r.signals.map((s) => ({ label: s.label, detail: s.detail }));
       if (blockAttr) {
         details.unshift({ label: 'Likely tool: ' + blockAttr.name, detail: S.attribution.CONFIDENCE_LABEL[blockAttr.confidence] + (blockAttr.evidence ? ' · ' + blockAttr.evidence : '') });
         for (const k of S.attribution.skewsFor(blockAttr, 'text').slice(0, 3)) details.push({ label: 'Skew · ' + k.area, detail: k.note });
       }
       S.overlay.upsertMarker({ key, el: b.el, kind: 'text', verdict: r.verdict, details, raw: b.text.slice(0, 4000) });
-      flagged.push({ verdict: r.verdict, score: r.score, words: r.words, excerpt: b.text.replace(/\s+/g, ' ').trim().slice(0, 160), signals: r.signals.slice(0, 6).map(({ id, kind, label, detail, weight }) => ({ id, kind, label, detail, weight })) });
+      flagged.push({
+        verdict: r.verdict, score: r.score, words: r.words,
+        attribution: blockAttr ? stripSkews(blockAttr) : null,
+        attributions: blockSystems.map(stripSkews),
+        excerpt: b.text.replace(/\s+/g, ' ').trim().slice(0, 160),
+        signals: r.signals.slice(0, 6).map(({ id, kind, label, detail, weight, toolId, sourceIds, sourceUrls, patternIds, patternCount }) => ({ id, kind, label, detail, weight, toolId, sourceIds, sourceUrls, patternIds, patternCount })),
+      });
     }
     let page = null;
     if (!onlyNew) {
@@ -515,7 +524,21 @@
       map.set(key, cur);
     };
     add(result.site && result.site.attribution, 'site');
-    add(result.text && result.text.attribution, 'text');
+    const textSystems = new Map();
+    const rank = { confirmed: 3, declared: 2, inferred: 1, unknown: 0 };
+    const includeText = (attr) => {
+      if (!attr) return;
+      const key = attr.id || 'unknown-text';
+      const previous = textSystems.get(key);
+      if (!previous || rank[attr.confidence] > rank[previous.confidence]) textSystems.set(key, attr);
+    };
+    includeText(result.text && result.text.attribution);
+    for (const attr of (result.text && result.text.attributions) || []) includeText(attr);
+    for (const block of (result.text && result.text.flagged) || []) {
+      includeText(block.attribution);
+      for (const attr of block.attributions || []) includeText(attr);
+    }
+    for (const attr of textSystems.values()) add(attr, 'text');
     for (const st of imageState.values()) add(st.attribution, 'image');
     return [...map.values()];
   }
@@ -552,6 +575,7 @@
         const t = analyzeTextBlocks(true);
         if (result) {
           t.attribution = S.attribution.attributeText(t, result.textHints);
+          t.attributions = S.attribution.attributeTextSystems(t, result.textHints);
           result.text = t;
           refreshSummary();
         }

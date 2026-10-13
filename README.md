@@ -49,6 +49,16 @@ For every layer the extension also names the tool the evidence points to, with t
 
 Each identified vendor comes with a short list of documented **skews**: sycophancy, measured political lean, content rules of the vendor's jurisdiction (for example PRC-aligned refusals in DeepSeek and Qwen), representation defaults of image generators, commercial grounding, provenance and litigation history, and the underlying model vendor behind site builders such as Lovable, Bolt, v0 and Replit Agent. Every note carries its basis and the catalogue carries a review date (`lib/attribution.js`, `REVIEWED`). These notes describe typical default behaviour reported publicly, not the specific page, and models change between versions.
 
+### Research and model coverage
+
+The detector includes a local, cited research catalogue reviewed for the October 2021–October 2026 publication window. The inspected studies cover 2023–2025: biomedical excess vocabulary, detector bias against non-native English writers, the M4 and RAID benchmarks, statistical watermarking, and DetectGPT. The Text report links relevant findings to their inspected sources. This is a heuristic reading aid; it does not run those papers' trained classifiers or report a measured probability of AI authorship. See [the research notes](docs/detection-research.md) for the scope and limitations of each source.
+
+Sixteen researched vocabulary families add support alongside the existing idiom and rhythm rules. Repeated instances of one word do not count as independent clues. A small vocabulary cluster, ordinary Markdown, polite closings, or punctuation alone stays below the text-flag threshold. A large, diverse cluster can produce a weak flag, and all style signals share a cap below the strongest verdict. Vocabulary and typography leave the model **unidentified**; the detector no longer guesses OpenAI from words such as “delve” or from dash usage.
+
+Explicit disclosures recognize more model families and version names across all eight supported disclosure languages, including Gemma/CodeGemma, Phi, Cohere Command/Aya, Jamba, Granite, OLMo, Kimi, MiniMax, GLM, InternLM, Yi, Baichuan, Qwen, Llama and Mistral variants. Older families include EleutherAI GPT-Neo/GPT-J/GPT-NeoX/Pythia, BigScience BLOOM and MosaicML MPT; Falcon-H1 covers the verified 2025 Falcon release. Media identifiers include Hunyuan, Wan, LTX-Video, Bark, AudioCraft/MusicGen/AudioGen and ElevenLabs. Generic mentions of these products in captions do not by themselves mark an image as generated. ComfyUI identifies the interface; a named checkpoint is needed to distinguish the model it ran. The Tools report can list multiple credited models within one passage.
+
+Documented Llama, Gemma, Harmony, MiniMax and Kimi output delimiters can identify a compatible **format family** when the required markers occur together. Shared ChatML, assistant role tags and `<think>` delimiters stay weak and identify no vendor. A copied template or a human explanation can contain the same markers. The complete names, format rules and primary documentation links live in `lib/model-catalog.js`; no page text is uploaded to run this detection.
+
 ### Platform labels, where metadata dies
 
 Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, Pinterest and X strip embedded metadata on upload and add their own marker instead. The extension reads those markers ("Made with AI", "AI info", "Altered or synthetic content", "Creator labeled as AI-generated", "AI modified", "Made with Grok"), attributes each to the media in the same post, and treats it as a disclosure by the platform rather than as embedded provenance. Matching is by visible text and accessible name, not by CSS class, because platform class names rotate constantly. Informational markers such as "AI info" are surfaced without changing the verdict.
@@ -125,12 +135,13 @@ npm test          # unit tests (Node ≥ 18, no dependencies)
 npm run lint      # syntax check of every script
 npm run e2e       # loads the extension into Chromium via Playwright and checks a fixture site
 node test/e2e/text-display.js # text rendering + settings component checks in Chromium
+node test/e2e/detection-research.js # detector, source-linked reports + popup component checks
 npm run icons     # regenerate icons/*.png
 ```
 
 The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Both suites run in GitHub Actions (`.github/workflows/test.yml`).
 
-The text-display component checks also run as part of `npm run e2e`. They can run separately in a browser that cannot install extensions; they exercise the actual display code and settings UI with a simulated storage bridge. The full end-to-end suite separately checks real extension storage and content-script integration.
+Both component checks also run as part of `npm run e2e`. They can run separately in a browser that cannot install extensions; they exercise the actual detector, display code and report UI with a simulated storage/messaging bridge. The full end-to-end suite separately checks real extension storage and content-script integration.
 
 Layout:
 

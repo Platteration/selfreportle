@@ -41,6 +41,8 @@
         "file:///*"
       ],
       "js": [
+        "lib/model-catalog.js",
+        "lib/research.js",
         "lib/lexicons.js",
         "lib/signals.js",
         "lib/settings.js",

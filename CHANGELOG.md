@@ -6,6 +6,11 @@ development branch.
 ## Unreleased
 
 ### Added
+- **Source-linked detection research and wider model coverage.** A local
+  catalogue of six published studies, 16 researched vocabulary families,
+  additional model/version names and documented conversation-format markers.
+  Text findings link to their sources, and Tools can list multiple models
+  credited within one passage.
 - **Text appearance choices.** Optional highlighting, progressively mechanical
   fonts, or both on flagged passages, with a live settings preview. Signal
   strength and self-disclosures stay distinct; markers-only remains the default.
@@ -46,9 +51,17 @@ development branch.
   button, and a keyboard shortcut for the badges.
 
 ### Changed
+- Vocabulary, punctuation, generic Markdown and polite closings share a
+  heuristic budget; a single word or repeated word cannot flag a passage.
+  Style alone no longer guesses an OpenAI model. Direct negated credits are
+  filtered in all eight disclosure languages and in code comments. Ambiguous
+  human names are excluded from AI disclosures. ComfyUI names
+  the interface, while named model checkpoints take priority.
 - "Created with the help of AI" no longer counts as full generation: an
   overlapping generation match is suppressed in favour of the assistance
   clause. Separate clauses still both count.
+- Three-item list detection uses bounded scanning to keep long hyphenated
+  text responsive while preserving the previous list-counting behaviour.
 - Images carrying a platform label are reported even when they show no other
   signal, so an informational marker is visible without inflating the verdict.
 
@@ -77,6 +90,9 @@ development branch.
   the hashed range wrongly included the inner box header.
 
 ### Fixed
+- French declarations beginning with accented “écrit” or “édité” now use
+  Unicode word boundaries; previously those existing patterns missed credits
+  and human-authorship declarations.
 - **The tool accused ordinary pages.** An AI-disclosure meta tag holding any
   value other than a literal "false"/"no"/"none" was read as declaring AI
   content — including an empty one, and including `content="no AI was used"`.

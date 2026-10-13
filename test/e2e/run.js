@@ -63,6 +63,7 @@ function loadPlaywright() {
   });
   try {
     await require('./text-display.js').run(ctx);
+    await require('./detection-research.js').run(ctx);
     let sw = ctx.serviceWorkers()[0];
     if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 15000 });
     const page = await ctx.newPage();
