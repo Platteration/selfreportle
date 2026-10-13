@@ -79,6 +79,7 @@ With `Remember what was found per domain` on, the extension keeps counters per h
 ### Display and accessibility
 
 * **Three display moods**, chosen in settings. *Quiet* keeps badges invisible until the cursor nears the item and lets the pill shrink to a dot. *Reader* is the default. *Forensic* widens the panels, sets evidence in monospace and expands hidden-character views.
+* **Optional text emphasis.** In Settings → Text → Text appearance, choose *Markers only* (the default), *Highlight*, *Robotic font* or *Font + highlight*. Weak, likely and strong AI indicators progress from a plain sans-serif face to monospace and then wider spacing; highlighting uses a stronger tint for stronger signals. These are signal levels, not probability estimates. AI-assistance and generation disclosures have their own amber highlights and remain labelled as self-reports. A live preview shows every level before saving. Turning off text markers, hiding the overlay or pausing a site removes the emphasis. No words are rewritten or wrapped; code, editing fields and blocks containing them keep their original fonts, and nested blocks are styled only from their own findings. Font changes can reflow a paragraph.
 * **Colour-blind-safe palette** derived from the Okabe–Ito set, darkened so white badge text clears WCAG AA on every fill. Colour never carries meaning alone: each verdict has its own glyph. Vermillion ◆ is AI-generated or a strong indicator, purple ◈ is AI-edited or likely AI, orange ✎ is disclosed as AI, gold ? is a weak signal, green ● is camera-capture provenance and ✋ a declared human origin, blue ▦ is algorithmic media or a conventional builder, slate ○ is no signal and ⊘ could not be inspected.
 * **Dark theme** for the in-page panel and popovers, following the reader's system setting.
 * **Toolbar icon changes state**, not just its count: the lens pupil takes the verdict colour, and resets to neutral on navigation.
@@ -123,10 +124,13 @@ Requires Chrome/Chromium 116 or newer.
 npm test          # unit tests (Node ≥ 18, no dependencies)
 npm run lint      # syntax check of every script
 npm run e2e       # loads the extension into Chromium via Playwright and checks a fixture site
+node test/e2e/text-display.js # text rendering + settings component checks in Chromium
 npm run icons     # regenerate icons/*.png
 ```
 
 The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. Both suites run in GitHub Actions (`.github/workflows/test.yml`).
+
+The text-display component checks also run as part of `npm run e2e`. They can run separately in a browser that cannot install extensions; they exercise the actual display code and settings UI with a simulated storage bridge. The full end-to-end suite separately checks real extension storage and content-script integration.
 
 Layout:
 

@@ -1,5 +1,5 @@
-/* Selfreportle — page-level marks for text blocks. Only attribute selectors,
- * no layout changes (box-shadow does not affect flow). */
+/* Selfreportle — page-level marks. Font emphasis is opt-in and can reflow
+ * text; CSS highlights colour only the analysed text without wrapping it. */
 [data-srl-text] { box-shadow: -4px 0 0 0 var(--srl-mark, #7a7f87) !important; }
 [data-srl-text="ai"] { --srl-mark: #d64545; }
 [data-srl-text="likely-ai"] { --srl-mark: #e07b1a; }
@@ -7,3 +7,23 @@
 [data-srl-text="ai-disclosed"], [data-srl-text="ai-assisted-disclosed"] { --srl-mark: #c99a00; }
 [data-srl-text="human-disclosed"] { --srl-mark: #2f9e5f; }
 [data-srl-hidden="1"] { box-shadow: none !important; }
+
+/* Three steps toward a mechanical face. Keep case, size and weight intact. */
+[data-srl-font="low"] { font-family: Arial, Helvetica, sans-serif !important; }
+[data-srl-font="medium"] { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace !important; }
+[data-srl-font="high"] { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace !important; letter-spacing: .06em !important; }
+
+/* Explicit foreground/background pairs keep highlighted runs readable even
+ * on pages with their own theme. Disclosures remain amber, not a confidence. */
+::highlight(srl-text-possible-ai) { color: #342b12; background-color: #fff3bf; }
+::highlight(srl-text-likely-ai) { color: #401a38; background-color: #efd3e5; }
+::highlight(srl-text-ai) { color: #501b0b; background-color: #ffc9b6; }
+::highlight(srl-text-ai-assisted-disclosed) { color: #402b0f; background-color: #ffe8b3; }
+::highlight(srl-text-ai-disclosed) { color: #402b0f; background-color: #ffd38a; }
+@media (prefers-color-scheme: dark) {
+  ::highlight(srl-text-possible-ai) { color: #fff3bf; background-color: #4a401c; }
+  ::highlight(srl-text-likely-ai) { color: #ffe5f4; background-color: #58304d; }
+  ::highlight(srl-text-ai) { color: #ffe9df; background-color: #702b16; }
+  ::highlight(srl-text-ai-assisted-disclosed) { color: #ffe8b3; background-color: #513913; }
+  ::highlight(srl-text-ai-disclosed) { color: #ffe8b3; background-color: #654213; }
+}

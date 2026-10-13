@@ -184,7 +184,10 @@
       layer.appendChild(node);
       existing = { ...m, node };
       markers.set(m.key, existing);
-    } else Object.assign(existing, m);
+    } else {
+      if (existing.kind === 'text' && existing.el !== m.el) clearTextStyle(existing);
+      Object.assign(existing, m);
+    }
     const node = existing.node;
     node.style.setProperty('--c', info.color);
     node.innerHTML = '';
@@ -193,17 +196,26 @@
     node.appendChild(document.createTextNode(m.short || info.short));
     node.setAttribute('aria-label', (m.kind === 'image' ? 'Image: ' : 'Text: ') + info.label + '. Click for details.');
     node.title = info.label;
-    if (m.kind === 'text') {
-      m.el.setAttribute('data-srl-text', m.verdict);
-    }
+    if (m.kind === 'text') applyTextStyle(existing);
     schedule();
+  }
+
+  function clearTextStyle(m) {
+    m.el.removeAttribute('data-srl-text');
+    S.textDisplay.clear(m.el);
+  }
+
+  function applyTextStyle(m) {
+    if (!visible || !settings.showTextMarkers) { clearTextStyle(m); return; }
+    m.el.setAttribute('data-srl-text', m.verdict);
+    S.textDisplay.apply(m.el, m.verdict, settings.textStyle || 'markers');
   }
 
   function removeMarker(key) {
     const m = markers.get(key);
     if (!m) return;
     if (m.node) m.node.remove();
-    if (m.kind === 'text') m.el.removeAttribute('data-srl-text');
+    if (m.kind === 'text') clearTextStyle(m);
     markers.delete(key);
   }
 
@@ -412,7 +424,7 @@
     layer.hidden = !v;
     pill.hidden = !v || !settings.showPill;
     if (!v) { panel.hidden = true; pop.hidden = true; }
-    for (const m of markers.values()) if (m.kind === 'text') { if (v) m.el.setAttribute('data-srl-text', m.verdict); else m.el.removeAttribute('data-srl-text'); }
+    for (const m of markers.values()) if (m.kind === 'text') applyTextStyle(m);
     if (v) schedule();
   }
 
@@ -440,7 +452,9 @@
     pill.hidden = !visible || !settings.showPill;
     for (const m of [...markers.values()]) {
       if ((m.kind === 'image' && !settings.showImageBadges) || (m.kind === 'text' && !settings.showTextMarkers)) removeMarker(m.key);
+      else if (m.kind === 'text') applyTextStyle(m);
     }
+    schedule();
   }
 
   function togglePanel() { if (panel) panel.hidden = !panel.hidden; }

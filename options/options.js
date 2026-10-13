@@ -13,6 +13,18 @@
       else if (el.type === 'checkbox') el.checked = !!s[el.name];
       else if (el.name in s) el.value = s[el.name];
     }
+    previewText();
+  }
+
+  function previewText() {
+    const enabled = form.elements.showTextMarkers.checked;
+    form.elements.textStyle.disabled = !enabled;
+    for (const sample of document.querySelectorAll('[data-preview-verdict]')) {
+      const verdict = sample.getAttribute('data-preview-verdict');
+      if (enabled) sample.setAttribute('data-srl-text', verdict);
+      else sample.removeAttribute('data-srl-text');
+      globalThis.SRL.textDisplay.apply(sample, verdict, enabled ? form.elements.textStyle.value : 'markers');
+    }
   }
 
   function read() {
@@ -32,6 +44,8 @@
   function flash(msg) { status.textContent = msg; setTimeout(() => { status.textContent = ''; }, 2000); }
 
   fill(await S.load());
+  form.elements.textStyle.addEventListener('change', previewText);
+  form.elements.showTextMarkers.addEventListener('change', previewText);
   form.addEventListener('submit', async (e) => { e.preventDefault(); fill(await S.save(read())); flash('Saved'); });
   document.getElementById('reset').addEventListener('click', async () => { await chrome.storage.sync.clear(); fill(await S.load()); flash('Defaults restored'); });
   document.getElementById('clearHistory').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-history' }); flash('Domain memory cleared'); });

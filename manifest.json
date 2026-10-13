@@ -44,6 +44,7 @@
         "lib/lexicons.js",
         "lib/signals.js",
         "lib/settings.js",
+        "lib/text-display.js",
         "lib/verdicts.js",
         "lib/text-analyzer.js",
         "lib/site-analyzer.js",

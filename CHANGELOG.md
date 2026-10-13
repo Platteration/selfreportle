@@ -6,6 +6,9 @@ development branch.
 ## Unreleased
 
 ### Added
+- **Text appearance choices.** Optional highlighting, progressively mechanical
+  fonts, or both on flagged passages, with a live settings preview. Signal
+  strength and self-disclosures stay distinct; markers-only remains the default.
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
   are verified with WebCrypto against the embedded leaf certificate
   (ES256/384/512, PS256/384/512, RS256/384/512, Ed25519), every assertion is
