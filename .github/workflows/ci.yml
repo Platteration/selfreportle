@@ -24,7 +24,11 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # A named release, not ubuntu-latest: that label becomes Ubuntu 26.04 from 2026-10-19, and
+    # Playwright 1.56.1 has no Chromium build for 26.04, so `playwright install` below would fail
+    # there with nothing in the repository changed. test/ci.test.js holds this job to a named
+    # release, and test/e2e/runner.js asks the pinned Playwright whether it has a build for it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

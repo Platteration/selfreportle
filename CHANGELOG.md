@@ -49,6 +49,10 @@ development branch.
   nginx and Apache installed where it runs (`test/e2e/hosts.js`).
 
 ### Changed
+- **CI's check job runs on `ubuntu-24.04`**, not `ubuntu-latest`, which becomes Ubuntu 26.04 from
+  2026-10-19, where the pinned Playwright 1.56.1 has no Chromium build and its install fails.
+  `test/ci.test.js` holds the job to a named release, and `test/e2e/runner.js`, the first step of
+  `npm run test:e2e`, asks the pinned Playwright's own CLI whether it has a build for it.
 - **PNG text is kept to 256 KB per image** (merged from #2; was 4 MB, and
   1 MB out of any one compressed chunk). What is inflated and what is kept,
   keys as well as values, share that budget, and a caller may only lower it.
@@ -188,6 +192,30 @@ development branch.
   historical unbounded form of it is still caught (5 ms → 330 ms).
 
 ### Fixed
+- **The website could take a second payment for "Support this app".** The kit copy makes a new
+  payable Checkout Session for every press of Buy until Stripe's webhook records the purchase,
+  and the page drew Buy again during the fifteen-second poll after Checkout, and under "Payment
+  received … reload to check" when the poll gave up. Now, for a signed-in visitor back from
+  Checkout, the product reads "Payment received — processing" where Buy was until `api/me`
+  reports the purchase: for the life of the page, and across a reload within ten minutes through
+  one record in the tab's `sessionStorage` (`selfreportle.purchasePending.v1`, the page's only
+  stored value), which goes once the purchase is reported or the visitor signs out or deletes the
+  account. A 409 `payment_pending` from Buy (what the canonical kit answers from b575aee on) is
+  drawn the same way. Two tabs can still each open a Checkout until the kit refuses a second one
+  itself.
+- **`?purchase=success` said "Payment received" to anyone.** Opened by someone not signed in,
+  the address polled `api/me` six times and then claimed a payment; it now only leaves the
+  address, and the page asks nothing more. The thank-you is "Thank you for supporting
+  Selfreportle." (was "… Support this app is unlocked.", for a product that unlocks nothing).
+- **nginx with the API not running sent its own 502 page with HSTS alone**, and the browser
+  logged the page's failed `api/config` on every load. The `/api/` location now hands nginx's 502, 503 and 504 to `@api-off`, which
+  serves the folder's `api/config` ("nothing on") and the not-found page with every header of the
+  site; README says a server that never runs the API can delete the location.
+- **What the site says it shares and keeps.** The privacy line and README now say Stripe is told
+  the account id with a payment; README now says Delete account leaves the hour's count of Buy
+  presses, which names the account id for up to two hours, that the page asks `api/me` on every
+  load where sign-in is offered, and that the kit's flags leave the address on every host.
+  `test/api.test.mjs` holds the kit to the first two.
 - **The publisher self-check showed nothing.** Since the message handlers
   stopped taking a caller's tab id on trust, a sender that had a tab was
   answered with that tab, on the belief that the extension's own pages have

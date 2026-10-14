@@ -513,6 +513,9 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     const person = { sub: '1001', email: 'ada@example.com' };
     const answered = [];
     const webhooks = [];
+    // Stripe's signed event waits until the page has been seen without Buy (released below).
+    let releaseWebhook;
+    const webhookGate = new Promise((resolve) => { releaseWebhook = resolve; });
     const cdp = await apiContext.newCDPSession(ap.page);
     cdp.on('Fetch.requestPaused', async (e) => {
       const url = e.request.url;
@@ -525,10 +528,8 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
           // Paid; Stripe's signed event arrives after the visitor is back, as it can, so what
           // draws the purchase is the page asking api/me again.
           const delivery = F.signedDelivery(fakes.paid(url));
-          webhooks.push(new Promise((resolve) => setTimeout(() => {
-            fetch(APP_URL + 'api/webhooks/stripe', { method: 'POST', headers: { 'stripe-signature': delivery.signature, 'content-type': 'application/json' }, body: delivery.body })
-              .then((res) => resolve(res.status), (err) => resolve(String(err)));
-          }, 1500)));
+          webhooks.push(webhookGate.then(() => fetch(APP_URL + 'api/webhooks/stripe', { method: 'POST', headers: { 'stripe-signature': delivery.signature, 'content-type': 'application/json' }, body: delivery.body }))
+            .then((res) => res.status, (err) => String(err)));
         }
       } catch (err) {
         answered.push('refused: ' + err.message);
@@ -566,13 +567,22 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     check(/AI-generated/.test(r.banner) && withApi.seen.requests.length === beforePick, 'signed in, a picked file is read in the page and nothing is sent (' + withApi.seen.requests.slice(beforePick).join(', ') + ')');
 
     await navigate(() => ap.page.click('#supportBuy'));
-    const thanked = await ap.page.waitForFunction(() => document.getElementById('accountNote').textContent === 'Thank you — Support this app is unlocked.', null, { timeout: 25000 }).then(() => true, () => false);
+    // Back from Checkout before Stripe's webhook: the kit would sell a second Checkout Session
+    // until it lands, so the page offers no Buy, and remembers that for the tab.
+    const processing = await ap.page.waitForFunction(() => /Payment received — processing/.test(document.getElementById('accountBody').innerText), null, { timeout: 10000 }).then(() => true, () => false);
+    view = await accountView(ap.page);
+    const pending = await ap.page.evaluate(() => sessionStorage.getItem('selfreportle.purchasePending.v1'));
+    check(processing && JSON.stringify(view.buttons) === JSON.stringify(['Sign out', 'Delete account']), 'back before the webhook: "Payment received — processing" where Buy was, and no Buy (' + view.buttons.join(', ') + ')');
+    check(/^\{"at":\d+\}$/.test(pending || ''), "and the tab's sessionStorage holds when Checkout sent it back (" + pending + ')');
+    releaseWebhook();
+    const thanked = await ap.page.waitForFunction(() => document.getElementById('accountNote').textContent === 'Thank you for supporting Selfreportle.', null, { timeout: 25000 }).then(() => true, () => false);
     const statuses = await Promise.all(webhooks);
     check(JSON.stringify(statuses) === '[200]', "Stripe's signed webhook, posted once the visitor is back, is accepted (" + statuses.join(', ') + ')');
     check(thanked, 'the page asked api/me again until the purchase showed, and says thank you');
     view = await accountView(ap.page);
     check(/Owned/.test(view.text) && !view.buttons.includes('Buy'), 'the entitlement is drawn: Owned, in place of Buy');
     check(ap.page.url() === APP_URL, '?purchase=success has left the address');
+    check(await ap.page.evaluate(() => sessionStorage.length === 0), 'and the record of a payment on its way is gone');
 
     await ap.page.click('#accountSignOut');
     check(await buttonsAre(['Sign in with Google', 'Sign in to buy']), 'signed out');
@@ -583,6 +593,16 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     await ap.page.click('#accountDelete');
     check(await buttonsAre(['Sign in with Google', 'Sign in to buy']), 'Delete account: signed out');
     check(dialogs.length === 1 && /^Delete your account\?/.test(dialogs[0]) && /support/.test(dialogs[0]), 'after asking first, saying the support goes with it (' + dialogs.join(' | ') + ')');
+    // Anyone can open the address Checkout returns to: signed out, it says nothing and asks nothing more.
+    const beforeLanding = withApi.seen.requests.length;
+    await ap.page.goto(APP_URL + '?purchase=success');
+    check(await buttonsAre(['Sign in with Google', 'Sign in to buy']), '?purchase=success opened signed out: signed out');
+    await ap.page.waitForTimeout(3500);
+    // (api/config may come from the browser's cache: the kit lets it keep that answer a minute)
+    const asked = withApi.seen.requests.slice(beforeLanding).filter((x) => x.includes(BASE + 'api/') && x !== 'GET ' + BASE + 'api/config').map((x) => x.replace(BASE + 'api/', ''));
+    view = await accountView(ap.page);
+    check(JSON.stringify(asked) === JSON.stringify(['GET me']) && view.note === '' && ap.page.url() === APP_URL,
+      'and says nothing, asks api/me once and nothing more over a poll\'s interval, and takes the flag out of the address (' + asked.join(', ') + ' | "' + view.note + '")');
     await navigate(() => ap.page.click('#accountSignIn'));
     check(await buttonsAre(['Sign out', 'Delete account', 'Buy']), 'signed in after the deletion: nothing is owned');
 

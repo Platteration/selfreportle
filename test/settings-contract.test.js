@@ -116,9 +116,25 @@ test('About: the name, the manifest version (equal to package.json), the source 
 
 /* Every storage key the extension writes is spelled in lib/settings.js and
  * nowhere else in the shipped scripts, so a new key added beside its own
- * module lands here. The one exemption is stated: the worker's per-tab
+ * module lands here. Two exemptions are stated. The worker's per-tab
  * results under 'tab:<id>' in chrome.storage.session are a cache that ends
- * with the tab, not a record, and are built where they are used. */
+ * with the tab, not a record, and are built where they are used. And the
+ * website keeps one record of its own, which the extension never reads:
+ * web/account.js's marker of a payment on its way, in the tab's
+ * sessionStorage (the website does not load lib/settings.js), pinned here as
+ * a literal and allowed in that file alone, once. */
+const WEBSITE_KEY = 'selfreportle.purchasePending.v1';
+test("the website's one record is the tab's own, pinned here", () => {
+  const account = require('../web/account.js');
+  assert.equal(account.PENDING_KEY, WEBSITE_KEY);
+  assert.equal(account.PENDING_MS, 10 * 60 * 1000, 'ten minutes');
+  for (const name of fs.readdirSync(path.join(root, 'web')).filter((f) => f.endsWith('.js'))) {
+    const src = read(path.join('web', name));
+    assert.doesNotMatch(src, /\b(?:localStorage|indexedDB|document\.cookie)\b/, 'web/' + name + ' keeps nothing that outlives the tab');
+    if (name !== 'account.js') assert.doesNotMatch(src, /\bsessionStorage\b/, 'web/' + name + ' uses no sessionStorage: only account.js does');
+  }
+});
+
 test('no storage key string is spelled outside lib/settings.js', () => {
   const files = [];
   for (const dir of ['lib', 'background', 'content', 'popup', 'options', 'publisher', 'web']) {
@@ -135,7 +151,7 @@ test('no storage key string is spelled outside lib/settings.js', () => {
     }
     for (const m of src.matchAll(/chrome\.storage\.session\b/g)) assert.equal(f, path.join('background', 'service-worker.js'), f + ' uses the session area, which only the worker\'s tab cache does');
   }
-  assert.deepEqual(spelled, [], 'strings outside the table that look like a storage key');
+  assert.deepEqual(spelled, [path.join('web', 'account.js') + ': ' + WEBSITE_KEY], "strings outside the table that look like a storage key: the website's one record and nothing else");
 });
 
 /* The one-time copy of the flat items runs from the worker's onInstalled,

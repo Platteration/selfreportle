@@ -5,14 +5,25 @@
  * no such API and nothing here draws a thing: the page asks api/config once, and an answer of
  * "nothing on" (the api/config the site publishes), a 404, a network error or a body that is not
  * the kit's shape leaves the page as it always was. Nothing is stored and nothing is asked again.
+ * The kit's own flags in the address (`?signin=failed`, `?purchase=success|cancelled`) are taken
+ * out on arrival on every host, before api/config is asked: they are the kit's, and a reload
+ * should not read one twice.
  *
  * Where it is on, the page gains an "Account and support" section (Sign in with Google; then
  * "Signed in as …", Sign out and Delete account) holding the one thing the site sells, "Support
- * this app", and the privacy line above the checker says exactly what then leaves the device. A
- * purchase is granted by Stripe's signed webhook alone and read back from api/me; it unlocks
- * nothing, so the page shows "Owned" and the checker is the same for everyone. A visitor who
- * edits the page can show themselves "Owned" without paying: it gates nothing, so there is
- * nothing to protect, and the server's record of the payment is what a purchase is.
+ * this app", and the privacy line above the checker says exactly what then leaves the device. The
+ * page then asks api/me once on every load, signed in or not. A purchase is granted by Stripe's
+ * signed webhook alone and read back from api/me; it unlocks nothing, so the page shows "Owned"
+ * and the checker is the same for everyone. A visitor who edits the page can show themselves
+ * "Owned" without paying: it gates nothing, so there is nothing to protect, and the server's
+ * record of the payment is what a purchase is.
+ *
+ * Stripe's webhook can land after Checkout has sent the visitor back. Until api/me reports the
+ * purchase, the product reads "Payment received — processing" where Buy was: for the life of the
+ * page, and across a reload within PENDING_MS through one record in the tab's sessionStorage
+ * (PENDING_KEY), the only thing the page stores. A second Buy there opened a second Checkout
+ * Session, and both were paid. Only a signed-in visitor can have paid, so to anyone else a
+ * `?purchase=success` link says nothing and asks nothing.
  *
  * Everything the server says is read field by field and drawn as text (createElement, and
  * strings appended as text nodes), never as markup. Sign-in and Checkout are top-level
@@ -40,8 +51,16 @@
   const CHECKOUT_ORIGIN = 'https://checkout.stripe.com';
   /** After Checkout sends the visitor back: api/me up to five times over fifteen seconds. */
   const POLL = { tries: 5, everyMs: 3000 };
+  /** How long after a paid Checkout sent this tab back a reload still says "processing" rather
+   *  than offer Buy, while api/me has not reported the purchase: the webhook's own delay, and the
+   *  minute Cloudflare KV can take to reach every location, with room to spare. */
+  const PENDING_MS = 10 * 60 * 1000;
+  /** The one record the page keeps, in the tab's sessionStorage: `{ at }`, the time (ms) a paid
+   *  Checkout sent this tab back. test/settings-contract.test.js pins it. */
+  const PENDING_KEY = 'selfreportle.purchasePending.v1';
 
-  /** The words the account and the shop say, the same in every app that carries the kit. */
+  /** The words the account and the shop say, the same in every app that carries the kit but for
+   *  the thank-you, which names this app, and `processing`, which only some apps have so far. */
   const WORDS = {
     signIn: 'Sign in with Google',
     signedInAs: (email) => 'Signed in as ' + email,
@@ -52,13 +71,14 @@
     buy: 'Buy',
     signInToBuy: 'Sign in to buy',
     owned: 'Owned',
-    thanks: (name) => 'Thank you — ' + name + ' is unlocked.',
+    thanks: 'Thank you for supporting Selfreportle.',
     paymentPending: 'Payment received. It can take a minute to appear — reload to check.',
+    processing: 'Payment received — processing',
   };
 
   /** What the page asks before it deletes an account, and what it says when something fails. */
   const NOTES = {
-    deleteBody: 'Delete your account? This deletes your account on this site and the record of your support with it. The payment itself stays with Stripe. This cannot be undone.',
+    deleteBody: 'Delete your account? This deletes your account on this site and the record of your support with it. The payment itself stays with Stripe, with the account id it was made under. This cannot be undone.',
     deleteFailed: 'The account could not be deleted. Try again.',
     signOutFailed: 'Could not sign out. Try again.',
     unavailable: 'Support is not on sale right now.',
@@ -150,6 +170,17 @@
     return { landing, without: url.pathname + url.search + url.hash };
   }
 
+  /** Whether `raw` (what sessionStorage holds at PENDING_KEY, or null) says a paid Checkout sent
+   *  this tab back less than PENDING_MS before `now`. Anything else, an unreadable record or a
+   *  time in the future included, says no. */
+  function pendingSince(raw, now) {
+    let value;
+    try { value = JSON.parse(raw); } catch (e) { return false; }
+    if (!isRecord(value) || !Number.isFinite(value.at)) return false;
+    const age = now - value.at;
+    return age >= 0 && age < PENDING_MS;
+  }
+
   /** The Checkout address `POST api/checkout` answered with, only when it is Stripe's hosted
    *  page over https (its origin says both) with no credentials in it; anything else is not
    *  followed. */
@@ -200,8 +231,10 @@
         const r = await call('me', { method: 'DELETE' });
         return !!r && r.status === 204;
       },
-      /** 'signin' (401), 'owned' (409), 'unavailable' (404), 'busy' (429), 'failed' (anything
-       *  else, an address that is not Stripe's included), or { url } to go to. */
+      /** 'signin' (401), 'pending' (409 `payment_pending`: the Checkout Session the visitor was
+       *  given has been paid and its webhook has not arrived, which the kit answers from its
+       *  canonical b575aee on), 'owned' (any other 409), 'unavailable' (404), 'busy' (429),
+       *  'failed' (anything else, an address that is not Stripe's included), or { url } to go to. */
       async checkout(product) {
         const r = await call('checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ product }) });
         if (!r) return 'failed';
@@ -209,7 +242,11 @@
           const url = checkoutAddress(await body(r));
           return url ? { url } : 'failed';
         }
-        return { 401: 'signin', 404: 'unavailable', 409: 'owned', 429: 'busy' }[r.status] || 'failed';
+        if (r.status === 409) {
+          const answer = await body(r);
+          return isRecord(answer) && answer.error === 'payment_pending' ? 'pending' : 'owned';
+        }
+        return { 401: 'signin', 404: 'unavailable', 429: 'busy' }[r.status] || 'failed';
       },
     };
   }
@@ -222,6 +259,9 @@
    *   history   for taking the kit's flags out of the address
    *   confirm   the page's confirm (window.confirm)
    *   wait      a timer, for the poll after a purchase
+   *   session   the tab's sessionStorage, for the one record of a payment on its way (absent, or
+   *             refusing, a reload forgets that payment; the page itself does not)
+   *   now       the clock (Date.now)
    *   els       { section, body, note, privacyLocal, privacyAccount }
    * Returns `ready`, which resolves to whether the feature is on (and never rejects), and the
    * state, for tests.
@@ -230,8 +270,9 @@
     const api = client({ fetch: o.fetch, base: o.location.href });
     const { landing, without } = landingOf(o.location.href);
     if (without !== null) o.history.replaceState(null, '', without);
-    const state = { config: null, me: SIGNED_OUT, busy: false };
+    const state = { config: null, me: SIGNED_OUT, busy: false, pending: false };
     const els = o.els;
+    const now = o.now || Date.now;
 
     const el = (tag, cls, ...children) => {
       const node = o.doc.createElement(tag);
@@ -259,6 +300,23 @@
     };
     const owns = () => state.me.entitlements.includes(SUPPORTER);
 
+    /** Whether this tab came back from a paid Checkout less than PENDING_MS ago. */
+    const marked = () => {
+      let raw = null;
+      try { raw = o.session ? o.session.getItem(PENDING_KEY) : null; } catch (e) { return false; }
+      return pendingSince(raw, now());
+    };
+    /** The payment is on its way: no Buy until api/me reports it, on this page or a reload. */
+    const holdPending = () => {
+      state.pending = true;
+      try { if (o.session) o.session.setItem(PENDING_KEY, JSON.stringify({ at: now() })); } catch (e) { /* this page still holds it */ }
+    };
+    /** It arrived, or the account that paid has left the page. */
+    const dropPending = () => {
+      state.pending = false;
+      try { if (o.session) o.session.removeItem(PENDING_KEY); } catch (e) { /* not read after PENDING_MS */ }
+    };
+
     function render() {
       if (!state.config) return;
       const { config, me } = state;
@@ -277,9 +335,10 @@
         const price = product.price ? formatPrice(product.price) : null;
         const heading = el('p', 'product-name', el('strong', null, product.name));
         if (price) heading.append(' · ' + price);
-        const action = owns()
-          ? el('p', 'owned', WORDS.owned)
-          : el('p', 'actions', me.user ? button(WORDS.buy, buy, 'supportBuy') : button(WORDS.signInToBuy, signIn, 'supportBuy'));
+        const action = owns() ? el('p', 'owned', WORDS.owned)
+          : !me.user ? el('p', 'actions', button(WORDS.signInToBuy, signIn, 'supportBuy'))
+            : state.pending ? el('p', 'pending', WORDS.processing)
+              : el('p', 'actions', button(WORDS.buy, buy, 'supportBuy'));
         parts.push(el('div', 'product', heading, el('p', 'product-text', product.description), action));
       }
       els.body.replaceChildren(...parts);
@@ -299,8 +358,9 @@
       return act(async () => {
         const result = await api.checkout(SUPPORTER);
         if (typeof result === 'object') { o.location.assign(result.url); return; }
-        if (result === 'signin') state.me = SIGNED_OUT;
+        if (result === 'signin') { state.me = SIGNED_OUT; dropPending(); }
         if (result === 'owned') state.me = (await api.me()) || state.me;
+        if (result === 'pending') { holdPending(); note(WORDS.paymentPending); }
         if (result === 'unavailable') note(NOTES.unavailable);
         if (result === 'busy') note(NOTES.busy);
         if (result === 'failed') note(NOTES.failed);
@@ -309,41 +369,55 @@
 
     function signOut() {
       return act(async () => {
-        if (await api.signOut()) state.me = SIGNED_OUT;
-        else note(NOTES.signOutFailed);
+        if (await api.signOut()) { state.me = SIGNED_OUT; dropPending(); } else note(NOTES.signOutFailed);
       }).then(refocus);
     }
 
     function deleteAccount() {
       if (!o.confirm(NOTES.deleteBody)) return Promise.resolve();
       return act(async () => {
-        if (await api.deleteAccount()) state.me = SIGNED_OUT;
-        else note(NOTES.deleteFailed);
+        if (await api.deleteAccount()) { state.me = SIGNED_OUT; dropPending(); } else note(NOTES.deleteFailed);
       }).then(refocus);
     }
 
-    async function afterPurchase(product) {
-      if (owns()) { note(WORDS.thanks(product.name)); return; }
+    /** Back from a paid Checkout, signed in: no Buy while api/me is asked for the purchase. */
+    async function afterPurchase() {
+      if (owns()) { note(WORDS.thanks); return; }
+      holdPending();
+      render();
       const { held, me } = await pollFor(SUPPORTER, api.me, o.wait);
       if (me) state.me = me;
+      if (held || !state.me.user) dropPending();
       render();
-      note(held ? WORDS.thanks(product.name) : WORDS.paymentPending);
+      note(held ? WORDS.thanks : state.me.user ? WORDS.paymentPending : '');
     }
 
     const ready = (async () => {
       const config = await api.config();
       if (!config) return false;
       state.config = config;
-      state.me = (await api.me()) || SIGNED_OUT;
+      const me = await api.me();
+      state.me = me || SIGNED_OUT;
+      // A reload while a payment this tab made is on its way: still no Buy. An api/me that cannot
+      // be read says nothing about it, so the record is left as it is.
+      if (me && me.user && !owns() && marked()) state.pending = true;
+      else if (me) dropPending();
       render();
-      if (landing.signIn === 'failed' || (landing.purchase === 'success' && config.supporter)) {
+      // Only a signed-in visitor can have paid; to anyone else the flag says nothing.
+      const bought = landing.purchase === 'success' && !!config.supporter && !!state.me.user;
+      if (landing.signIn === 'failed' || bought) {
         if (els.section.scrollIntoView) els.section.scrollIntoView({ block: 'nearest' });
       }
       if (landing.signIn === 'failed') note(WORDS.signInFailed);
-      if (landing.purchase === 'success' && config.supporter) await afterPurchase(config.supporter);
+      if (bought) await afterPurchase();
       return true;
     })().catch(() => false);
     return { ready, state, render };
+  }
+
+  /** The window's sessionStorage, or null where reading it throws (storage blocked). */
+  function sessionOf(win) {
+    try { return win.sessionStorage || null; } catch (e) { return null; }
   }
 
   /** Starts the section in the page, when the page has it. */
@@ -359,9 +433,11 @@
       history: win.history,
       confirm: (message) => win.confirm(message),
       wait: (ms) => new Promise((resolve) => win.setTimeout(resolve, ms)),
+      session: sessionOf(win),
+      now: () => Date.now(),
       els,
     });
   }
 
-  return { SUPPORTER, WORDS, NOTES, POLL, SIGNED_OUT, readConfig, readMe, formatPrice, landingOf, checkoutAddress, pollFor, client, start, boot };
+  return { SUPPORTER, WORDS, NOTES, POLL, PENDING_MS, PENDING_KEY, SIGNED_OUT, readConfig, readMe, formatPrice, landingOf, pendingSince, checkoutAddress, pollFor, client, start, boot };
 });

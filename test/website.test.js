@@ -114,10 +114,21 @@ test("nginx hands everything under /api/ to the site's API, and sends nothing of
     'client_max_body_size 1m;',
     'proxy_read_timeout 30s;',
     'add_header Strict-Transport-Security "' + HEADERS['Strict-Transport-Security'] + '" always;',
-  ], 'proxy_pass with no URI (the path reaches the API unchanged), to the loopback port server/start.mjs listens on, and HSTS as the server block sends it');
+    'error_page 502 503 504 = @api-off;',
+    'recursive_error_pages on;',
+  ], 'proxy_pass with no URI (the path reaches the API unchanged), to the loopback port server/start.mjs listens on, HSTS as the server block sends it, and nginx\'s own errors handed to @api-off');
   const conf = read('deploy/nginx.conf').replace(/^\s*#.*$/gm, '');
   assert.ok(conf.indexOf('location ^~ /api/ {') > conf.indexOf('listen 443 ssl http2;'), 'in the https server block');
   assert.equal([...conf.matchAll(/\bproxy_pass\b/g)].length, 1, 'nothing else is proxied');
+  assert.doesNotMatch(conf, /proxy_intercept_errors/, "the API's own answers (its 404, 401 and 409) go out as it sends them");
+  // With the API not running, nginx answers as a site with no API (test/e2e/hosts.js runs it): the
+  // folder's api/config, typed, and the not-found page for the rest. The location adds no header,
+  // so it sends the server block's, all of them (nginxHeaders holds that no location but the
+  // API's adds one).
+  const off = [...conf.matchAll(/^ {2}location @api-off \{\n([^}]*)^ {2}\}\n/gm)];
+  assert.equal(off.length, 1, 'nginx.conf has one `location @api-off`');
+  assert.ok(conf.indexOf('location @api-off {') > conf.indexOf('listen 443 ssl http2;'), 'in the https server block');
+  assert.deepEqual(off[0][1].split('\n').map((l) => l.trim()).filter(Boolean), ['default_type application/json;', 'try_files $uri =404;']);
 });
 
 test('one policy: both pages carry the header policy in their <meta>, less what a <meta> cannot say', () => {
@@ -424,7 +435,7 @@ test('the page says exactly what leaves the device, with the API and without it'
   const html = page('web/index.html');
   const p = (id) => (html.match(new RegExp('<p class="privacy" id="' + id + '"( hidden)?>([^<]+)</p>')) || []).slice(1);
   assert.deepEqual(p('privacyLocal'), [undefined, 'Everything runs in this page. The file you pick is read by your browser and never uploaded; once the page has loaded, it asks this site only whether it offers sign-in, and sends nothing about you or your file.']);
-  assert.deepEqual(p('privacyAccount'), [' hidden', "Everything runs in this page. The file you pick is read by your browser and never uploaded. Nothing else leaves your device unless you sign in or buy: then Google tells this site an account id and your email address, and Stripe handles the payment. The site keeps the account id, what was bought and Stripe's customer id, and your email address while you are signed in."]);
+  assert.deepEqual(p('privacyAccount'), [' hidden', "Everything runs in this page. The file you pick is read by your browser and never uploaded. Nothing else leaves your device unless you sign in or buy: then Google tells this site an account id and your email address, and Stripe handles the payment and is told that account id with it. The site keeps the account id, what was bought and Stripe's customer id, and your email address while you are signed in."]);
   assert.match(html, /<section class="account" id="account" aria-labelledby="account-heading" hidden>/, 'the account section starts hidden, and only account.js shows it');
   for (const id of ['account', 'accountBody', 'accountNote', 'privacyLocal', 'privacyAccount']) {
     assert.equal([...html.matchAll(new RegExp('\\sid="' + id + '"', 'g'))].length, 1, 'the page has #' + id + ' once');

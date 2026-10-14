@@ -269,6 +269,87 @@ describe('a host of its own: server/start.mjs through the Node adapter', () => {
   });
 });
 
+/* What README and the page's privacy line say Stripe is told, and what README says Delete account
+ * leaves, held to the kit as this site runs it: a data directory of its own, read file by file. */
+describe('what Stripe is told, and what Delete account leaves', () => {
+  const APP_URL = 'https://selfreportle.example/';
+  const ORIGIN = 'https://selfreportle.example';
+  const SUB = 'subWhatIsLeft42';
+  const EMAIL = 'left@example.com';
+
+  it("Stripe is told the account id with a payment, and never the email; after Delete account only the hour's count of Buy presses names the account, for two hours at most", async () => {
+    const fakes = await createFakes();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selfreportle-api-left-'));
+    const api = await start({ env: envFor(APP_URL), dataDir, port: 0, fetch: fakes.fetch, log: () => {} });
+    local = api.url;
+    try {
+      const cookies = new Map();
+      const ask = async (route, init = {}) => {
+        const response = await realFetch(`${api.url}api/${route}`, { redirect: 'manual', ...init, headers: { ...(init.headers ?? {}), cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join('; ') } });
+        for (const line of response.headers.getSetCookie()) {
+          const [pair, ...attrs] = line.split(';');
+          const name = pair.slice(0, pair.indexOf('='));
+          if (attrs.some((a) => /^\s*Max-Age=0$/i.test(a))) cookies.delete(name);
+          else cookies.set(name, pair.slice(pair.indexOf('=') + 1));
+        }
+        return response;
+      };
+      const started = await ask('auth/google/start?return=%2F');
+      await ask(`auth/google/callback${fakes.consent(started.headers.get('location'), { sub: SUB, email: EMAIL }).search}`);
+      const bought = await ask('checkout', { method: 'POST', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: '{"product":"supporter"}' });
+      assert.equal(bought.status, 200);
+      const url = (await bought.json()).url;
+      const asked = fakes.sessions.get(new URL(url).pathname.split('/').pop());
+      const user = `google:${SUB}`;
+      assert.equal(asked.get('client_reference_id'), user, 'the account id, as the privacy line says');
+      assert.equal(asked.get('metadata[user]'), user);
+      assert.equal(asked.get('payment_intent_data[metadata][user]'), user, 'and on the payment itself');
+      assert.ok(![...asked.values()].some((v) => v.includes(EMAIL) || v.includes('@')), 'no email is sent to Stripe');
+      const delivery = signedDelivery(fakes.paid(url));
+      assert.equal((await realFetch(`${api.url}api/webhooks/stripe`, { method: 'POST', headers: { 'stripe-signature': delivery.signature, 'content-type': 'application/json' }, body: delivery.body })).status, 200);
+      const before = Date.now();
+      assert.equal((await ask('me', { method: 'DELETE', headers: { origin: ORIGIN } })).status, 204);
+      const naming = fs.readdirSync(dataDir).map((f) => JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))).filter((e) => JSON.stringify(e).includes(SUB) || JSON.stringify(e).includes(EMAIL));
+      assert.deepEqual(naming.map((e) => e.key.replace(/:\d+$/, ':<hour>')), [`selfreportle:test:ratelimit:${user}:<hour>`], 'only the count of Buy presses this hour names the account');
+      assert.ok(naming[0].expires > before && naming[0].expires <= Date.now() + 2 * 3600 * 1000, 'and it expires within two hours');
+      assert.ok(!naming.some((e) => JSON.stringify(e).includes(EMAIL)), 'the email is gone');
+    } finally {
+      await api.close();
+      local = null;
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('README and the page say so', () => {
+    const readme = read('README.md');
+    assert.ok(readme.includes('Stripe handles the payment and is told that account id with it'), 'README, the sign-in section and Privacy');
+    assert.equal(readme.split('Stripe handles the payment and is told that account id with it').length - 1, 2, 'in both places README says what leaves the device');
+    assert.ok(readme.includes("Deleting the account deletes all of that here but a count of the hour's Buy presses, which names the account id and expires within two hours"), 'README, the sign-in section');
+    assert.ok(readme.includes("Delete account removes all of it from the site but a count of the hour's Buy presses, which names the account id and expires within two hours"), 'README, Privacy');
+    assert.ok(read('web/index.html').includes('Stripe handles the payment and is told that account id with it.'), 'the privacy line the page draws');
+    assert.ok(account.NOTES.deleteBody.includes('The payment itself stays with Stripe, with the account id it was made under.'), 'the question before Delete account');
+  });
+});
+
+describe('server/start.mjs keeps its own catalogue', () => {
+  it('a catalogue passed in by a caller does not replace this site\'s', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selfreportle-api-cat-'));
+    const fakes = await createFakes();
+    const other = { app: 'other', name: 'Other', products: [{ id: 'pro', name: 'Pro', description: 'x', mode: 'payment', grants: 'pro' }] };
+    const api = await start({ env: { ...envFor('https://selfreportle.example/'), STRIPE_PRICE_PRO: 'price_x' }, dataDir, port: 0, fetch: fakes.fetch, log: () => {}, catalogue: other });
+    local = api.url;
+    try {
+      const body = await (await realFetch(`${api.url}api/config`)).json();
+      assert.deepEqual(body.shop.products.map((p) => p.id), ['supporter'], 'still "Support this app", and nothing else');
+      assert.match((await realFetch(`${api.url}api/auth/google/start?return=%2F`, { redirect: 'manual' })).headers.get('set-cookie') ?? '', /^__Host-selfreportle-oauth=/, "the cookies are this app's");
+    } finally {
+      await api.close();
+      local = null;
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('server/start.mjs with nothing set', () => {
   it('reports nothing on, and every other route is a 404', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selfreportle-api-off-'));

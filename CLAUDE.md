@@ -21,9 +21,14 @@ at and what it cannot tell.
   error included: `test/api.test.mjs` holds that file to its three lines instead);
   `npm run test:e2e` loads the unpacked extension into Chromium via Playwright against a
   fixture site it serves itself; `npm run check` is the gate before a push. `test:e2e` runs
-  the extension's suite (`test/e2e/run.js`), then the website's (`test/e2e/site.js`), then the
-  website's host configs in the nginx and Apache installed where it runs (`test/e2e/hosts.js`,
-  which skips where they are missing unless `CI` is set).
+  `test/e2e/runner.js` (the Playwright `ci.yml` pins, asked through its own `install --dry-run`
+  whether it has a Chromium build for the Ubuntu release CI's check job names; passes with a note
+  where another Playwright resolves, unless `CI` is set), the extension's suite
+  (`test/e2e/run.js`), then the website's (`test/e2e/site.js`), then the website's host configs
+  in the nginx and Apache installed where it runs (`test/e2e/hosts.js`, which skips where they
+  are missing unless `CI` is set). CI's check job runs on `ubuntu-24.04`, never `ubuntu-latest`,
+  which becomes Ubuntu 26.04 from 2026-10-19, for which Playwright 1.56.1 has no Chromium:
+  `test/ci.test.js` holds the job to a named release.
 - Two suites are guards, not examples: `test/redos.test.js` runs every regex literal in
   `lib/` and `web/` against hostile input at 2 KB and 16 KB and holds each to a flat budget,
   and again against near misses derived from the pattern itself (its own opening token,
@@ -147,12 +152,27 @@ without a second edit.
   base path stamped); `server/start.mjs` is the Node entry behind `deploy/nginx.conf`'s
   `location ^~ /api/`, the one location allowed a header (HSTS, as the server block writes it:
   an `add_header` there drops every inherited one, which is what keeps the site's policy off the
-  API's answers); Apache takes a `ProxyPass` in the virtual host, which `.htaccess` can only
-  describe. The site publishes `web/api/config`, the kit's "nothing on" byte for byte, so a host
-  with no API answers the page's one question instead of logging a 404. `web/account.js` (loaded
-  after `app.js`, so its failure never stops the checker) asks `api/config` once, and draws the
-  "Account and support" section and swaps the privacy line only when sign-in is on; server text
-  is drawn as text; Buy follows only `https://checkout.stripe.com`. The policy's `connect-src`
+  API's answers); with the process not running, that location hands nginx's own 502/503/504 to
+  `location @api-off`, which serves the folder's `api/config` and the not-found page with the
+  server block's headers (it used to be nginx's 502 page with HSTS alone; `test/e2e/hosts.js`
+  stops the API to check). Apache takes a `ProxyPass` in the virtual host, which `.htaccess` can
+  only describe, once the process runs (with it and no process, Apache answers 503). The site
+  publishes `web/api/config`, the kit's "nothing on" byte for byte, so a host with no API answers
+  the page's one question instead of logging a 404. `web/account.js` (loaded after `app.js`, so
+  its failure never stops the checker) asks `api/config` once, and draws the
+  "Account and support" section and swaps the privacy line only when sign-in is on (then it asks
+  `api/me` once per load, signed in or not); server text is drawn as text; Buy follows only
+  `https://checkout.stripe.com`. The kit's flags (`?signin=failed`, `?purchase=`) leave the
+  address on arrival on every host. The kit copy (7f4e583) makes a new payable Checkout Session
+  for every Buy until the webhook records the purchase, so after `?purchase=success`, for a
+  signed-in visitor, the product reads "Payment received — processing" where Buy was until
+  `api/me` reports it: for the life of the page, and across a reload within `PENDING_MS` (ten
+  minutes) through the page's one record, `selfreportle.purchasePending.v1` in the tab's
+  sessionStorage (`{ at }`), dropped once the purchase is reported or the account signs out or is
+  deleted. A 409 `payment_pending` (the canonical kit's answer from b575aee on) is drawn the same
+  way. A `?purchase=success` link opened signed out says nothing and asks nothing more. The
+  privacy line says Stripe is told the account id with a payment, and the thank-you is "Thank
+  you for supporting Selfreportle." (it unlocks nothing). The policy's `connect-src`
   is `'self'` for it, measured in Chromium (with `'none'` every load is a violation). The
   extension never calls the API and its manifest gained nothing: `test/website.test.js` reads
   every extension file and pins the manifest's permissions, and `test/e2e/run.js` fails if the
@@ -196,7 +216,9 @@ normal state and the namespaced record wins. `test/settings.test.js` walks
 an in-memory `chrome.storage` with the per-item quota, and stages the read-against-save
 race; `test/settings-contract.test.js` pins the keys, the fields, the enum tables and the
 options page's rows as literals, and that no key string is spelled outside `lib/settings.js`
-(the worker's `tab:<id>` session cache is the stated exemption). Reset to defaults writes the
+(the worker's `tab:<id>` session cache is one stated exemption; the website's one record,
+`selfreportle.purchasePending.v1` in the tab's sessionStorage, written by `web/account.js`
+alone, is the other, pinned there as a literal). Reset to defaults writes the
 defaults under the two records and removes nothing — not the flat items, never the domain
 memory; it and Clear domain memory are confirmed with `window.confirm`, Clear image cache is
 not. About reads the version from `chrome.runtime.getManifest()`, which the contract test

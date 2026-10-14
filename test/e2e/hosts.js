@@ -93,6 +93,19 @@ const get = (url, headers = {}) => new Promise((resolve, reject) => {
   req.setTimeout(10000, () => req.destroy(new Error(url + ': no answer in 10 s')));
 });
 
+/** One POST with an empty JSON body: status, headers and body. */
+const post = (url, headers = {}) => new Promise((resolve, reject) => {
+  const req = https.request(url, { method: 'POST', headers, rejectUnauthorized: false, agent: false }, (res) => {
+    let body = '';
+    res.setEncoding('utf8');
+    res.on('data', (chunk) => { body += chunk; });
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+  });
+  req.on('error', reject);
+  req.setTimeout(10000, () => req.destroy(new Error(url + ': no answer in 10 s')));
+  req.end('{}');
+});
+
 async function waitFor(url, headers, log) {
   for (let i = 0; i < 100; i++) {
     try { return await get(url, headers); } catch (e) { await new Promise((resolve) => setTimeout(resolve, 100)); }
@@ -260,8 +273,23 @@ async function nginx() {
   check(logout === 204, "nginx: a POST from the site's own origin reaches the API with its Origin (" + logout + ')');
   check(backend.log.length === 0 && backend.fakes.unexpected.length === 0, 'nginx: the API logged nothing and asked the fakes nothing unexpected' + (backend.log.length ? ': ' + backend.log.join(' | ') : ''));
   await backend.api.close();
+  /* With the API stopped, nginx answers as a site with no API does (@api-off): the folder's
+   * api/config, typed, so the page reads "nothing on" with nothing on its console, and the
+   * not-found page at every other address under api/, each with every header _headers gives. It
+   * used to send nginx's own 502 page with HSTS alone. */
+  const off = [];
   const down = await get(origin + 'api/config');
-  check(down.status === 502 && down.headers['strict-transport-security'] === SITE_HEADERS['strict-transport-security'], 'nginx: with the API stopped, api/ answers 502 (the page then draws nothing), still with HSTS (' + down.status + ')');
+  const folderConfig = fs.readFileSync(path.join(folder, 'api', 'config'), 'utf8');
+  if (down.status !== 200 || down.body !== folderConfig || !/^application\/json\b/.test(down.headers['content-type'] || '')) off.push('/api/config answered ' + down.status + ' ' + down.headers['content-type'] + ' ' + JSON.stringify(down.body.slice(0, 80)));
+  off.push(...headerProblems(down).map((x) => '/api/config ' + x));
+  const answers = [];
+  for (const p of ['api/me', 'api/auth/google/start?return=%2F', 'api/auth/google/callback?code=x&state=y', 'api/nothing', 'api/', 'api/.git/config']) answers.push(['GET /' + p, await get(origin + p)]);
+  for (const p of ['api/checkout', 'api/auth/logout', 'api/webhooks/stripe']) answers.push(['POST /' + p, await post(origin + p, { origin: origin.replace(/\/$/, ''), 'content-type': 'application/json' })]);
+  for (const [what, r] of answers) {
+    if (r.status !== 404 || !r.body.includes(NOT_FOUND)) off.push(what + ' answered ' + r.status + (r.body.includes(NOT_FOUND) ? '' : ' without the not-found page'));
+    off.push(...headerProblems(r).map((x) => what + ' ' + x));
+  }
+  check(off.length === 0, "nginx: with the API stopped, api/ answers as a site with no API: the folder's api/config, typed, and the not-found page at every other address, all with every header" + (off.length ? '\n  ' + off.join('\n  ') : ''));
 }
 
 /*
@@ -359,6 +387,9 @@ async function apacheChecks() {
   const page = await get(proxied2.origin, proxied);
   check(page.status === 200 && headerProblems(page).length === 0, 'Apache with the ProxyPass: the site itself is served as before, with every header');
   await backend.api.close();
+  // README says to add the ProxyPass once the API runs: with it and no process, Apache answers 503.
+  const gone = await get(proxied2.origin + 'api/config', proxied);
+  check(gone.status === 503, 'Apache with the ProxyPass and the API stopped answers 503, as README says (' + gone.status + ')');
 
   const bare = await apache('apache-bare', []);
   /* Debian and Ubuntu ship with both off. A site served without them would hand out .git/ and

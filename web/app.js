@@ -14,7 +14,7 @@
  * API, and the policy's connect-src is 'self', for the site's own api/ that account.js asks
  * about sign-in and nothing else. Five lib/ modules are not loaded, each for a reason the page
  * cannot work around: settings.js and history.js keep their records in chrome.storage (this
- * page keeps nothing), fetch-policy.js governs the extension worker's cross-origin fetches
+ * page keeps no such record), fetch-policy.js governs the extension worker's cross-origin fetches
  * (this page fetches nothing from another site), byte-budget.js bounds a stream whose other
  * end chooses its length (this page slices the picked file to its cap, so there is no stream
  * to bound), and platform-labels.js pairs a platform's "Made with AI" label with the media in

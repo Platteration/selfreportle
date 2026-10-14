@@ -62,7 +62,21 @@ function fakeFetch(routes) {
   return { fetch, calls };
 }
 
-function page(routes, { href = BASE, confirmAnswer = true } = {}) {
+/** A tab's sessionStorage: `throws` makes every access throw, as a browser with storage
+ *  blocked does. */
+function fakeSession(initial = {}, { throws = false } = {}) {
+  const data = new Map(Object.entries(initial));
+  const guard = () => { if (throws) throw new DOMException('blocked', 'SecurityError'); };
+  return {
+    data,
+    getItem(key) { guard(); return data.has(key) ? data.get(key) : null; },
+    setItem(key, value) { guard(); data.set(key, String(value)); },
+    removeItem(key) { guard(); data.delete(key); },
+  };
+}
+const NOW = 1_800_000_000_000;
+
+function page(routes, { href = BASE, confirmAnswer = true, session = fakeSession(), now = () => NOW, onWait = null } = {}) {
   const els = {
     section: Object.assign(new FakeElement('section'), { hidden: true }),
     body: new FakeElement('div'),
@@ -79,10 +93,12 @@ function page(routes, { href = BASE, confirmAnswer = true } = {}) {
     location: { href: url.href, pathname: url.pathname, search: url.search, assign: (to) => seen.assigned.push(to) },
     history: { replaceState: (_s, _t, to) => seen.replaced.push(to) },
     confirm: (message) => { seen.confirms.push(message); return confirmAnswer; },
-    wait: async (ms) => { seen.waits.push(ms); },
+    wait: async (ms) => { seen.waits.push(ms); if (onWait) onWait(els); },
+    session,
+    now,
     els,
   });
-  return { ctl, els, seen, calls: net.calls };
+  return { ctl, els, seen, calls: net.calls, session };
 }
 const ok = (body) => ({ status: 200, body });
 const SIGNED_OUT = ok({ user: null, entitlements: [] });
@@ -113,6 +129,15 @@ test('no API on the host: a 404, a network error, a body that is not JSON or not
     assert.deepEqual(drawn(p), { section: false, privacyLocal: true, privacyAccount: false, text: '', note: '' }, label + ': the page is as it always was');
     assert.deepEqual(p.calls.map((c) => c.method + ' ' + c.route), ['GET config'], label + ': one question, never api/me');
     assert.deepEqual(p.seen.replaced, [], label + ': the address is left alone');
+  }
+  // The kit's own flags are taken out of the address on every host, before api/config answers
+  // (README says so); nothing else happens there.
+  for (const flag of ['signin=failed', 'purchase=success', 'purchase=cancelled']) {
+    const p = page({ 'GET config': ok({ auth: { google: false }, shop: { products: [] } }), 'GET me': ADA }, { href: BASE + '?' + flag + '&keep=1' });
+    assert.deepEqual(p.seen.replaced, ['/selfreportle/?keep=1'], flag + ': taken out before api/config is answered');
+    assert.equal(await p.ctl.ready, false);
+    assert.deepEqual(p.calls.map((c) => c.method + ' ' + c.route), ['GET config'], flag + ': one question');
+    assert.deepEqual([p.seen.waits, p.els.note.textContent, p.els.section.scrolled, [...p.session.data.keys()]], [[], '', 0, []], flag + ': no poll, no note, no scroll, nothing stored');
   }
 });
 
@@ -263,8 +288,10 @@ test('?purchase=success: api/me is asked up to five times over fifteen seconds f
   assert.deepEqual(later.seen.replaced, ['/selfreportle/']);
   assert.equal(asked, 3, 'the load, then until it shows');
   assert.deepEqual(later.seen.waits, [3000, 3000]);
-  assert.equal(later.els.note.textContent, 'Thank you — Support this app is unlocked.');
+  assert.equal(later.els.note.textContent, 'Thank you for supporting Selfreportle.', 'a thank-you for the support, which unlocks nothing');
   assert.match(later.els.body.textContent, /Owned/);
+  assert.equal(later.els.section.scrolled, 1, 'the section is brought into view, where the thank-you is');
+  assert.equal(later.session.data.size, 0, 'the purchase is reported: the record of a payment on its way is gone');
 
   const never = page({ 'GET config': ok(CONFIG), 'GET me': ADA }, { href: BASE + '?purchase=success' });
   await never.ctl.ready;
@@ -275,7 +302,201 @@ test('?purchase=success: api/me is asked up to five times over fifteen seconds f
   const already = page({ 'GET config': ok(CONFIG), 'GET me': ADA_SUPPORTER }, { href: BASE + '?purchase=success' });
   await already.ctl.ready;
   assert.deepEqual(already.seen.waits, [], 'already granted when the page loads: no poll');
-  assert.equal(already.els.note.textContent, 'Thank you — Support this app is unlocked.');
+  assert.equal(already.els.note.textContent, 'Thank you for supporting Selfreportle.');
+  assert.equal(account.WORDS.thanks, 'Thank you for supporting Selfreportle.', 'not "unlocked": the product unlocks nothing');
+});
+
+const PROCESSING = 'Payment received — processing';
+const PENDING_KEY = 'selfreportle.purchasePending.v1';
+/** What the product offers: its button, or the line drawn where Buy was. */
+const offer = (els) => {
+  const product = [...els.body.walk()].find((e) => e.getAttribute('class') === 'product');
+  const last = product.children[product.children.length - 1];
+  return last.tagName === 'P' && last.getAttribute('class') === 'actions' ? last.children[0].textContent : last.textContent;
+};
+
+/* Stripe's webhook can land after Checkout sends the visitor back, and the kit this site carries
+ * makes a new payable Checkout Session for every press of Buy until the webhook records the
+ * purchase: a second Buy then was a second payment. So nothing offers Buy until api/me reports
+ * the purchase. */
+test('back from Checkout before the webhook: "processing" where Buy was, through the poll and after it', async () => {
+  const during = [];
+  const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA }, { href: BASE + '?purchase=success', onWait: (els) => during.push([offer(els), els.body.button('Buy')]) });
+  assert.equal(await p.ctl.ready, true);
+  assert.equal(during.length, 5);
+  for (const [i, [what, buy]] of during.entries()) {
+    assert.equal(what, PROCESSING, 'wait ' + (i + 1) + ': the payment is on its way');
+    assert.equal(buy, null, 'wait ' + (i + 1) + ': no Buy');
+  }
+  assert.equal(offer(p.els), PROCESSING, 'the poll gave up: still no Buy, for the life of the page');
+  assert.equal(p.els.body.button('Buy'), null);
+  assert.deepEqual(p.els.body.buttons().map((b) => b.textContent), ['Sign out', 'Delete account'], 'the account can still sign out or be deleted');
+  assert.equal(p.els.note.textContent, account.WORDS.paymentPending);
+  assert.deepEqual(JSON.parse(p.session.data.get(PENDING_KEY)), { at: NOW }, "the tab's record: when Checkout sent it back");
+  assert.deepEqual([...p.session.data.keys()], [PENDING_KEY], 'and nothing else');
+  assert.ok(!p.calls.some((c) => c.route === 'checkout'), 'nothing was sold twice');
+});
+
+test('a reload within ten minutes still says "processing"; after them, or with no record, Buy is back', async () => {
+  const at = (age) => fakeSession({ [PENDING_KEY]: JSON.stringify({ at: NOW - age }) });
+  for (const [label, session, want] of [
+    ['just now', at(0), PROCESSING],
+    ['a minute ago', at(60 * 1000), PROCESSING],
+    ['the last millisecond', at(account.PENDING_MS - 1), PROCESSING],
+    ['ten minutes ago', at(account.PENDING_MS), 'Buy'],
+    ['an hour ago', at(60 * 60 * 1000), 'Buy'],
+    ['in the future', at(-1), 'Buy'],
+    ['no record', fakeSession(), 'Buy'],
+    ['not JSON', fakeSession({ [PENDING_KEY]: '{' }), 'Buy'],
+    ['a number', fakeSession({ [PENDING_KEY]: String(NOW) }), 'Buy'],
+    ['a string at', fakeSession({ [PENDING_KEY]: JSON.stringify({ at: String(NOW) }) }), 'Buy'],
+    ['a null at', fakeSession({ [PENDING_KEY]: JSON.stringify({ at: null }) }), 'Buy'],
+    ['an array', fakeSession({ [PENDING_KEY]: JSON.stringify([NOW]) }), 'Buy'],
+    ['storage that throws', fakeSession({ [PENDING_KEY]: JSON.stringify({ at: NOW }) }, { throws: true }), 'Buy'],
+  ]) {
+    const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA }, { session });
+    assert.equal(await p.ctl.ready, true, label);
+    assert.equal(offer(p.els), want, label);
+    assert.deepEqual(p.seen.waits, [], label + ': a reload does not poll');
+    if (want === 'Buy' && label !== 'storage that throws') assert.equal(session.data.size, 0, label + ': a record that says nothing is taken away');
+  }
+  assert.equal(account.PENDING_MS, 10 * 60 * 1000);
+  assert.equal(account.pendingSince(null, NOW), false);
+  assert.equal(account.pendingSince(JSON.stringify({ at: Infinity }), NOW), false);
+});
+
+test('the record goes once the purchase is reported, or with the account that paid', async () => {
+  const marked = () => fakeSession({ [PENDING_KEY]: JSON.stringify({ at: NOW - 1000 }) });
+  // reported on load
+  const owned = page({ 'GET config': ok(CONFIG), 'GET me': ADA_SUPPORTER }, { session: marked() });
+  await owned.ctl.ready;
+  assert.equal(offer(owned.els), 'Owned');
+  assert.equal(owned.session.data.size, 0, 'owned: the record is gone');
+  // nobody signed in on load: the account that paid has left
+  const out = page({ 'GET config': ok(CONFIG), 'GET me': SIGNED_OUT }, { session: marked() });
+  await out.ctl.ready;
+  assert.equal(offer(out.els), 'Sign in to buy');
+  assert.equal(out.session.data.size, 0, 'signed out: the record is gone');
+  // api/me unreadable: says nothing about the payment, so the record stays for the next load
+  const unread = page({ 'GET config': ok(CONFIG), 'GET me': { status: 502, body: '<html>' } }, { session: marked() });
+  await unread.ctl.ready;
+  assert.equal(offer(unread.els), 'Sign in to buy');
+  assert.equal(unread.session.data.size, 1, 'unreadable: the record is kept');
+  // sign out, and delete
+  for (const [label, route, click] of [['Sign out', 'POST auth/logout', 'Sign out'], ['Delete account', 'DELETE me', 'Delete account']]) {
+    const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA, [route]: { status: 204 } }, { session: marked() });
+    await p.ctl.ready;
+    assert.equal(offer(p.els), PROCESSING);
+    await p.els.body.button(click).click();
+    assert.equal(p.session.data.size, 0, label + ': the record is gone with the account');
+    assert.equal(offer(p.els), 'Sign in to buy');
+  }
+  // the poll reports it
+  let asked = 0;
+  const later = page({ 'GET config': ok(CONFIG), 'GET me': () => (++asked >= 2 ? ADA_SUPPORTER : ADA) }, { session: marked(), href: BASE + '?purchase=success' });
+  await later.ctl.ready;
+  assert.equal(offer(later.els), 'Owned');
+  assert.equal(later.session.data.size, 0);
+  // the poll finds the visitor signed out (in another tab): nothing is said, and the record goes
+  let polled = 0;
+  const left = page({ 'GET config': ok(CONFIG), 'GET me': () => (++polled >= 2 ? SIGNED_OUT : ADA) }, { href: BASE + '?purchase=success' });
+  await left.ctl.ready;
+  assert.equal(left.els.note.textContent, '', 'signed out meanwhile: no "Payment received"');
+  assert.equal(offer(left.els), 'Sign in to buy');
+  assert.equal(left.session.data.size, 0);
+  // storage that refuses: the page itself still holds the payment, and nothing throws
+  const blocked = page({ 'GET config': ok(CONFIG), 'GET me': ADA }, { session: fakeSession({}, { throws: true }), href: BASE + '?purchase=success' });
+  assert.equal(await blocked.ctl.ready, true);
+  assert.equal(offer(blocked.els), PROCESSING);
+  const none = page({ 'GET config': ok(CONFIG), 'GET me': ADA }, { session: null, href: BASE + '?purchase=success' });
+  assert.equal(await none.ctl.ready, true);
+  assert.equal(offer(none.els), PROCESSING, 'no sessionStorage at all: the same');
+});
+
+test('a ?purchase=success link opened by someone not signed in says nothing and asks nothing', async () => {
+  for (const [label, me] of [
+    ['signed out', SIGNED_OUT],
+    ['signed out, with an entitlement listed', ok({ user: null, entitlements: ['supporter'] })],
+    ['api/me unreadable', { status: 500, body: { user: { email: 'ada@example.com' }, entitlements: [] } }],
+  ]) {
+    const p = page({ 'GET config': ok(CONFIG), 'GET me': me }, { href: BASE + '?purchase=success' });
+    assert.equal(await p.ctl.ready, true, label);
+    assert.deepEqual(p.seen.replaced, ['/selfreportle/'], label + ': the flag is taken out of the address');
+    assert.deepEqual(p.seen.waits, [], label + ': no poll');
+    assert.deepEqual(p.calls.map((c) => c.method + ' ' + c.route), ['GET config', 'GET me'], label + ': api/me once');
+    assert.equal(p.els.note.textContent, '', label + ': no "Payment received", no thank-you');
+    assert.equal(p.els.section.scrolled, 0, label + ': nothing to bring into view');
+    assert.equal(p.session.data.size, 0, label + ': nothing stored');
+  }
+});
+
+test('a landing from Checkout on a site that sells nothing now asks nothing more', async () => {
+  const p = page({ 'GET config': ok({ auth: { google: true }, shop: { products: [] } }), 'GET me': ADA }, { href: BASE + '?purchase=success' });
+  assert.equal(await p.ctl.ready, true);
+  assert.deepEqual(p.seen.waits, []);
+  assert.deepEqual(p.calls.map((c) => c.method + ' ' + c.route), ['GET config', 'GET me']);
+  assert.equal(p.els.note.textContent, '');
+  assert.equal(p.els.section.scrolled, 0);
+  assert.deepEqual(p.els.body.buttons().map((b) => b.textContent), ['Sign out', 'Delete account'], 'the account is drawn, and no product');
+});
+
+test('Buy answered 409 payment_pending: "processing" and the note, and no second Checkout', async () => {
+  const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA, 'POST checkout': { status: 409, body: { error: 'payment_pending' } } });
+  await p.ctl.ready;
+  await p.els.body.button('Buy').click();
+  assert.deepEqual(p.seen.assigned, [], 'nowhere to go');
+  assert.equal(offer(p.els), PROCESSING, 'the payment the kit knows of is on its way');
+  assert.equal(p.els.note.textContent, account.WORDS.paymentPending);
+  assert.deepEqual(JSON.parse(p.session.data.get(PENDING_KEY)), { at: NOW }, 'and a reload keeps it');
+  assert.deepEqual(p.calls.map((c) => c.method + ' ' + c.route), ['GET config', 'GET me', 'POST checkout'], 'not taken for "owned": api/me is not asked again');
+  // any other 409 is what it was: already owned, asked again
+  for (const body of [{ error: 'already_owned' }, { error: 'x' }, 'not json', undefined]) {
+    let me = 0;
+    const q = page({ 'GET config': ok(CONFIG), 'GET me': () => (me++ ? ADA_SUPPORTER : ADA), 'POST checkout': { status: 409, body } });
+    await q.ctl.ready;
+    await q.els.body.button('Buy').click();
+    assert.equal(offer(q.els), 'Owned', JSON.stringify(body));
+    assert.equal(q.session.data.size, 0, JSON.stringify(body) + ': nothing held');
+  }
+});
+
+test('a 401 at Buy signs the page out and lets the record go', async () => {
+  const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA, 'POST checkout': { status: 401, body: { error: 'signin' } } }, { session: fakeSession({ [PENDING_KEY]: JSON.stringify({ at: NOW - account.PENDING_MS }) }) });
+  await p.ctl.ready;
+  p.session.data.set(PENDING_KEY, JSON.stringify({ at: NOW }));
+  await p.els.body.button('Buy').click();
+  assert.equal(offer(p.els), 'Sign in to buy');
+  assert.equal(p.session.data.size, 0);
+});
+
+test('Delete account puts the keyboard back on the section', async () => {
+  FakeElement.focused = null;
+  const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA, 'DELETE me': { status: 204 } });
+  await p.ctl.ready;
+  await p.els.body.button('Delete account').click();
+  assert.equal(FakeElement.focused && FakeElement.focused.textContent, 'Sign in with Google', 'the control it was on is gone; focus lands on the first one');
+  FakeElement.focused = null;
+  const refused = page({ 'GET config': ok(CONFIG), 'GET me': ADA, 'DELETE me': { status: 500 } });
+  await refused.ctl.ready;
+  await refused.els.body.button('Delete account').click();
+  assert.equal(FakeElement.focused && FakeElement.focused.textContent, 'Sign out', 'refused: focus on the first control, still signed in');
+});
+
+test("only the kit's 204 is a sign-out or a deletion that happened", async () => {
+  for (const status of [200, 201, 202, 205, 301, 401, 403, 404, 409, 500, 502]) {
+    const p = page({ 'GET config': ok(CONFIG), 'GET me': ADA, 'POST auth/logout': { status, body: {} }, 'DELETE me': { status, body: {} } });
+    await p.ctl.ready;
+    await p.els.body.button('Sign out').click();
+    assert.equal(p.els.note.textContent, account.NOTES.signOutFailed, status + ': not signed out');
+    await p.els.body.button('Delete account').click();
+    assert.equal(p.els.note.textContent, account.NOTES.deleteFailed, status + ': not deleted');
+    assert.match(p.els.body.textContent, /^Signed in as ada@example\.com/, status + ': the page still says who is signed in');
+  }
+});
+
+test('the entitlements api/me reports are read up to fifty', () => {
+  const many = Array.from({ length: 60 }, (_, i) => 'e' + i);
+  assert.deepEqual(account.readMe({ user: null, entitlements: many }).entitlements, many.slice(0, 50));
 });
 
 test('the shop is drawn only as this site sells it, and server text is checked before it is drawn', () => {
