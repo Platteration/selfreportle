@@ -8,6 +8,12 @@
  * mod_headers served .git/ and every other file with none of the headers (the rules sat in
  * <IfModule>), and Apache sent no HSTS behind a TLS-terminating proxy (`env=HTTPS`).
  *
+ * The site's API (server/start.mjs, server/kit) runs here too, in this process with a fake Google
+ * and a fake Stripe injected into the kit: behind nginx's `location ^~ /api/`, which must hand it
+ * every address under /api/ with its own headers and none of the site's but HSTS (one add_header
+ * in a location drops every inherited one), and behind the Apache ProxyPass that .htaccess and
+ * README.md tell an owner to put in the virtual host, since .htaccess cannot proxy.
+ *
  * Needs nginx, Apache as Debian and Ubuntu lay it out (/usr/sbin/apache2, its modules in
  * /usr/lib/apache2/modules) and openssl. GitHub's ubuntu-24.04 runner has all of them, at the
  * versions Ubuntu 24.04 ships (nginx 1.24.0, Apache 2.4.58). Where one is missing this says so and
@@ -116,6 +122,42 @@ function siteFor(label, host, base) {
 
 /** Every site path is a 200; the planted files, the folders and a missing page the not-found page. */
 const SERVED = ['', ...site.siteFiles()];
+/** What the API (server/kit) sends on every answer, and what it never does: the site's own
+ *  headers, which a location that inherited them would send beside its own. */
+const KIT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+const SITE_ONLY = ['permissions-policy', 'x-frame-options', 'cross-origin-opener-policy'];
+
+/** The API as server/start.mjs runs it, on a loopback port of its own, with the fakes injected. */
+async function startApi(appUrl) {
+  const { start } = await import('../../server/start.mjs');
+  const F = await import('../api-fakes.mjs');
+  const fakes = await F.createFakes();
+  const dataDir = fs.mkdtempSync(path.join(work, 'api-'));
+  const log = [];
+  const api = await start({ env: F.envFor(appUrl), dataDir, port: 0, fetch: fakes.fetch, log: (level, message) => log.push(level + ': ' + message) });
+  return { api, fakes, log, port: new URL(api.url).port };
+}
+
+/** The API's answers through a host that proxies `apiBase` (the site's api/ path) to it. */
+async function apiThrough(label, origin, apiBase, appUrl) {
+  const problems = [];
+  const config = await get(origin + apiBase + 'config');
+  let body = null;
+  try { body = JSON.parse(config.body); } catch (e) { problems.push('api/config is not JSON: ' + config.body.slice(0, 80)); }
+  if (config.status !== 200 || !body || body.auth.google !== true || !body.shop.products.some((x) => x.id === 'supporter' && x.price)) problems.push('api/config answered ' + config.status + ' ' + config.body.slice(0, 120));
+  for (const [name, want] of [['content-security-policy', KIT_CSP], ['cache-control', 'public, max-age=60'], ['referrer-policy', 'no-referrer'], ['x-content-type-options', 'nosniff'], ['cross-origin-resource-policy', 'same-origin'], ['strict-transport-security', SITE_HEADERS['strict-transport-security']]]) {
+    if (config.headers[name] !== want) problems.push('api/config ' + name + ': ' + config.headers[name] + ', not ' + want);
+  }
+  for (const name of SITE_ONLY) if (config.headers[name] !== undefined) problems.push("api/config carries the site's " + name);
+  const start = await get(origin + apiBase + 'auth/google/start?return=%2F');
+  const google = start.headers.location ? new URL(start.headers.location) : null;
+  if (start.status !== 302 || !google || google.origin + google.pathname !== 'https://accounts.google.com/o/oauth2/v2/auth' || google.searchParams.get('redirect_uri') !== appUrl + 'api/auth/google/callback') problems.push('api/auth/google/start answered ' + start.status + ' ' + start.headers.location);
+  if (!/^__Host-selfreportle-oauth=[^;]+; /.test([].concat(start.headers['set-cookie'] || [])[0] || '')) problems.push('no sign-in cookie: ' + start.headers['set-cookie']);
+  if (start.headers['referrer-policy'] !== 'no-referrer') problems.push('the redirect to Google carries Referrer-Policy ' + start.headers['referrer-policy']);
+  const unknown = await get(origin + apiBase + 'nothing');
+  if (unknown.status !== 404 || !/^application\/json/.test(unknown.headers['content-type'] || '') || unknown.body.includes(NOT_FOUND)) problems.push("api/nothing is not the API's JSON 404: " + unknown.status + ' ' + unknown.headers['content-type']);
+  check(problems.length === 0, label + ": everything under api/ is the API's, with its own headers and HSTS, and none of the site's" + (problems.length ? '\n  ' + problems.join('\n  ') : ''));
+}
 const REFUSED = [...PLANTED, '.htaccess', 'lib/', 'icons/', '.well-known/', 'no/such/page'];
 
 const children = [];
@@ -135,6 +177,8 @@ async function nginx() {
   fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
   spawnSync(OPENSSL, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-days', '1', '-keyout', path.join(dir, 'key.pem'), '-out', path.join(dir, 'cert.pem')], { stdio: 'ignore' });
   const [plain, tls] = [await freePort(), await freePort()];
+  const origin = 'https://127.0.0.1:' + tls + '/';
+  const backend = await startApi(origin);
   /* deploy/nginx.conf as its header says to install it: root and the certificate paths set, and
    * here the ports. Each edit has to find its line exactly once, so a file that has moved on fails
    * here rather than being tested as something it no longer is. The listen lines keep whatever
@@ -152,6 +196,7 @@ async function nginx() {
   edit('  root /var/www/selfreportle;\n', '  root ' + folder + ';\n');
   edit('/etc/letsencrypt/live/example.com/fullchain.pem', path.join(dir, 'cert.pem'));
   edit('/etc/letsencrypt/live/example.com/privkey.pem', path.join(dir, 'key.pem'));
+  edit('    proxy_pass http://127.0.0.1:8788;\n', '    proxy_pass http://127.0.0.1:' + backend.port + ';\n');
   fs.writeFileSync(path.join(dir, 'site.conf'), conf);
   // The http {} block a stock Debian or Ubuntu nginx.conf includes it from, less the logging.
   const temp = ['client_body', 'proxy', 'fastcgi', 'uwsgi', 'scgi'].map((t) => '  ' + t + '_temp_path ' + path.join(dir, t + '_temp') + ';');
@@ -181,11 +226,12 @@ async function nginx() {
   server.stdout.on('data', (d) => { output += d; });
   server.stderr.on('data', (d) => { output += d; });
   children.push(server);
-  const origin = 'https://127.0.0.1:' + tls + '/';
   await waitFor(origin, {}, () => output + fs.readFileSync(path.join(dir, 'logs', 'error.log'), 'utf8'));
 
   const served = [];
-  for (const p of SERVED) {
+  // Everything under api/ is the API's (below), api/config included: the folder's copy is for a
+  // host that runs no API.
+  for (const p of SERVED.filter((x) => !x.startsWith('api/'))) {
     const r = await get(origin + p);
     if (r.status !== 200) served.push('/' + p + ' answered ' + r.status);
     served.push(...headerProblems(r).map((x) => '/' + p + ' ' + x));
@@ -204,6 +250,18 @@ async function nginx() {
 
   const redirect = await get('http://127.0.0.1:' + plain + '/a/b?x=1');
   check(redirect.status === 301 && redirect.headers.location === 'https://127.0.0.1/a/b?x=1', 'nginx: port 80 redirects to https');
+
+  await apiThrough('nginx', origin, 'api/', origin);
+  const logout = await new Promise((resolve, reject) => {
+    const req = https.request(origin + 'api/auth/logout', { method: 'POST', headers: { origin: origin.replace(/\/$/, '') }, rejectUnauthorized: false, agent: false }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject);
+    req.end();
+  });
+  check(logout === 204, "nginx: a POST from the site's own origin reaches the API with its Origin (" + logout + ')');
+  check(backend.log.length === 0 && backend.fakes.unexpected.length === 0, 'nginx: the API logged nothing and asked the fakes nothing unexpected' + (backend.log.length ? ': ' + backend.log.join(' | ') : ''));
+  await backend.api.close();
+  const down = await get(origin + 'api/config');
+  check(down.status === 502 && down.headers['strict-transport-security'] === SITE_HEADERS['strict-transport-security'], 'nginx: with the API stopped, api/ answers 502 (the page then draws nothing), still with HSTS (' + down.status + ')');
 }
 
 /*
@@ -212,7 +270,7 @@ async function nginx() {
  * the least AllowOverride .htaccess's header asks for. The site is under BASE, as it was built,
  * through an Alias.
  */
-async function apache(label, modules) {
+async function apache(label, modules, extra = []) {
   const dir = path.join(work, label);
   const folder = siteFor(label, 'apache', BASE);
   const port = await freePort();
@@ -242,6 +300,7 @@ async function apache(label, modules) {
     '  AllowOverride FileInfo Indexes Options',
     '  Require all granted',
     '</Directory>',
+    ...extra,
     '',
   ].join('\n'));
   const server = spawn(APACHE, ['-f', path.join(dir, 'httpd.conf'), '-DFOREGROUND'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -284,6 +343,22 @@ async function apacheChecks() {
 
   const redirect = await get(origin + 'a?x=1');
   check(redirect.status === 301 && new RegExp('^https://127\\.0\\.0\\.1:\\d+' + BASE + 'a\\?x=1$').test(redirect.headers.location || ''), 'Apache: plain http redirects to https');
+
+  /* The API behind Apache: the ProxyPass .htaccess and README.md give for the virtual host, with
+   * HSTS set there, since a proxied answer never reads the folder's .htaccess. The site is under
+   * BASE, so the API's APP_URL is too. */
+  const appUrl = 'https://127.0.0.1' + BASE;
+  const backend = await startApi(appUrl);
+  const proxied2 = await apache('apache-proxy', ['rewrite', 'headers', 'proxy', 'proxy_http'], [
+    'ProxyPass "' + BASE + 'api/" "http://127.0.0.1:' + backend.port + BASE + 'api/"',
+    '<Location "' + BASE + 'api/">',
+    '  Header always set Strict-Transport-Security "' + SITE_HEADERS['strict-transport-security'] + '"',
+    '</Location>',
+  ]);
+  await apiThrough('Apache with the ProxyPass in its virtual host', proxied2.origin.replace(BASE, '/'), BASE.slice(1) + 'api/', appUrl);
+  const page = await get(proxied2.origin, proxied);
+  check(page.status === 200 && headerProblems(page).length === 0, 'Apache with the ProxyPass: the site itself is served as before, with every header');
+  await backend.api.close();
 
   const bare = await apache('apache-bare', []);
   /* Debian and Ubuntu ship with both off. A site served without them would hand out .git/ and

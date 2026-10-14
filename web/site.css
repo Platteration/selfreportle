@@ -87,3 +87,17 @@ footer p { margin: 4px 0; }
 .not-found { padding: 40px 0; }
 .not-found h1 { margin-bottom: 10px; }
 .not-found .btn { display: inline-block; margin-top: 8px; padding: 8px 14px; border-radius: 8px; background: var(--info); color: var(--bg); text-decoration: none; font-weight: 600; }
+
+/* Sign in with Google and "Support this app" (account.js): drawn only where the host runs the
+   site's API and its keys are set; everywhere else the section keeps its hidden attribute. */
+.account { margin-top: 28px; border-top: 1px solid var(--line); }
+.account .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.account .btn { padding: 7px 14px; border: 0; border-radius: 8px; background: var(--info); color: var(--bg); font: inherit; font-weight: 600; cursor: pointer; }
+.account .btn:disabled { opacity: .6; cursor: default; }
+.account .signed-in { margin: 8px 0 0; }
+.account .product { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--card); }
+.account .product p { margin: 4px 0; }
+.account .product-text { color: var(--muted); font-size: 14px; }
+.account .owned { font-weight: 600; }
+.account-note { margin: 8px 0 0; font-size: 14px; }
+.account-note:empty { display: none; }

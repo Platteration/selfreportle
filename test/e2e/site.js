@@ -6,7 +6,11 @@
  * checker in Chromium under that policy: every kind of file it reads, a hostile saved page,
  * the not-found page at depth, a framing attempt from another origin, JavaScript off, a script
  * that fails to load, and the same site from a host that sends no headers at all, where only
- * the pages' <meta> policy protects it.
+ * the pages' <meta> policy protects it. Then the site's optional API (server/kit): absent (the
+ * api/config the site publishes, and a host where api/config is a 404), where the page draws
+ * no account and no shop; and mounted at the site's api/ with a fake Google and a fake Stripe
+ * injected into the kit, where it signs in, buys "Support this app", takes Stripe's signed
+ * webhook, draws "Owned", signs out, deletes the account, and reads a failed sign-in.
  *
  * It fails on any Content-Security-Policy or Trusted Types violation, any Permissions-Policy
  * complaint, any page error or console error, and any request outside the site, so a policy
@@ -66,7 +70,10 @@ const TYPES = {
 
 /** A static host for one built folder at BASE: Netlify's reading of _headers and _redirects
  *  when `headers` is true, a host that sends no headers (GitHub Pages) when it is false. Every
- *  path asked for is recorded, and anything outside BASE is answered 404 and recorded too. */
+ *  path asked for is recorded (and every request, with its method), and anything outside BASE is
+ *  answered 404 and recorded too. With `state.api` set, everything under BASE + 'api/' goes to
+ *  it, as a host that runs the site's API sends it there (Cloudflare's _routes.json, nginx's
+ *  `location ^~ /api/`). */
 function host(dir, headers) {
   const { rules, redirects } = hostRules(dir);
   const headersFor = (sitePath) => {
@@ -78,7 +85,8 @@ function host(dir, headers) {
     }
     return out;
   };
-  const seen = { paths: [], outside: [] };
+  const seen = { paths: [], outside: [], requests: [] };
+  const state = { api: null };
   const notFound = (res, sitePath) => {
     res.writeHead(404, { 'Content-Type': TYPES['.html'], ...headersFor(sitePath) });
     res.end(fs.readFileSync(path.join(dir, '404.html')));
@@ -86,7 +94,9 @@ function host(dir, headers) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     seen.paths.push(url.pathname);
+    seen.requests.push(req.method + ' ' + url.pathname);
     if (!url.pathname.startsWith(BASE)) { seen.outside.push(url.pathname); res.writeHead(404); res.end(); return; }
+    if (state.api && url.pathname.startsWith(BASE + 'api/')) return state.api(req, res);
     let rel;
     try { rel = decodeURIComponent(url.pathname.slice(BASE.length)); } catch (e) { rel = '\0'; }
     const sitePath = '/' + rel;
@@ -99,7 +109,29 @@ function host(dir, headers) {
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || (path.basename(file) === 'LICENSE' ? 'text/plain; charset=utf-8' : 'application/octet-stream'), ...headersFor(sitePath) });
     res.end(fs.readFileSync(file));
   });
-  return { server, seen, headersFor };
+  return { server, seen, headersFor, state };
+}
+
+/** What the page shows of the account and the shop (web/account.js). */
+function accountView(p) {
+  return p.evaluate(() => {
+    const shown = (id) => getComputedStyle(document.getElementById(id)).display !== 'none';
+    return {
+      section: shown('account'),
+      local: shown('privacyLocal'),
+      account: shown('privacyAccount'),
+      text: document.getElementById('accountBody').innerText,
+      note: document.getElementById('accountNote').textContent,
+      buttons: [...document.querySelectorAll('#accountBody button')].map((b) => b.textContent),
+    };
+  });
+}
+
+/** Every request a host saw for the site's API is a GET of api/config: nothing else of the API was
+ *  asked for, and nothing was sent to the site at all (no POST: the picked file stays in the page). */
+function onlyAskedConfig(seen) {
+  const api = seen.requests.filter((r) => r.includes(BASE + 'api/'));
+  return api.length > 0 && api.every((r) => r === 'GET ' + BASE + 'api/config') && seen.requests.every((r) => /^(GET|HEAD) /.test(r));
 }
 
 function listen(server) {
@@ -270,6 +302,9 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     }));
     check(state.cls === 'started', 'the checker started (html class "' + state.cls + '")');
     check(state.note === 'none' && state.app !== 'none', 'the safety note is hidden and the picker shown');
+    await page.waitForLoadState('networkidle');
+    let view = await accountView(page);
+    check(!view.section && view.local && !view.account && view.buttons.length === 0, "the site's api/config says nothing is on: no account, no shop, and the privacy line for a site without them");
     check(await trustedTypesEnforced(context, home) === 'TypeError', 'Trusted Types are enforced: an HTML string sink throws');
 
     let r = await pick(page, 'sd.png');
@@ -353,6 +388,7 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     await page.waitForFunction(() => { const n = document.querySelector('#report .file .name'); return n && n.textContent === 'dropped.txt'; }, null, { timeout: 10000 }).catch(() => {});
     check(dropped && await page.evaluate(() => /Strong AI indicators/.test((document.querySelector('#report .overall') || {}).textContent || '')), 'a dropped file is read like a picked one');
     clean('the checker', seen);
+    check(onlyAskedConfig(main.seen), 'the page asked the API for api/config and nothing else, and sent the site nothing (' + main.seen.requests.filter((x) => !/^GET /.test(x) || x.includes('/api/')).join(', ') + ')');
 
     // ---- the not-found page, at depth, and the files that are not the site -------------------
     const nf = await watched(context, origin, { expect404: true });
@@ -405,6 +441,17 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     check(/did not load/.test(await bp.locator('#startNote').innerText()), 'saying what happened');
     await broken.close();
 
+    // ---- account.js that does not load: the checker is not the account's to take away ---------
+    const noAccount = await browser.newContext();
+    await noAccount.route('**/account.js', (route) => route.abort());
+    const nap = await noAccount.newPage();
+    await nap.goto(home);
+    await nap.waitForLoadState('networkidle');
+    check(await nap.evaluate(() => document.documentElement.className) === 'started' && await nap.locator('#drop').isVisible() && !(await nap.locator('#startNote').isVisible()),
+      'account.js failing to load leaves the checker started, its picker shown and the safety note quiet');
+    check(!(await nap.locator('#account').isVisible()), 'and draws no account');
+    await noAccount.close();
+
     // ---- a host that sends no headers: the <meta> policy alone -------------------------------
     const bareHome = bareOrigin + BASE;
     const bw = await watched(context, bareOrigin);
@@ -418,8 +465,143 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     check(/AI use is disclosed/.test(r.banner), 'and a hostile saved page');
     r = await pick(bw.page, 'signed.png');
     check(r.tags.includes('!Signed by an unvouched signer, bound to this file'), 'and verifies credentials');
+    view = await accountView(bw.page);
+    check(!view.section && view.local && !view.account, 'and draws no account and no shop');
     clean('the header-less host', bw.seen);
+    check(onlyAskedConfig(bare.seen), 'it too asked the API for api/config alone, and sent nothing');
     check(bare.seen.outside.length === 0 && main.seen.outside.length === 0, 'no request reached either server outside ' + BASE);
+
+    // ---- a host whose api/config is a 404: still no account, and the checker works ----------
+    const noApiDir = path.join(work, 'noapi');
+    site.build(noApiDir, { host: 'pages', base: BASE });
+    fs.rmSync(path.join(noApiDir, 'api'), { recursive: true });
+    const noApi = host(noApiDir, false);
+    const noApiOrigin = await listen(noApi.server);
+    const na = await watched(context, noApiOrigin, { expect404: true });
+    await na.page.goto(noApiOrigin + BASE);
+    await na.page.waitForLoadState('networkidle');
+    view = await accountView(na.page);
+    check(!view.section && view.local && !view.account, 'api/config a 404: no account, no shop, and the privacy line for a site without them');
+    check(JSON.stringify(noApi.seen.requests.filter((x) => x.includes('/api/'))) === JSON.stringify(['GET ' + BASE + 'api/config']), 'the page asked api/config once and nothing more (' + noApi.seen.requests.filter((x) => x.includes('/api/')).join(', ') + ')');
+    r = await pick(na.page, 'sd.png');
+    check(/AI-generated/.test(r.banner), 'and the checker works');
+    clean('the host with no api/config', na.seen);
+    noApi.server.close();
+
+    // ---- the site's API on: sign in, buy, Stripe's webhook, sign out, delete ------------------
+    /* The kit as the site deploys it (server/catalogue.js), mounted at the site's api/ on the same
+     * origin, with a fake Google and a fake Stripe injected through its fetch: nothing points it at
+     * another host. Google's and Stripe's own pages are answered in the browser, at the network
+     * layer, through the DevTools protocol's Fetch domain: a navigation to accounts.google.com is
+     * the next hop of the kit's redirect, which Playwright's page.route never sees (measured: the
+     * browser went to the network for it), and the Fetch domain does. */
+    const { createNodeHandler } = await import('../../server/kit/node.js');
+    const { createMemoryStore } = await import('../../server/kit/store.js');
+    const catalogue = (await import('../../server/catalogue.js')).default;
+    const F = await import('../api-fakes.mjs');
+    const fakes = await F.createFakes();
+    const withApi = host(netlify, true);
+    const apiOrigin = await listen(withApi.server);
+    const APP_URL = apiOrigin + BASE;
+    const apiLog = [];
+    withApi.state.api = createNodeHandler({ catalogue, env: F.envFor(APP_URL), store: createMemoryStore(), fetch: fakes.fetch, log: (level, message) => apiLog.push(level + ': ' + message) });
+    check(withApi.state.api.features.signIn && withApi.state.api.features.shop, 'the API is on: sign-in and the shop');
+    const apiContext = await browser.newContext();
+    const ap = await watched(apiContext, apiOrigin);
+    const dialogs = [];
+    ap.page.on('dialog', (d) => { dialogs.push(d.message()); d.accept(); });
+    const person = { sub: '1001', email: 'ada@example.com' };
+    const answered = [];
+    const webhooks = [];
+    const cdp = await apiContext.newCDPSession(ap.page);
+    cdp.on('Fetch.requestPaused', async (e) => {
+      const url = e.request.url;
+      answered.push(url);
+      let location = null;
+      try {
+        if (url.startsWith('https://accounts.google.com/')) location = fakes.consent(url, person).href;
+        if (url.startsWith('https://checkout.stripe.com/')) {
+          location = APP_URL + '?purchase=success';
+          // Paid; Stripe's signed event arrives after the visitor is back, as it can, so what
+          // draws the purchase is the page asking api/me again.
+          const delivery = F.signedDelivery(fakes.paid(url));
+          webhooks.push(new Promise((resolve) => setTimeout(() => {
+            fetch(APP_URL + 'api/webhooks/stripe', { method: 'POST', headers: { 'stripe-signature': delivery.signature, 'content-type': 'application/json' }, body: delivery.body })
+              .then((res) => resolve(res.status), (err) => resolve(String(err)));
+          }, 1500)));
+        }
+      } catch (err) {
+        answered.push('refused: ' + err.message);
+      }
+      await cdp.send('Fetch.fulfillRequest', location
+        ? { requestId: e.requestId, responseCode: 302, responseHeaders: [{ name: 'Location', value: location }] }
+        : { requestId: e.requestId, responseCode: 404, responseHeaders: [{ name: 'Content-Type', value: 'text/plain' }] }).catch((err) => answered.push('fulfil: ' + err.message));
+    });
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://accounts.google.com/*' }, { urlPattern: 'https://checkout.stripe.com/*' }] });
+    const buttonsAre = (labels) => ap.page.waitForFunction((want) => JSON.stringify([...document.querySelectorAll('#accountBody button')].map((b) => b.textContent)) === want, JSON.stringify(labels), { timeout: 20000 })
+      .then(() => true, () => false);
+    const navigate = (action) => Promise.all([ap.page.waitForNavigation({ waitUntil: 'load', timeout: 20000 }), action()]);
+
+    await ap.page.goto(APP_URL);
+    check(await buttonsAre(['Sign in with Google', 'Sign in to buy']), 'API on, signed out: Sign in with Google, and "Support this app" asks to sign in first');
+    view = await accountView(ap.page);
+    check(view.section && !view.local && view.account, 'the section is drawn, and the privacy line says what Google and Stripe are told and what the site keeps');
+    check(/Support this app · €5\.00/.test(view.text) && /unlocks nothing/.test(view.text), 'the product, its Stripe price and its description (' + view.text.replace(/\n+/g, ' | ') + ')');
+
+    await navigate(() => ap.page.click('#accountSignIn'));
+    check(await buttonsAre(['Sign out', 'Delete account', 'Buy']), 'signed in: Sign out, Delete account and Buy');
+    view = await accountView(ap.page);
+    check(/^Signed in as ada@example\.com/.test(view.text), 'as the email Google gave (' + view.text.split('\n')[0] + ')');
+    check(ap.page.url() === APP_URL, 'back on the page the sign-in started from');
+    // All of the context's cookies: asked for an http address, Playwright leaves Secure ones out.
+    const siteCookies = async () => (await apiContext.cookies()).filter((c) => c.domain === '127.0.0.1');
+    const jar = await siteCookies();
+    const session = jar.find((c) => c.name === '__Host-selfreportle-session');
+    check(!!session && session.httpOnly && session.secure && session.sameSite === 'Lax' && session.path === '/', 'the session is a __Host- cookie: HttpOnly, Secure, SameSite=Lax, Path=/ (' + JSON.stringify(session && { ...session, value: '…' }) + ')');
+    check(!jar.some((c) => c.name === '__Host-selfreportle-oauth'), 'and the sign-in cookie is gone');
+    check(!(await ap.page.evaluate(() => document.cookie)).includes('selfreportle'), 'which no script in the page can read');
+
+    const beforePick = withApi.seen.requests.length;
+    r = await pick(ap.page, 'c2pa.jpg');
+    check(/AI-generated/.test(r.banner) && withApi.seen.requests.length === beforePick, 'signed in, a picked file is read in the page and nothing is sent (' + withApi.seen.requests.slice(beforePick).join(', ') + ')');
+
+    await navigate(() => ap.page.click('#supportBuy'));
+    const thanked = await ap.page.waitForFunction(() => document.getElementById('accountNote').textContent === 'Thank you — Support this app is unlocked.', null, { timeout: 25000 }).then(() => true, () => false);
+    const statuses = await Promise.all(webhooks);
+    check(JSON.stringify(statuses) === '[200]', "Stripe's signed webhook, posted once the visitor is back, is accepted (" + statuses.join(', ') + ')');
+    check(thanked, 'the page asked api/me again until the purchase showed, and says thank you');
+    view = await accountView(ap.page);
+    check(/Owned/.test(view.text) && !view.buttons.includes('Buy'), 'the entitlement is drawn: Owned, in place of Buy');
+    check(ap.page.url() === APP_URL, '?purchase=success has left the address');
+
+    await ap.page.click('#accountSignOut');
+    check(await buttonsAre(['Sign in with Google', 'Sign in to buy']), 'signed out');
+    check(!(await siteCookies()).some((c) => c.name === '__Host-selfreportle-session'), 'and the session cookie is cleared');
+    await navigate(() => ap.page.click('#accountSignIn'));
+    check(await buttonsAre(['Sign out', 'Delete account']) && /Owned/.test((await accountView(ap.page)).text), "signed in again: the support is the Google account's, not the browser's");
+
+    await ap.page.click('#accountDelete');
+    check(await buttonsAre(['Sign in with Google', 'Sign in to buy']), 'Delete account: signed out');
+    check(dialogs.length === 1 && /^Delete your account\?/.test(dialogs[0]) && /support/.test(dialogs[0]), 'after asking first, saying the support goes with it (' + dialogs.join(' | ') + ')');
+    await navigate(() => ap.page.click('#accountSignIn'));
+    check(await buttonsAre(['Sign out', 'Delete account', 'Buy']), 'signed in after the deletion: nothing is owned');
+
+    await ap.page.goto(APP_URL + 'api/auth/google/callback?code=forged&state=forged');
+    const failedNote = await ap.page.waitForFunction(() => document.getElementById('accountNote').textContent === "Sign-in didn't complete.", null, { timeout: 10000 }).then(() => true, () => false);
+    check(failedNote && ap.page.url() === APP_URL, "a forged callback comes back as ?signin=failed: said once, and the flag taken out of the address");
+
+    const google = answered.filter((u) => u.startsWith('https://accounts.google.com/o/oauth2/v2/auth?'));
+    const stripe = answered.filter((u) => /^https:\/\/checkout\.stripe\.com\/c\/pay\/cs_test_/.test(u));
+    check(google.length === 3 && stripe.length === 1 && answered.length === 4, "Google's sign-in three times and Stripe's Checkout once, each answered in the browser (" + answered.length + ')');
+    const away = ap.seen.outside.filter((u) => !answered.includes(u));
+    ap.seen.outside = away;
+    clean('sign-in and the shop', ap.seen);
+    const apiRoutes = [...new Set(withApi.seen.requests.filter((x) => x.includes(BASE + 'api/')).map((x) => x.replace(BASE + 'api/', '').replace(/\?.*$/, '')))].sort();
+    check(JSON.stringify(apiRoutes) === JSON.stringify(['DELETE me', 'GET auth/google/callback', 'GET auth/google/start', 'GET config', 'GET me', 'POST auth/logout', 'POST checkout', 'POST webhooks/stripe']), 'the API was asked what the flow needs and nothing else (' + apiRoutes.join(', ') + ')');
+    check(fakes.unexpected.length === 0, 'the kit asked the fakes nothing unexpected (' + fakes.unexpected.join(' | ') + ')');
+    check(JSON.stringify(apiLog) === JSON.stringify(['warn: kit (selfreportle): sign-in failed (no valid sign-in cookie)']), 'and logged one line, for the forged callback, naming no value (' + apiLog.join(' | ') + ')');
+    await apiContext.close();
+    withApi.server.close();
 
     await context.close();
   } finally {

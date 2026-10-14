@@ -74,8 +74,13 @@ function rawGet(port, target, host) {
     return f;
   }
 
+  /* Every path the extension and its pages asked this site for. The website's API lives under
+   * api/ on the website's own origin, and the extension never calls it: none of these may be
+   * one of its routes (test/website.test.js holds the same of the extension's files). */
+  const served = [];
   const server = http.createServer((req, res) => {
     const requested = req.url.split('?')[0];
+    served.push(requested);
     if (requested === '/redirect-to-loopback.png') {
       hits.redirector++;
       res.statusCode = 302;
@@ -159,6 +164,11 @@ function rawGet(port, target, host) {
       '--host-resolver-rules=MAP www.instagram.com 127.0.0.1:' + port + ',MAP *.instagram.com 127.0.0.1:' + port,
     ],
   });
+  /* Anything the extension's pages or worker ask of the website's API, Google's sign-in or Stripe,
+   * wherever it is addressed. */
+  const backend = [];
+  const BACKEND = /\/api\/(?:config|me|checkout|portal|auth|webhooks)\b|accounts\.google\.com|googleapis\.com|stripe\.com/;
+  ctx.on('request', (r) => { if (BACKEND.test(r.url())) backend.push(r.url()); });
   try {
     let sw = ctx.serviceWorkers()[0];
     if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 30000 });
@@ -718,6 +728,9 @@ function rawGet(port, target, host) {
     assert.equal(overridden.flat, 'high', 'and the flat item is left as it was');
     await sw.evaluate(async () => chrome.storage.sync.clear());
     await page.waitForTimeout(1500);
+    assert.ok(served.length > 20, 'the fixture site was read');
+    assert.deepEqual(served.filter((p) => p.startsWith('/api/')), [], "the extension asked the site for nothing under api/, where the website's API lives");
+    assert.deepEqual(backend, [], 'nor asked the API, Google or Stripe for anything anywhere');
     console.log('e2e OK:', JSON.stringify({ overall: result.overall, site: result.site.verdict, text: result.text.verdict, images: result.images.counts }));
   } finally {
     await ctx.close();

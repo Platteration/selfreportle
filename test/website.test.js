@@ -48,18 +48,28 @@ function apacheHeaders() {
   return out;
 }
 
-/** Every `add_header` in deploy/nginx.conf, as { Header: value }. Each must carry `always`, or
- *  nginx leaves it off the 404 page and every other error response. */
+/** deploy/nginx.conf without its comments, and the block of the one location that proxies the
+ *  site's API (`location ^~ /api/`), apart. */
+function nginxParts() {
+  const conf = read('deploy/nginx.conf').replace(/^\s*#.*$/gm, '');
+  const api = [...conf.matchAll(/^ {2}location \^~ \/api\/ \{\n([^}]*)^ {2}\}\n/gm)];
+  assert.equal(api.length, 1, 'nginx.conf: one `location ^~ /api/` block');
+  return { site: conf.replace(api[0][0], ''), api: api[0][1] };
+}
+
+/** Every `add_header` in deploy/nginx.conf outside the API's location, as { Header: value }.
+ *  Each must carry `always`, or nginx leaves it off the 404 page and every other error response. */
 function nginxHeaders() {
-  const conf = read('deploy/nginx.conf');
+  const { site: conf } = nginxParts();
   const out = {};
   for (const m of conf.matchAll(/^\s*add_header\s+([A-Za-z-]+)\s+"([^"]*)"\s+always;\s*$/gm)) {
     assert.ok(!Object.prototype.hasOwnProperty.call(out, m[1]), 'nginx.conf: ' + m[1] + ' is set once');
     out[m[1]] = m[2];
   }
   assert.equal([...conf.matchAll(/^\s*add_header\b/gm)].length, Object.keys(out).length, 'nginx.conf: every add_header is quoted and `always`');
-  // add_header in a location replaces every inherited one there, so they all live at server level
-  assert.doesNotMatch(conf.replace(/^\s*#.*$/gm, ''), /location[^{]*\{[^}]*add_header/, 'nginx.conf: no location sets a header of its own');
+  // add_header in a location replaces every inherited one there, so they all live at server level,
+  // but for the API's location, whose one header the next test holds
+  assert.doesNotMatch(conf, /location[^{]*\{[^}]*add_header/, 'nginx.conf: no location but the API\'s sets a header of its own');
   return out;
 }
 
@@ -82,12 +92,32 @@ const META_LEAVES_OUT = ['frame-ancestors'];
 
 const HEADERS = netlifyHeaders()['/*'];
 const SITE_PAGES = ['web/index.html', 'web/404.html'];
-const SITE_SCRIPTS = ['web/app.js', 'web/guard.js'];
+const SITE_SCRIPTS = ['web/app.js', 'web/account.js', 'web/guard.js'];
 
 test('one policy: _headers, .htaccess and nginx.conf send the same headers with the same values', () => {
   assert.ok(HEADERS, '_headers has a /* rule');
   assert.deepEqual(apacheHeaders(), HEADERS, '.htaccess sends exactly what _headers does');
   assert.deepEqual(nginxHeaders(), HEADERS, 'deploy/nginx.conf sends exactly what _headers does');
+});
+
+/* The site's API (server/kit) sends its own headers: a policy of its own, no-store, no referrer.
+ * In nginx a location with one add_header inherits none of the server block's, which is what
+ * keeps the site's policy and Cache-Control from being sent beside the API's (a browser reads the
+ * last of two Referrer-Policy values); its one header is HSTS, as the server block writes it. */
+test("nginx hands everything under /api/ to the site's API, and sends nothing of its own there but HSTS", () => {
+  const { api } = nginxParts();
+  const lines = api.split('\n').map((l) => l.trim()).filter(Boolean);
+  assert.deepEqual(lines, [
+    'proxy_pass http://127.0.0.1:8788;',
+    'proxy_http_version 1.1;',
+    'proxy_set_header Connection "";',
+    'client_max_body_size 1m;',
+    'proxy_read_timeout 30s;',
+    'add_header Strict-Transport-Security "' + HEADERS['Strict-Transport-Security'] + '" always;',
+  ], 'proxy_pass with no URI (the path reaches the API unchanged), to the loopback port server/start.mjs listens on, and HSTS as the server block sends it');
+  const conf = read('deploy/nginx.conf').replace(/^\s*#.*$/gm, '');
+  assert.ok(conf.indexOf('location ^~ /api/ {') > conf.indexOf('listen 443 ssl http2;'), 'in the https server block');
+  assert.equal([...conf.matchAll(/\bproxy_pass\b/g)].length, 1, 'nothing else is proxied');
 });
 
 test('one policy: both pages carry the header policy in their <meta>, less what a <meta> cannot say', () => {
@@ -109,7 +139,7 @@ test('the policy starts from nothing and allows only what the checker loads', ()
   assert.deepEqual(d['script-src'], ["'self'"], "scripts are the site's own files: nothing inline, nothing evaluated");
   assert.deepEqual(d['style-src'], ["'self'"], 'one stylesheet, no inline style');
   assert.deepEqual(d['img-src'], ["'self'", 'blob:'], 'the favicon, and the preview drawn from the picked file');
-  assert.deepEqual(d['connect-src'], ["'none'"], 'the checker talks to nobody: the file is read with the File API');
+  assert.deepEqual(d['connect-src'], ["'self'"], "the site's own api/ (account.js) and nothing else: the file is read with the File API and never sent");
   assert.deepEqual(d['object-src'], ["'none'"]);
   assert.deepEqual(d['base-uri'], ["'none'"]);
   assert.deepEqual(d['form-action'], ["'none'"]);
@@ -201,7 +231,7 @@ const EXCLUDED_MODULES = ['lib/settings.js', 'lib/history.js', 'lib/fetch-policy
 
 test('the site is the checker, the lib/ modules it names, and the files every site has', () => {
   assert.deepEqual(site.siteFiles(), [
-    '.well-known/security.txt', '404.html', 'LICENSE', 'app.js', 'guard.js', 'icons/icon32.png', 'index.html',
+    '.well-known/security.txt', '404.html', 'LICENSE', 'account.js', 'api/config', 'app.js', 'guard.js', 'icons/icon32.png', 'index.html',
     'lib/attribution.js', 'lib/c2pa-verify.js', 'lib/cbor.js', 'lib/image-hints.js', 'lib/image-metadata.js', 'lib/legitimacy.js',
     'lib/lexicons.js', 'lib/signals.js', 'lib/site-analyzer.js', 'lib/text-analyzer.js', 'lib/verdicts.js', 'lib/x509.js',
     'robots.txt', 'site.css',
@@ -221,9 +251,13 @@ test('the site is the checker, the lib/ modules it names, and the files every si
     }
   }
   assert.ok(read('web/index.html').indexOf('<script src="app.js">') > read('web/index.html').lastIndexOf('<script src="lib/'), 'app.js comes after every module');
+  // account.js comes after app.js, which marks the page started: a failure of the account's (the
+  // file missing, a throw) then leaves the checker working and the safety net quiet.
+  assert.ok(page('web/index.html').indexOf('<script src="account.js">') > page('web/index.html').indexOf('<script src="app.js">'), 'account.js comes after app.js');
+  assert.equal([...page('web/index.html').matchAll(/<script src="account\.js"><\/script>/g)].length, 1);
   assert.ok(read('web/index.html').indexOf('<script src="guard.js">') < read('web/index.html').indexOf('<link rel="stylesheet"'), 'the safety net loads before anything it watches');
-  const NOT_SITE = /(^|\/)[A-Z-]+\.md$|^(test|scripts|deploy|node_modules|\.github|\.claude|background|content|popup|options|publisher)\/|(^|\/)(_headers|_redirects|\.htaccess|package(-lock)?\.json|manifest\.json)$/;
-  assert.deepEqual(site.siteFiles().filter((f) => NOT_SITE.test(f)), [], 'no notes, tests, scripts, extension pages or hosting configs');
+  const NOT_SITE = /(^|\/)[A-Z-]+\.md$|^(test|scripts|deploy|node_modules|\.github|\.claude|background|content|popup|options|publisher|server|functions)\/|(^|\/)(_headers|_redirects|_routes\.json|\.htaccess|package(-lock)?\.json|manifest\.json)$/;
+  assert.deepEqual(site.siteFiles().filter((f) => NOT_SITE.test(f)), [], "no notes, tests, scripts, extension pages, hosting configs or the API's code");
   assert.deepEqual(site.siteFiles().filter((f) => f.split('/').some((part) => part.startsWith('.')) && f !== '.well-known/security.txt'), [], 'no dotfile but the security contact');
 });
 
@@ -292,7 +326,7 @@ test('Netlify refuses its own configs, forced', () => {
 
 test('each host gets its own config, and a folder holding anything else is refused', () => {
   assert.deepEqual(Object.fromEntries(Object.entries(site.HOST_FILES).map(([h, f]) => [h, Object.keys(f)])), {
-    pages: [], nginx: [], netlify: ['_headers', '_redirects'], cloudflare: ['_headers'], apache: ['.htaccess'],
+    pages: [], nginx: [], netlify: ['_headers', '_redirects'], cloudflare: ['_headers', '_routes.json'], apache: ['.htaccess'],
   });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'srl-site-'));
   try {
@@ -353,4 +387,48 @@ test('a saved page is walked once: no closest() per candidate, no lookup per blo
     'a skipped subtree is stepped over whole');
   assert.match(app, /const mainEl = doc\.querySelector\('main, article, \[role="main"\]'\);\n\s+return combineBlocks\(blocks, opts, \(b\) => !mainEl \|\| DOM\.contains\(mainEl, b\.el\)\);/,
     '<main> is looked up once, before the blocks are filtered');
+});
+
+/* The extension and the website's API never meet. Only the website (web/account.js) talks to the
+ * site's api/; the extension reads the pages a reader browses and keeps what it finds on the
+ * device, so none of its files may reach for the API, Google's sign-in or Stripe, and its manifest
+ * asks for exactly what it asked for before the website had an API: no new permission, no new
+ * host, no OAuth client of its own. */
+test('the extension never calls the website\'s API, and its manifest asks for nothing new', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+  assert.deepEqual(manifest.permissions, ['storage', 'contextMenus'], 'the permissions it has always had, and no identity');
+  assert.deepEqual(manifest.host_permissions, ['<all_urls>'], 'the media fetches: no host added for the API');
+  for (const key of ['optional_permissions', 'optional_host_permissions', 'oauth2', 'key', 'externally_connectable', 'web_accessible_resources']) {
+    assert.equal(manifest[key], undefined, 'no ' + key);
+  }
+  const DIRS = ['lib', 'background', 'content', 'popup', 'options', 'publisher'];
+  const files = DIRS.flatMap((d) => fs.readdirSync(path.join(root, d)).map((f) => d + '/' + f)).filter((f) => /\.(js|html|css)$/.test(f));
+  assert.ok(files.length > 25 && files.includes('background/service-worker.js') && files.includes('content/content.js'), 'the walk finds the extension');
+  const BACKEND = /\bapi\/(?:config|me|checkout|portal|auth|webhooks)\b|accounts\.google\.com|googleapis\.com|stripe\.com|chrome\.identity|\baccount\.js\b|SRL\.account\b|server\/kit|functions\/api/;
+  assert.deepEqual(['manifest.json', ...files].filter((f) => BACKEND.test(read(f))), [], 'no extension file names the API, Google sign-in or Stripe');
+  // What the extension loads is its own: nothing of the website's, the API's or the tests'.
+  const loaded = [
+    manifest.background.service_worker,
+    ...manifest.content_scripts.flatMap((c) => [...c.js, ...(c.css || [])]),
+    ...[...read(manifest.background.service_worker).matchAll(/importScripts\(([^)]*)\)/g)].flatMap((m) => [...m[1].matchAll(/'\.\.\/([^']+)'/g)].map((x) => x[1])),
+    manifest.action.default_popup, manifest.options_ui.page,
+  ];
+  assert.ok(loaded.length > 15);
+  assert.deepEqual(loaded.filter((f) => !DIRS.some((d) => f.startsWith(d + '/'))), [], 'every file the manifest loads lives in the extension\'s own folders');
+});
+
+/* What leaves the visitor's device, said exactly for each case: with no API (every static host),
+ * the page asks api/config once and nothing else; where sign-in is offered, account.js swaps in
+ * the line that says what Google and Stripe are told and what the site keeps. */
+test('the page says exactly what leaves the device, with the API and without it', () => {
+  const html = page('web/index.html');
+  const p = (id) => (html.match(new RegExp('<p class="privacy" id="' + id + '"( hidden)?>([^<]+)</p>')) || []).slice(1);
+  assert.deepEqual(p('privacyLocal'), [undefined, 'Everything runs in this page. The file you pick is read by your browser and never uploaded; once the page has loaded, it asks this site only whether it offers sign-in, and sends nothing about you or your file.']);
+  assert.deepEqual(p('privacyAccount'), [' hidden', "Everything runs in this page. The file you pick is read by your browser and never uploaded. Nothing else leaves your device unless you sign in or buy: then Google tells this site an account id and your email address, and Stripe handles the payment. The site keeps the account id, what was bought and Stripe's customer id, and your email address while you are signed in."]);
+  assert.match(html, /<section class="account" id="account" aria-labelledby="account-heading" hidden>/, 'the account section starts hidden, and only account.js shows it');
+  for (const id of ['account', 'accountBody', 'accountNote', 'privacyLocal', 'privacyAccount']) {
+    assert.equal([...html.matchAll(new RegExp('\\sid="' + id + '"', 'g'))].length, 1, 'the page has #' + id + ' once');
+    assert.ok(read('web/account.js').includes("$('" + id + "')"), 'account.js finds #' + id);
+  }
+  assert.match(html, /<p id="accountNote" class="account-note" role="status" aria-live="polite"><\/p>/, 'notes are announced');
 });

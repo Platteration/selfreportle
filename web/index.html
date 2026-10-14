@@ -1,13 +1,14 @@
 <!doctype html>
 <!-- Selfreportle, the website: the extension's analysers run on a file the visitor picks, in
-     this page, and nothing is uploaded. MIT License: see LICENSE. The policy below is the one
+     this page, and nothing is uploaded. Where the host runs the site's API, account.js adds
+     Sign in with Google and "Support this app". MIT License: see LICENSE. The policy below is the one
      the hosts send as a header (web/_headers, web/.htaccess, deploy/nginx.conf), less
      frame-ancestors, which a <meta> cannot carry; test/website.test.js holds them equal. -->
 <html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; upgrade-insecure-requests">
 <meta name="referrer" content="no-referrer">
 <title>Selfreportle: check a file for AI provenance</title>
 <meta name="description" content="Check an image, a video or a saved web page for AI-generation markers and disclosures: C2PA Content Credentials verified in your browser, IPTC/XMP metadata, generator fingerprints and hidden Unicode watermarks. Nothing is uploaded.">
@@ -23,7 +24,8 @@
   <h1>Selfreportle</h1>
 </header>
 <p class="pitch">Check an image, a video or a saved web page for signs that it was made with AI, and whether that is disclosed: C2PA Content Credentials verified in your browser, IPTC and XMP metadata, generator fingerprints, hidden Unicode watermarks and the wording of disclosures, in the context of the EU AI Act's Article 50.</p>
-<p class="privacy">Everything runs in this page. The file you pick is read by your browser and never uploaded; this site makes no request of its own after it has loaded.</p>
+<p class="privacy" id="privacyLocal">Everything runs in this page. The file you pick is read by your browser and never uploaded; once the page has loaded, it asks this site only whether it offers sign-in, and sends nothing about you or your file.</p>
+<p class="privacy" id="privacyAccount" hidden>Everything runs in this page. The file you pick is read by your browser and never uploaded. Nothing else leaves your device unless you sign in or buy: then Google tells this site an account id and your email address, and Stripe handles the payment. The site keeps the account id, what was bought and Stripe's customer id, and your email address while you are signed in.</p>
 <p id="startNote" class="start-note" role="alert">Selfreportle has not started. It reads your file with JavaScript, in this page, and uploads nothing, so it needs JavaScript to be on for this site. Turn it on, or check your connection, and reload the page.</p>
 <main class="app" id="app">
   <label class="pick" id="drop" for="file">
@@ -44,6 +46,13 @@
     <li>A saved web page is read as a file: none of its scripts run and none of its pictures or styles load. Its pictures are judged by their captions, alt text and file names; pick a picture's own file to read its metadata. With no layout, text a stylesheet hides is read as if it were shown.</li>
   </ul>
 </section>
+<!-- Drawn by account.js only where the host runs the site's API (server/kit) and its keys are
+     set; everywhere else it stays hidden and empty. -->
+<section class="account" id="account" aria-labelledby="account-heading" hidden>
+  <h2 id="account-heading">Account and support</h2>
+  <div id="accountBody"></div>
+  <p id="accountNote" class="account-note" role="status" aria-live="polite"></p>
+</section>
 <footer>
   <p><strong>Selfreportle</strong> <span id="version">0.1.0</span> · <a href="https://github.com/Platteration/selfreportle" rel="noopener noreferrer">MIT licence · source</a></p>
   <p>Also a Chromium extension that reads the pages you browse, from the same source.</p>
@@ -61,5 +70,6 @@
 <script src="lib/c2pa-verify.js"></script>
 <script src="lib/image-metadata.js"></script>
 <script src="app.js"></script>
+<script src="account.js"></script>
 </body>
 </html>

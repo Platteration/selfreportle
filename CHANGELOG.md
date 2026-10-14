@@ -6,9 +6,30 @@ development branch.
 ## Unreleased
 
 ### Added
+- **Sign in with Google and "Support this app", on the website only, off until keyed.** The
+  website gains an optional API on its own origin under `api/`: `server/kit/`, the kit every
+  app of this account carries, copied byte for byte but for its eight `.d.ts` declarations
+  (below), with this site's catalogue (`server/catalogue.js`: one one-time product,
+  `supporter`, priced by `STRIPE_PRICE_SUPPORTER`), run by Cloudflare Pages
+  (`functions/api/[[path]].js`, and the `_routes.json` that `--host=cloudflare` now writes) or
+  by `server/start.mjs` behind `deploy/nginx.conf`'s new `location ^~ /api/` (Apache: a
+  `ProxyPass` in the virtual host). With no keys, and on GitHub Pages and Netlify where
+  nothing runs, the page looks and behaves as before: it asks `api/config` once, which the
+  site's own copy (now published) answers "nothing on", and draws nothing. Where it is on,
+  `web/account.js` adds an "Account and support" section (Sign in with Google; Signed in as …,
+  Sign out, Delete account asked first; "Support this app" at its Stripe price, Buy, Sign in
+  to buy, Owned), and the privacy line above the checker says exactly what Google and Stripe
+  are told and what the site keeps. A purchase is granted only by Stripe's signed webhook; it
+  unlocks nothing. The policy's `connect-src` is `'self'` (was `'none'`) in all five places,
+  for the site's own `api/` and nothing else. The extension never calls the API, and its
+  manifest is unchanged. The repository still has no dependencies and no lockfile: the kit's
+  declaration files are left out because the shared conventions test counts a tracked `.d.ts`
+  as TypeScript and would then require a type checker, devDependencies and a lockfile; they
+  come back once that test stops counting declaration files. `npm test` also runs the API's
+  tests and the kit's own self-test, and `npm run lint` checks `server/`.
 - **A website.** `web/index.html` runs the extension's own analysers on one file the visitor
   picks — an image, video or audio file, a web page saved as HTML, or plain text — in the
-  page, with nothing uploaded and no request made (`connect-src 'none'`). Content
+  page, with nothing uploaded (`connect-src 'self'`, for the site's own `api/` below). Content
   Credentials are verified with WebCrypto there, hard binding included. A saved page is
   parsed into a document with no window, so nothing in it runs, loads or navigates; its
   pictures are judged by caption, alt text and file name. `npm run build:site` writes the

@@ -7,17 +7,23 @@ disclosure signals from a page's code, text and images — C2PA Content Credenti
 verified in the browser, IPTC/XMP metadata, generator fingerprints, hidden Unicode
 watermarks — in the context of EU AI Act Article 50. Plain scripts: no build step, no
 bundler, no dependencies (the website's `scripts/build-site.js` copies files into a folder
-as written, and writes the base path into the not-found page and Apache's config, nothing
-more). See README.md for what it looks at and what it cannot tell.
+as written, and writes the base path into the not-found page, Apache's config and
+Cloudflare's `_routes.json`, nothing more). The website's optional API (sign in with Google
+and "Support this app", off until the owner sets it up: see Website) is the shared kit in
+`server/kit/`, plain ES modules with no dependencies either. See README.md for what it looks
+at and what it cannot tell.
 
 - `npm test` runs the node:test suites in `test/`, built on synthetic JPEG/PNG/WebP/C2PA
-  fixtures from `test/helpers.js`; `npm run lint` is `node --check` over every script,
-  and that is all the linting there is by design; `npm run test:e2e` loads the unpacked
-  extension into Chromium via Playwright against a fixture site it serves itself;
-  `npm run check` is the gate before a push. `test:e2e` runs the extension's suite
-  (`test/e2e/run.js`), then the website's (`test/e2e/site.js`), then the website's host
-  configs in the nginx and Apache installed where it runs (`test/e2e/hosts.js`, which skips
-  where they are missing unless `CI` is set).
+  fixtures from `test/helpers.js`, the website's API (`test/api.test.mjs`) and the kit's own
+  self-test (`server/kit/selftest.mjs`); `npm run lint` is `node --check` over every script,
+  and that is all the linting there is by design (it leaves out `functions/api/[[path]].js`,
+  an ES module in a folder with no `"type"`, on which `node --check` passes anything, a syntax
+  error included: `test/api.test.mjs` holds that file to its three lines instead);
+  `npm run test:e2e` loads the unpacked extension into Chromium via Playwright against a
+  fixture site it serves itself; `npm run check` is the gate before a push. `test:e2e` runs
+  the extension's suite (`test/e2e/run.js`), then the website's (`test/e2e/site.js`), then the
+  website's host configs in the nginx and Apache installed where it runs (`test/e2e/hosts.js`,
+  which skips where they are missing unless `CI` is set).
 - Two suites are guards, not examples: `test/redos.test.js` runs every regex literal in
   `lib/` and `web/` against hostile input at 2 KB and 16 KB and holds each to a flat budget,
   and again against near misses derived from the pattern itself (its own opening token,
@@ -82,13 +88,15 @@ added it; a change that undoes one passes every test it did not add.
 ## Website
 
 The analysers are also a website (README, "The website"): `web/index.html` loads twelve
-`lib/` modules and `web/app.js`, which runs them on one file the visitor picks — media through
+`lib/` modules, `web/app.js`, which runs them on one file the visitor picks, and
+`web/account.js` (sign-in and "Support this app", below) — media through
 `analyzeImageBytes`, a saved page through the site, text, trader and image-hint analysers on
 the content script's snapshot shape, text through the text analyser. The extension stays as it
 is; nothing in `lib/` knows about the page. `scripts/build-site.js` writes the site into an
-empty folder (`--host` adds that host's config, `--base` the sub-path the not-found page and
-Apache's `ErrorDocument` are stamped with), and the site's module list is read out of
-`index.html`'s `<script>` tags, so a module added there is published without a second edit.
+empty folder (`--host` adds that host's config, `--base` the sub-path the not-found page,
+Apache's `ErrorDocument` and Cloudflare's `_routes.json` are stamped with), and the site's
+module list is read out of `index.html`'s `<script>` tags, so a module added there is published
+without a second edit.
 
 - **One policy, five places**: `web/_headers`, `web/.htaccess`, `deploy/nginx.conf`, and the
   `<meta>` of `web/index.html` and `web/404.html` (less `frame-ancestors`).
@@ -124,6 +132,37 @@ Apache's `ErrorDocument` are stamped with), and the site's module list is read o
   second. `test/e2e/site.js` reads each such page beside a control with as many elements and
   fails when it costs over four times as much. (Nested `<blockquote>`s are slow in Chromium's
   own parser, opened as a tab or through DOMParser alike, which is not the checker's to fix.)
+- **Sign in with Google and "Support this app" are the website's alone, and off until keyed.**
+  `server/kit/` is the kit every app of this account carries, copied byte for byte but for its
+  eight `.d.ts` declaration files: never edit it here (`diff -r` against the canonical copy
+  lists exactly those eight; a change goes to the canonical copy and is copied everywhere), and
+  its `README.md` is the owner's guide. The declaration files are left out because the shared
+  conventions test counts any tracked `.d.ts` as a TypeScript source that `npm run typecheck`
+  must reach, which needs `typescript` installed, so devDependencies, a lockfile, `npm ci` and
+  an audit job in CI and a `.claude/` session hook: tooling this repository's no-dependency
+  posture rules out, for files nothing here reads (they are types for the TypeScript apps that
+  import the kit). Copy them in once the shared conventions test stops counting declaration
+  files. `server/catalogue.js` sells one product, `supporter`; `functions/api/[[path]].js` is
+  the Cloudflare Pages entry (`--host=cloudflare` writes `_routes.json` from `web/_routes.json`,
+  base path stamped); `server/start.mjs` is the Node entry behind `deploy/nginx.conf`'s
+  `location ^~ /api/`, the one location allowed a header (HSTS, as the server block writes it:
+  an `add_header` there drops every inherited one, which is what keeps the site's policy off the
+  API's answers); Apache takes a `ProxyPass` in the virtual host, which `.htaccess` can only
+  describe. The site publishes `web/api/config`, the kit's "nothing on" byte for byte, so a host
+  with no API answers the page's one question instead of logging a 404. `web/account.js` (loaded
+  after `app.js`, so its failure never stops the checker) asks `api/config` once, and draws the
+  "Account and support" section and swaps the privacy line only when sign-in is on; server text
+  is drawn as text; Buy follows only `https://checkout.stripe.com`. The policy's `connect-src`
+  is `'self'` for it, measured in Chromium (with `'none'` every load is a violation). The
+  extension never calls the API and its manifest gained nothing: `test/website.test.js` reads
+  every extension file and pins the manifest's permissions, and `test/e2e/run.js` fails if the
+  fixture site is asked for `api/`. `test/api.test.mjs` runs the catalogue through both entries
+  with a fake Google and Stripe injected through the kit's `fetch` (`test/api-fakes.mjs`; never
+  a variable naming another host); `test/account.test.js` drives `account.js` against a fake
+  fetch; `test/e2e/site.js` runs the whole flow in Chromium under the site's headers, answering
+  Google's and Stripe's pages in the browser through the DevTools protocol's Fetch domain
+  (Playwright's `page.route` does not see a redirect's next hop); `test/e2e/hosts.js` runs the
+  API behind the real nginx and an Apache `ProxyPass`.
 - **Five modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
   `fetch-policy.js` (the worker's fetches), `byte-budget.js` (streamed reads; the site
   slices the picked file instead), `platform-labels.js` (needs layout) — and the

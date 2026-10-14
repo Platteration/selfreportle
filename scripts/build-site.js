@@ -9,12 +9,17 @@
  * The site is the checker page and what it loads (web/), the lib/ modules the page names in
  * its <script> tags (read out of web/index.html rather than restated here, so a module added
  * to the page is published without a second edit), the favicon, the not-found page,
- * robots.txt, the security contact (RFC 9116) and the licence the scripts are published
- * under. Nothing else is published: not the extension's other scripts, the notes, the tests or
- * the hosting configs, which a host reads but would otherwise serve. `--host` adds the config
- * that host reads from the folder it publishes; `--base` is the path the site is served under
- * (a project site on GitHub Pages is /<repository>/), which the not-found page and Apache's
- * ErrorDocument need because they are answered at any depth.
+ * robots.txt, the security contact (RFC 9116), the licence the scripts are published under,
+ * and api/config: the answer "no sign-in, no shop" (web/account.js) on a host that runs no API,
+ * so the page's one question there is answered rather than logged as a 404. Where the API runs
+ * (Cloudflare Pages' function, nginx's proxy to server/start.mjs) it answers that address
+ * itself, and the file is never served. Nothing else is published: not the extension's other
+ * scripts, the API's code (server/, functions/), the notes, the tests or the hosting configs,
+ * which a host reads but would otherwise serve. `--host` adds the config that host reads from
+ * the folder it publishes; `--base` is the path the site is served under (a project site on
+ * GitHub Pages is /<repository>/), which the not-found page, Apache's ErrorDocument and
+ * Cloudflare's _routes.json need: the first two because they are answered at any depth, the
+ * last because it names the addresses the API's function answers.
  */
 const fs = require('fs');
 const path = require('path');
@@ -26,30 +31,34 @@ const PAGE_FILES = {
   'index.html': 'web/index.html',
   '404.html': 'web/404.html',
   'app.js': 'web/app.js',
+  'account.js': 'web/account.js',
   'guard.js': 'web/guard.js',
   'site.css': 'web/site.css',
   'robots.txt': 'web/robots.txt',
   '.well-known/security.txt': 'web/.well-known/security.txt',
   'icons/icon32.png': 'icons/icon32.png',
   LICENSE: 'LICENSE',
+  'api/config': 'web/api/config',
 };
 
 /* The config each header-capable host reads from the folder it publishes. GitHub Pages reads
  * none and would serve them as files, and nginx's lives in the server's own config
  * (deploy/nginx.conf), so those two get the site alone. Netlify reads _headers and _redirects;
  * Cloudflare Pages reads _headers and takes no 404 rule from _redirects, so there the folder
- * holding nothing else is the protection; Apache refuses to serve .htaccess in its default
- * configuration, and the file refuses it again. */
+ * holding nothing else is the protection, and _routes.json, which sends the API's addresses
+ * and nothing else to its function (functions/api/[[path]].js), so no static file invokes it;
+ * Apache refuses to serve .htaccess in its default configuration, and the file refuses it
+ * again. */
 const HOST_FILES = {
   pages: {},
   nginx: {},
   netlify: { _headers: 'web/_headers', _redirects: 'web/_redirects' },
-  cloudflare: { _headers: 'web/_headers' },
+  cloudflare: { _headers: 'web/_headers', '_routes.json': 'web/_routes.json' },
   apache: { '.htaccess': 'web/.htaccess' },
 };
 
 /* The files a base path is written into. */
-const STAMPED = new Set(['404.html', '.htaccess']);
+const STAMPED = new Set(['404.html', '.htaccess', '_routes.json']);
 
 /** The lib/ modules web/index.html loads, in its order. */
 function pageModules() {
