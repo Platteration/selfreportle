@@ -232,14 +232,7 @@ async function makeKeyPair() {
  * A manifest with a genuine COSE_Sign1 over the claim, real assertion hashes
  * and a real certificate chain. `tamper` lets a test break exactly one thing.
  */
-/*
- * Keys and certificates on their own. Building an asset with a real hard
- * binding means assembling the same manifest more than once, and it has to
- * come out byte-identical in length each time, so the signer is made once and
- * handed in rather than regenerated per attempt (a DER certificate signature
- * is 70–72 bytes depending on the values, which would move every offset).
- */
-async function makeSigner({ cn = 'Test Signer', org = 'Test Org', chain = 'leaf', notBefore, notAfter } = {}) {
+async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null, extraAssertions = [] } = {}) {
   const leafKeys = await makeKeyPair();
   const now = new Date();
   const nb = notBefore || new Date(now.getTime() - 86400000);
@@ -266,17 +259,8 @@ async function makeSigner({ cn = 'Test Signer', org = 'Test Org', chain = 'leaf'
   return { certs, leafKeys };
 }
 
-async function signedC2paManifest({ generator = 'ChatGPT', actions = [], cn = 'Test Signer', org = 'Test Org', chain = 'leaf', tamper = null, notBefore, notAfter, injectAssertion = null, dropAssertion = false, inlinePayload = false, forgedClaim = null, dataHash = null, signer = null, extraAssertions = [] } = {}) {
-  const made = signer || await makeSigner({ cn, org, chain, notBefore, notAfter });
-  const certs = made.certs;
-  const leafKeys = made.leafKeys;
-
-  /* The hard binding is an assertion like any other: the claim records its
-   * hash, so it cannot be added or edited after signing. */
-  const assertionValues = [['c2pa.actions.v2', { actions }]];
-  if (dataHash) assertionValues.push(['c2pa.hash.data', { exclusions: dataHash.exclusions, name: 'jumbf manifest', alg: 'sha256', hash: dataHash.hash, pad: new Uint8Array(0) }]);
-  // Any other assertion a test needs signed into the claim, [label, value].
-  assertionValues.push(...extraAssertions);
+  // Assertions first, so the claim can record their real hashes.
+  const assertionValues = [['c2pa.actions.v2', { actions }], ...extraAssertions];
   const assertionBoxes = assertionValues.map(([label, value]) => jumb(UUID.cbor, label, [cborBox(value)]));
   const hashes = [];
   for (let i = 0; i < assertionBoxes.length; i++) {

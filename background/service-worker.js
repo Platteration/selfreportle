@@ -3,7 +3,7 @@
  * permissions the content script lacks), parses embedded provenance, stores
  * per-tab results for the popup and updates the toolbar badge.
  */
-importScripts('../lib/model-catalog.js', '../lib/research.js', '../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/byte-budget.js', '../lib/image-metadata.js', '../lib/history.js');
+importScripts('../lib/lexicons.js', '../lib/signals.js', '../lib/settings.js', '../lib/verdicts.js', '../lib/cbor.js', '../lib/x509.js', '../lib/c2pa-verify.js', '../lib/byte-budget.js', '../lib/image-metadata.js', '../lib/history.js');
 
 const S = self.SRL;
 const results = new Map();          // tabId → page result
@@ -232,14 +232,7 @@ async function analyzeOne(img, maxBytes, tailBytes, pageUrl, tabId) {
       if (img.base64.length > Math.ceil(maxBytes / 3) * 4) throw new S.byteBudget.BudgetExceeded();
       const bytes = fromBase64(img.base64);
       if (bytes.length > maxBytes) throw new S.byteBudget.BudgetExceeded();
-      /* The page produced these itself. `rendered` says more than that: the
-       * content script decoded them and matched them against the picture the
-       * element is showing, which is the only basis on which a provenance
-       * claim may be read as being about what the reader is looking at. The
-       * cache alone does not say it — a page can overwrite its own entry
-       * after the <img> has decoded — so an unproven read still arrives here
-       * with base64 and without the flag. */
-      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated, rendered: !!img.rendered });
+      const analysed = await S.imageMeta.analyzeImageBytes(bytes, { url, truncated: !!img.truncated });
       return { ...base, format: analysed.format, bytes: bytes.length, truncated: !!img.truncated, signals: analysed.signals, metadata: analysed.metadata };
     } catch (e) {
       return { ...base, signals: [{ id: 'unavailable', hard: false, verdict: 'unavailable', strength: 0, label: 'Could not parse image bytes', detail: String(e && e.message ? e.message : e).slice(0, 120) }] };
@@ -301,10 +294,7 @@ async function fetchTail(url, n, pageUrl, tabId) {
     const res = await fetch(url, { headers: { Range: 'bytes=-' + n }, credentials: 'omit', redirect: redirectMode(pageUrl), signal: controller.signal });
     if (res.type === 'opaqueredirect') return null;
     if (res.status !== 206) return null;
-    if (!landedSomewhereAllowed(res, url, pageUrl)) return null;
-    /* A suffix range of n bytes that answers with more is refused, not
-     * buffered: the read stops at the first chunk past n. */
-    return (await S.byteBudget.read(res.body, n, true, (k) => chargeBytes(tabId, k))).bytes;
+    return (await S.byteBudget.read(res.body, n, true)).bytes;
   } catch (e) {
     if (e && e.name === 'BudgetExceeded') throw e;
     return null;
@@ -369,14 +359,10 @@ async function fetchBytes(url, maxBytes, pageUrl, tabId) {
     if (!res.ok && res.status !== 206) throw new Error('HTTP ' + res.status);
     if (!landedSomewhereAllowed(res, url, pageUrl)) throw new Error('redirected to an address this page may not reach');
     const contentType = res.headers.get('content-type') || '';
-    const bounded = await S.byteBudget.read(res.body, maxBytes, false, (k) => chargeBytes(tabId, k));
+    const bounded = await S.byteBudget.read(res.body, maxBytes);
     const bytes = bounded.bytes;
     const total = bytes.length;
     let truncated = bounded.truncated;
-    /* A 206 is the whole file only when its Content-Range runs from byte 0 to
-     * the end of exactly what was read; anything else — no header, an unknown
-     * length, another range — leaves it a part, and the hard binding a digest
-     * over the whole file is then not recomputed over it. */
     const lenHeader = res.headers.get('content-range');
     if (res.status === 206) {
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(lenHeader || '');

@@ -10,10 +10,6 @@ function publisher() {
     SRL: { verdicts: {}, attribution: {} }, URLSearchParams, location: { search: '' },
     document: { getElementById() { return { addEventListener() {} }; }, createElement: element },
   };
-  // Opened in a tab of its own, as the popup opens it: the page does nothing
-  // inside a frame.
-  sandbox.window = sandbox;
-  sandbox.top = sandbox;
   vm.createContext(sandbox);
   const source = fs.readFileSync(path.join(__dirname, '../publisher/publisher.js'), 'utf8').replace('await load(false);', 'globalThis.snippetsForTest = snippets; globalThis.snippetBlockForTest = snippetBlock;');
   vm.runInContext(source, sandbox);
