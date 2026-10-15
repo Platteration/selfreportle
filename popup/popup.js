@@ -163,6 +163,22 @@
     const r = el('div');
     r.appendChild(el('div', 'l', s.label));
     if (s.detail) r.appendChild(el('div', 'd', s.detail));
+    const sources = (s.sourceIds || []).map((id) => S.research.SOURCES[id]).filter(Boolean);
+    for (const url of s.sourceUrls || []) {
+      const pattern = S.modelCatalog.TEXT_ARTIFACTS.find((p) => p.source === url);
+      if (pattern && !sources.some((p) => p.url === url)) sources.push({ title: pattern.label + ' documentation', url });
+    }
+    if (sources.length) {
+      const refs = el('div', 'note', 'Sources: ');
+      for (const source of sources.slice(0, 3)) {
+        const link = el('a', null, source.title + (source.year ? ' (' + source.year + ')' : ''));
+        link.href = source.url;
+        link.target = '_blank'; link.rel = 'noopener noreferrer';
+        refs.appendChild(link);
+        refs.appendChild(document.createTextNode(' '));
+      }
+      r.appendChild(refs);
+    }
     d.appendChild(r);
     return d;
   }
@@ -331,6 +347,7 @@
   function textPanel(text) {
     const out = [];
     out.push(verdictLine('text', text.verdict, text.score));
+    out.push(el('div', 'note', 'Research catalogue reviewed ' + S.research.REVIEWED + '. Vocabulary associations were studied in biomedical abstracts and are weak clues. Wording cannot reliably identify the model; copied format markers can be reused by other tools.'));
     const ab = attributionBox(text.attribution, 'text');
     if (ab) out.push(ab);
     if (text.language && text.language.lexicon) {

@@ -6,227 +6,14 @@ development branch.
 ## Unreleased
 
 ### Added
-- **Sign in with Google and "Support this app", on the website only, off until keyed.** The
-  website gains an optional API on its own origin under `api/`: `server/kit/`, the kit every
-  app of this account carries, copied byte for byte but for its eight `.d.ts` declarations
-  (below), with this site's catalogue (`server/catalogue.js`: one one-time product,
-  `supporter`, priced by `STRIPE_PRICE_SUPPORTER`), run by Cloudflare Pages
-  (`functions/api/[[path]].js`, and the `_routes.json` that `--host=cloudflare` now writes) or
-  by `server/start.mjs` behind `deploy/nginx.conf`'s new `location ^~ /api/` (Apache: a
-  `ProxyPass` in the virtual host). With no keys, and on GitHub Pages and Netlify where
-  nothing runs, the page looks and behaves as before: it asks `api/config` once, which the
-  site's own copy (now published) answers "nothing on", and draws nothing. Where it is on,
-  `web/account.js` adds an "Account and support" section (Sign in with Google; Signed in as …,
-  Sign out, Delete account asked first; "Support this app" at its Stripe price, Buy, Sign in
-  to buy, Owned), and the privacy line above the checker says exactly what Google and Stripe
-  are told and what the site keeps. A purchase is granted only by Stripe's signed webhook; it
-  unlocks nothing. The policy's `connect-src` is `'self'` (was `'none'`) in all five places,
-  for the site's own `api/` and nothing else. The extension never calls the API, and its
-  manifest is unchanged. The repository still has no dependencies and no lockfile: the kit's
-  declaration files are left out because the shared conventions test counts a tracked `.d.ts`
-  as TypeScript and would then require a type checker, devDependencies and a lockfile; they
-  come back once that test stops counting declaration files. `npm test` also runs the API's
-  tests and the kit's own self-test, and `npm run lint` checks `server/`.
-- **A website.** `web/index.html` runs the extension's own analysers on one file the visitor
-  picks — an image, video or audio file, a web page saved as HTML, or plain text — in the
-  page, with nothing uploaded (`connect-src 'self'`, for the site's own `api/` below). Content
-  Credentials are verified with WebCrypto there, hard binding included. A saved page is
-  parsed into a document with no window, so nothing in it runs, loads or navigates; its
-  pictures are judged by caption, alt text and file name. `npm run build:site` writes the
-  site, and the config its host reads, into an empty folder; the same headers (a strict
-  Content-Security-Policy with Trusted Types, no framing, no referrer, every browser feature
-  denied, HSTS) are written for Netlify and Cloudflare Pages (`web/_headers`), Apache
-  (`web/.htaccess`) and nginx (`deploy/nginx.conf`), and the policy in the pages' `<meta>`
-  for a host that sends none. A not-found page, `robots.txt` and `.well-known/security.txt`
-  come with it. The extension itself is unchanged. Apache needs `mod_rewrite`,
-  `mod_headers` and `mod_mime` and `AllowOverride All` (or `FileInfo Indexes Options`): the
-  file's rules are not wrapped in `<IfModule>`, so a missing module is a 500 and a line in
-  the error log, where the wrapped rules served the whole folder, `.git/` included, with no
-  header and no log line. It sends HSTS on every response, as the other two do, where it
-  had sent it only when Apache terminated TLS itself. `deploy/nginx.conf` asks for HTTP/2
-  on its `listen` lines, which nginx 1.22 and 1.24 load, where `http2 on;` made the nginx
-  Ubuntu 24.04 ships refuse the whole file. `npm run test:e2e` now runs both files in the
-  nginx and Apache installed where it runs (`test/e2e/hosts.js`).
-
-### Changed
-- **CI's check job runs on `ubuntu-24.04`**, not `ubuntu-latest`, which becomes Ubuntu 26.04 from
-  2026-10-19, where the pinned Playwright 1.56.1 has no Chromium build and its install fails.
-  `test/ci.test.js` holds the job to a named release, and `test/e2e/runner.js`, the first step of
-  `npm run test:e2e`, asks the pinned Playwright's own CLI whether it has a build for it.
-- **PNG text is kept to 256 KB per image** (merged from #2; was 4 MB, and
-  1 MB out of any one compressed chunk). What is inflated and what is kept,
-  keys as well as values, share that budget, and a caller may only lower it.
-  Plain text past it is cut before it is decoded; compressed text that does
-  not fit is skipped whole. No more than 100 text chunks are read, and a
-  key longer than the 79 bytes the PNG specification allows is skipped.
-  Each of these carries the "too large to inspect" note. A key used to cost
-  nothing, in any number: a 4 MB PNG of empty text chunks under distinct
-  keys kept 198,429 of them, 2.6 MB of report that the worker caches, and
-  one of tiny compressed chunks held the worker 21 s (55 s when the streams
-  were garbage, since a stream that fails at once spends no budget); the
-  same files now keep 100 keys and take about 0.15 s, which is what any PNG
-  of that many chunks costs to walk. The rest of the file is still read: a
-  credential chunk after a large text chunk is found. An `iTXt` chunk whose
-  language tag or translated keyword is never terminated is skipped rather
-  than read from the wrong offset.
-- **Settings are stored under two namespaced keys**, `selfreportle.settings.v1`
-  (one object) and `selfreportle.disabledHosts.v1` (its own item, so the
-  browser's per-item quota bounds the host list alone), instead of one sync
-  item per field. On install or update the worker copies the flat items
-  under the new keys byte for byte, one record per write so a paused-host
-  list the browser's per-item quota refuses does not take the rest with it;
-  the flat items are left in place, because a device still on an earlier
-  build reads only them, and the namespaced record wins where both exist.
-  Readers never write. Every stored value is validated field by field on the
-  way in: an enum by an own-property table, a boolean only as a boolean, a
-  number only as a number within its bounds; a value that is none of those
-  falls back to its default on its own. A stored host or number that was an
-  object used to throw inside the storage callback and leave every reader
-  waiting for settings that never arrived. Every key the extension writes is
-  named in `lib/settings.js`.
-- **The settings page asks before Reset to defaults and Clear domain memory**,
-  the two actions it cannot undo (Clear image cache still asks nothing: a
-  cache is re-fetchable), reports a save the browser refused instead of
-  flashing Saved — naming the paused-host list when that is what was too
-  long — and carries an About line with the version from the manifest, the
-  licence and source link (opened beside the page), and what the extension
-  sends where.
-
-### Security
-- **Media is read only up to its cap, as it streams** (merged from #2). The
-  worker's head and tail reads and the content script's read of a page's own
-  bytes (a `blob:` URL, or the browser's cached copy) stop at the cap and
-  cancel the source, through the new `lib/byte-budget.js`; a `blob:` used to
-  be read whole before its prefix was kept, and a tail range read whole
-  before its last bytes were. A suffix range answered with more than was
-  asked for is refused rather than read, and only the tail with it: the
-  verdict already read from the head of the file stands (as merged, the
-  refusal replaced it with "Could not fetch image bytes", which is not
-  cached, so every visit asked again). Every chunk received is charged to
-  the tab's byte budget as it arrives. Page bytes handed to the worker are
-  refused, before they are decoded, when they are longer than the cap.
-- **A partial answer is not taken for the whole file** (merged from #2). A
-  206 response counts as complete only when its `Content-Range` runs from
-  byte 0 to the end of exactly what was read; one with no such header, an
-  unknown length or another range leaves the hard binding not recomputed,
-  where before only a stated total larger than the bytes read did.
-- **The hard binding is held to the credential store, whole, and to one
-  binding per claim** (merged from #2, onto this branch's binding check). An
-  exclusion that leaves part of the store hashed, a claim carrying two hard
-  bindings or more than 512 exclusion ranges now leave the binding
-  unchecked, and a `c2pa.hash.data` version other than the first two is
-  reported as unsupported ("not checkable by this reader"). In a PNG the
-  excluded ranges must also be whole `caBX` chunks of a file that walks
-  cleanly from one `IHDR` to an `IEND` that ends it; one with bytes after
-  `IEND`, an incomplete last chunk, no image data, a missing, short or
-  second `IHDR`, or a chunk type that is not four letters is unchecked too.
-- **The publisher's JSON-LD snippet escapes `>`, `&`, U+2028 and U+2029** as
-  well as `<` (merged from #2), and a test now builds the snippet and parses
-  the title back out of the markup that would be pasted.
-- **One form control stopped the analysis.** A `<form>` answers a property
-  lookup with its own control of that name before the property itself, and
-  the page chooses the names: `<form><input name="attributes"></form>`
-  anywhere on a page stopped the content script before any verdict was made,
-  so a page of AI text that disclosed ChatGPT was stored as "none" with
-  "Analysis stopped early"; `name="matches"` inside a list item and
-  `name="contains"` on a form that is the page's `role="main"` did the same,
-  and `name="nodeType"` wrote "null" into a block's text. A text selection
-  inside a form whose controls were named `setAttribute` or
-  `getBoundingClientRect` drew nothing when inspected from the context menu.
-  On the website the same controls in a saved page made the whole report
-  fail ("The file could not be analysed"), let a hidden form's text into it,
-  or took a form's line break away so the words either side ran together.
-  Every element a walk can meet, and every marker element the overlay
-  measures or marks, is now read through the prototype, which no control
-  shadows.
-- **Compressed PNG text that was not kept cost nothing against its budget.**
-  Each image's text chunks share a 4 MB budget, but only text that was kept
-  was charged: a chunk that ran past its 1 MB ceiling, or whose stream turned
-  out corrupt part way, had still been inflated that far for free. A 4 MB PNG
-  (the default per-image fetch) of two thousand such chunks cost the shared
-  worker about 2 GB of inflating and 6.7 s, and 12 s with truncated streams;
-  the website, which reads up to 32 MB of a picked file, took 68 s. What is
-  inflated is now charged whether it is kept or not, and nothing more is
-  inflated once the budget is spent: the same files take 0.1 s and 0.3 s. A
-  PNG whose compressed text has already used the budget has its later
-  compressed chunks skipped, with the existing "too large to inspect" note.
-- **A saved page could hold the website's checker for minutes.** The block
-  walk asked `closest()` of every candidate element, which walks its
-  ancestors, and looked the page's `<main>` up again for every block: 8 MB
-  of nested `<span>`s (half a second for Chromium to parse) took 123 s, and
-  600 paragraphs followed by a million empty elements with no `<main>` 38 s,
-  with the tab frozen throughout. The walk is now one pass that steps over a
-  skipped subtree whole, and `<main>` is looked up once: 5.6 s and 3 s, in
-  proportion to the file's size. The blocks found, and their order, are the
-  same.
-- **The publisher's JSON-LD snippet could carry script into the site it was
-  pasted into.** Its `headline` is the checked page's own `<title>`, which is
-  text on that page; written into the snippet with `JSON.stringify`, a title
-  holding `</script><script>…</script>` ended the snippet's `<script>`
-  element and ran in whatever page the owner pasted it into, and `$'` or
-  `` $` `` in a title made `String#replace` rewrite the snippet around it.
-  Every `<` in the JSON is now written `\u003c`, which JSON reads back as
-  the same character, and the snippet is inserted as it is. Reachable only
-  with the fix below.
-- **Nine patterns rescanned to the end of their input from every opening.**
-  Each opened with a token of its own that the ReDoS guard's generic inputs
-  never contain, so each passed it while being quadratic: an unclosed ChatGPT
-  citation marker (300 KB of text cost the text analyser 42 s, in the
-  content script and on the website), blank lines before a Markdown heading
-  or bullet (`\s*` crossed lines; over a minute at the same size), a JSON-LD
-  `"creator": {` never closed (8 s per page), an EXIF UserComment of
-  `Steps:` lines that never name a sampler (43 s for 512 KB in a PNG `eXIf`
-  chunk, in the worker every tab shares), and `freepik`, `photoshop`,
-  `canva` and `adobe express` followed by anything but the word completing
-  them (64 s for a 256 KB C2PA claim generator in the worker; 13 s for
-  256 KB of alt text in a saved page on the website). Two XMP patterns were
-  linear but scanned a thousand characters past every `<` (1.2 s per image
-  at the packet cap). Each gap is now bounded (a tool name and its
-  completing word within 60 characters, `Steps:` and a sampler within 200)
-  or stops at the next opener; the same inputs take milliseconds. The guard
-  now also derives near misses from every pattern and runs them at 4 KB and
-  64 KB. Both of its sweeps measure a failing pair a second time and report
-  it only if it fails again, with the same budgets: the bounded three-item-
-  list pattern, which is linear, failed the existing sweep in 1 run of 12 at
-  the previous commit on a machine shared with other test runs, and the
-  historical unbounded form of it is still caught (5 ms → 330 ms).
-
-### Fixed
-- **The website could take a second payment for "Support this app".** The kit copy makes a new
-  payable Checkout Session for every press of Buy until Stripe's webhook records the purchase,
-  and the page drew Buy again during the fifteen-second poll after Checkout, and under "Payment
-  received … reload to check" when the poll gave up. Now, for a signed-in visitor back from
-  Checkout, the product reads "Payment received — processing" where Buy was until `api/me`
-  reports the purchase: for the life of the page, and across a reload within ten minutes through
-  one record in the tab's `sessionStorage` (`selfreportle.purchasePending.v1`, the page's only
-  stored value), which goes once the purchase is reported or the visitor signs out or deletes the
-  account. A 409 `payment_pending` from Buy (what the canonical kit answers from b575aee on) is
-  drawn the same way. Two tabs can still each open a Checkout until the kit refuses a second one
-  itself.
-- **`?purchase=success` said "Payment received" to anyone.** Opened by someone not signed in,
-  the address polled `api/me` six times and then claimed a payment; it now only leaves the
-  address, and the page asks nothing more. The thank-you is "Thank you for supporting
-  Selfreportle." (was "… Support this app is unlocked.", for a product that unlocks nothing).
-- **nginx with the API not running sent its own 502 page with HSTS alone**, and the browser
-  logged the page's failed `api/config` on every load. The `/api/` location now hands nginx's 502, 503 and 504 to `@api-off`, which
-  serves the folder's `api/config` ("nothing on") and the not-found page with every header of the
-  site; README says a server that never runs the API can delete the location.
-- **What the site says it shares and keeps.** The privacy line and README now say Stripe is told
-  the account id with a payment; README now says Delete account leaves the hour's count of Buy
-  presses, which names the account id for up to two hours, that the page asks `api/me` on every
-  load where sign-in is offered, and that the kit's flags leave the address on every host.
-  `test/api.test.mjs` holds the kit to the first two.
-- **The publisher self-check showed nothing.** Since the message handlers
-  stopped taking a caller's tab id on trust, a sender that had a tab was
-  answered with that tab, on the belief that the extension's own pages have
-  none. The popup has none, but the publisher view is a tab the popup opens,
-  so it was answered with its own empty tab and said "No analysis is
-  available for that tab" every time. The worker now tells the extension's
-  own pages from content scripts by the URL the browser reports for the
-  sender: a content script still gets only its own tab, and a sender that is
-  neither can no longer name one.
-
-### Added
+- **Source-linked detection research and wider model coverage.** A local
+  catalogue of six published studies, 16 researched vocabulary families,
+  additional model/version names and documented conversation-format markers.
+  Text findings link to their sources, and Tools can list multiple models
+  credited within one passage.
+- **Text appearance choices.** Optional highlighting, progressively mechanical
+  fonts, or both on flagged passages, with a live settings preview. Signal
+  strength and self-disclosures stay distinct; markers-only remains the default.
 - **Cryptographic verification of Content Credentials.** COSE_Sign1 signatures
   are verified with WebCrypto against the embedded leaf certificate
   (ES256/384/512, PS256/384/512, RS256/384/512, Ed25519), every assertion is
@@ -264,9 +51,17 @@ development branch.
   button, and a keyboard shortcut for the badges.
 
 ### Changed
+- Vocabulary, punctuation, generic Markdown and polite closings share a
+  heuristic budget; a single word or repeated word cannot flag a passage.
+  Style alone no longer guesses an OpenAI model. Direct negated credits are
+  filtered in all eight disclosure languages and in code comments. Ambiguous
+  human names are excluded from AI disclosures. ComfyUI names
+  the interface, while named model checkpoints take priority.
 - "Created with the help of AI" no longer counts as full generation: an
   overlapping generation match is suppressed in favour of the assistance
   clause. Separate clauses still both count.
+- Three-item list detection uses bounded scanning to keep long hyphenated
+  text responsive while preserving the previous list-counting behaviour.
 - Images carrying a platform label are reported even when they show no other
   signal, so an informational marker is visible without inflating the verdict.
 
@@ -488,58 +283,9 @@ development branch.
   socket, since every normal client normalises the traversal away first.
 
 ### Fixed
-- **The extension went blind on single-page apps after sixty images.** The
-  per-document image budget was charged for the tab's life and refilled only by
-  a real navigation, so a client-side route change or an infinite feed — where
-  embedded provenance survives and this is most useful — stopped being
-  inspected entirely, with no badge and nothing to distinguish it from a clean
-  page. The volume it was guarding against is bounded by the worker's
-  per-minute request and byte budget, which no page can re-arm, so the count
-  here is now over the images the document is still tracking plus the fetches
-  still in flight: a torn-down view gives its budget back. An image skipped for
-  budget says so instead of looking uninspectable.
-- **A valid image with four megabytes of JUMBF boxes after it cost 54 s of the
-  service worker.** When a format parse finds no manifest the C2PA fallback
-  scans the whole file for the bytes `jumb`, up to 64 times, and each attempt
-  parsed the boxes from there to the end of the file. Box parsing is now
-  bounded for every caller, with one allowance shared across the scan's
-  attempts; the hostile-image test covers the shape, which it previously did
-  not while claiming image parsing was bounded.
-- **The saved report said signatures were never verified.** Cryptographic
-  verification shipped, but three user-facing strings did not follow it: the
-  exported JSON report — the artefact the reader is told to keep as evidence,
-  carrying a SHA-256 digest of its own findings — the PNG receipt's footer and
-  the Overview tab's provenance hint all still said credentials were parsed
-  and not verified, while the same popup showed a green "Signature verified"
-  row. The sentence now lives once in `lib/verdicts.js`, says what is actually
-  checked and what is not (the root is never anchored), and the exported
-  report adds what the manifests on that particular page did.
-- **Trader analysis could stall the page on VAT context words.** `findVat`
-  compiled all twenty-nine country formats afresh for every VAT-context word
-  it found, and the "stop after six numbers" guard never fires on a page that
-  has the words and no number: a 300 KB body of "vat " repeated cost about
-  400 ms of the page's own main thread, repeatable roughly once a second
-  through the SPA-navigation poller. The formats are compiled once and the
-  scan is bounded by hit count as well.
-- **Domain memory was a timestamped visit log.** Records carried a
-  millisecond `lastSeen` and never expired, so the store was a
-  hostname-granularity reading log kept until 400 other domains displaced it.
-  Times are now kept to the day and records expire after 90 days. The file's
-  own header claimed the feature was off by default while the settings said
-  otherwise; the header now matches the code.
-- **One tag could silence the whole extension.** Three attacker-reachable
-  inputs each threw out of `analyze()` before any result existed, so nothing
-  was posted to the worker, the mutation observer and the SPA-navigation poller
-  never started, and the popup reported "nothing analysed yet" for the rest of
-  the page's life: a Replit fingerprint (by hostname *or* by the dev-banner
-  script src, which any page can add) reached an undeclared variable in
-  `attributeSite`; a malformed percent-escape in an image URL — `<img src="/%">`
-  — threw `URIError` out of `analyzeImageHints`; and an unparseable
-  `<video poster="http://[">` threw `TypeError` out of `new URL`. Each input is
-  fixed, page-supplied URLs now resolve through a helper that answers null
-  rather than throwing, and `analyze()` and the per-image loop are guarded so
-  the next such defect cannot do it either. The failure is reported in the
-  popup instead of being swallowed.
+- French declarations beginning with accented “écrit” or “édité” now use
+  Unicode word boundaries; previously those existing patterns missed credits
+  and human-authorship declarations.
 - **The tool accused ordinary pages.** An AI-disclosure meta tag holding any
   value other than a literal "false"/"no"/"none" was read as declaring AI
   content — including an empty one, and including `content="no AI was used"`.

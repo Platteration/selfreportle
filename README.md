@@ -56,6 +56,16 @@ For every layer the extension also names the tool the evidence points to, with t
 
 Each identified vendor comes with a short list of documented **skews**: sycophancy, measured political lean, content rules of the vendor's jurisdiction (for example PRC-aligned refusals in DeepSeek and Qwen), representation defaults of image generators, commercial grounding, provenance and litigation history, and the underlying model vendor behind site builders such as Lovable, Bolt, v0 and Replit Agent. Every note carries its basis and the catalogue carries a review date (`lib/attribution.js`, `REVIEWED`). These notes describe typical default behaviour reported publicly, not the specific page, and models change between versions.
 
+### Research and model coverage
+
+The detector includes a local, cited research catalogue reviewed for the October 2021–October 2026 publication window. The inspected studies cover 2023–2025: biomedical excess vocabulary, detector bias against non-native English writers, the M4 and RAID benchmarks, statistical watermarking, and DetectGPT. The Text report links relevant findings to their inspected sources. This is a heuristic reading aid; it does not run those papers' trained classifiers or report a measured probability of AI authorship. See [the research notes](docs/detection-research.md) for the scope and limitations of each source.
+
+Sixteen researched vocabulary families add support alongside the existing idiom and rhythm rules. Repeated instances of one word do not count as independent clues. A small vocabulary cluster, ordinary Markdown, polite closings, or punctuation alone stays below the text-flag threshold. A large, diverse cluster can produce a weak flag, and all style signals share a cap below the strongest verdict. Vocabulary and typography leave the model **unidentified**; the detector no longer guesses OpenAI from words such as “delve” or from dash usage.
+
+Explicit disclosures recognize more model families and version names across all eight supported disclosure languages, including Gemma/CodeGemma, Phi, Cohere Command/Aya, Jamba, Granite, OLMo, Kimi, MiniMax, GLM, InternLM, Yi, Baichuan, Qwen, Llama and Mistral variants. Older families include EleutherAI GPT-Neo/GPT-J/GPT-NeoX/Pythia, BigScience BLOOM and MosaicML MPT; Falcon-H1 covers the verified 2025 Falcon release. Media identifiers include Hunyuan, Wan, LTX-Video, Bark, AudioCraft/MusicGen/AudioGen and ElevenLabs. Generic mentions of these products in captions do not by themselves mark an image as generated. ComfyUI identifies the interface; a named checkpoint is needed to distinguish the model it ran. The Tools report can list multiple credited models within one passage.
+
+Documented Llama, Gemma, Harmony, MiniMax and Kimi output delimiters can identify a compatible **format family** when the required markers occur together. Shared ChatML, assistant role tags and `<think>` delimiters stay weak and identify no vendor. A copied template or a human explanation can contain the same markers. The complete names, format rules and primary documentation links live in `lib/model-catalog.js`; no page text is uploaded to run this detection.
+
 ### Platform labels, where metadata dies
 
 Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, Pinterest and X strip embedded metadata on upload and add their own marker instead. The extension reads those markers ("Made with AI", "AI info", "Altered or synthetic content", "Creator labeled as AI-generated", "AI modified", "Made with Grok"), attributes each to the media in the same post, and treats it as a disclosure by the platform rather than as embedded provenance. Matching is by visible text and accessible name, not by CSS class, because platform class names rotate constantly. Informational markers such as "AI info" are surfaced without changing the verdict.
@@ -86,6 +96,7 @@ With `Remember what was found per domain` on, the extension keeps counters per h
 ### Display and accessibility
 
 * **Three display moods**, chosen in settings. *Quiet* keeps badges invisible until the cursor nears the item and lets the pill shrink to a dot. *Reader* is the default. *Forensic* widens the panels, sets evidence in monospace and expands hidden-character views.
+* **Optional text emphasis.** In Settings → Text → Text appearance, choose *Markers only* (the default), *Highlight*, *Robotic font* or *Font + highlight*. Weak, likely and strong AI indicators progress from a plain sans-serif face to monospace and then wider spacing; highlighting uses a stronger tint for stronger signals. These are signal levels, not probability estimates. AI-assistance and generation disclosures have their own amber highlights and remain labelled as self-reports. A live preview shows every level before saving. Turning off text markers, hiding the overlay or pausing a site removes the emphasis. No words are rewritten or wrapped; code, editing fields and blocks containing them keep their original fonts, and nested blocks are styled only from their own findings. Font changes can reflow a paragraph.
 * **Colour-blind-safe palette** derived from the Okabe–Ito set, darkened so white badge text clears WCAG AA on every fill. Colour never carries meaning alone: each verdict has its own glyph. Vermillion ◆ is AI-generated or a strong indicator, purple ◈ is AI-edited or likely AI, orange ✎ is disclosed as AI, gold ? is a weak signal, green ● is camera-capture provenance and ✋ a declared human origin, blue ▦ is algorithmic media or a conventional builder, slate ○ is no signal and ⊘ could not be inspected.
 * **Dark theme** for the in-page panel and popovers, following the reader's system setting.
 * **Toolbar icon changes state**, not just its count: the lens pupil takes the verdict colour, and resets to neutral on navigation.
@@ -189,21 +200,19 @@ Where it is on, `web/account.js` adds an "Account and support" section below the
 ## Development
 
 ```
-npm test                   # unit tests (Node 22, no dependencies), the website's API included, and the API kit's own self-test
-npm run lint               # syntax check of every script
-npm run test:conventions   # the conventions shared with the sibling repositories
-npm run check              # lint, unit tests and conventions: the gate before a push
-npm run test:e2e           # asks the pinned Playwright for a Chromium build on CI's runner, loads the extension into
-                           # Chromium via Playwright and checks a fixture site, then the website, then the website's
-                           # nginx and Apache configs in the servers installed here
-npm run test:all           # unit and end-to-end suites together
-npm run icons              # regenerate icons/*.png
-npm run build:site -- <folder> [--host=…] [--base=…]   # the website (see "The website")
+npm test          # unit tests (Node ≥ 18, no dependencies)
+npm run lint      # syntax check of every script
+npm run e2e       # loads the extension into Chromium via Playwright and checks a fixture site
+node test/e2e/text-display.js # text rendering + settings component checks in Chromium
+node test/e2e/detection-research.js # detector, source-linked reports + popup component checks
+npm run icons     # regenerate icons/*.png
 ```
 
 The end-to-end run needs `playwright` resolvable (locally or globally) and a Chromium build; set `PW_CHROMIUM=/path/to/chrome` to pin the binary. It starts with `test/e2e/runner.js`, which asks the Playwright CI pins (`playwright@1.56.1` in `ci.yml`), through its own `install --dry-run`, whether it has a Chromium build for the Ubuntu release CI's check job names (`ubuntu-24.04`, not `ubuntu-latest`, which becomes 26.04 from 2026-10-19, where 1.56.1 has none); where another Playwright resolves it says so and passes, unless `CI` is set. The extension's run follows. Then `test/e2e/site.js` builds the website, serves it at `/selfreportle/` with the headers `web/_headers` writes, and drives the checker under that policy: every kind of file, a hostile saved page, the not-found page two folders deep, a framing attempt from another origin, JavaScript off, a module that fails to load, `account.js` failing to load, and the same site from a host that sends no headers. Then the API: absent (the site's `api/config`, and a host where it is a 404), where no account and no shop are drawn; and the kit mounted at the site's `api/` with a fake Google and a fake Stripe injected through its `fetch`, where it signs in, buys, sees "Payment received — processing" in place of Buy until Stripe's signed webhook lands, draws "Owned" and the thank-you, signs out, deletes the account, opens a `?purchase=success` address signed out (nothing said, nothing more asked) and reads a forged callback. Google's and Stripe's pages are answered inside the browser through the DevTools protocol's Fetch domain, because Playwright's `page.route` does not see the hop a redirect makes. It fails on any policy violation, page or console error, Permissions-Policy complaint, or request outside the site but those two navigations. Last, `test/e2e/hosts.js` loads `deploy/nginx.conf` into the nginx installed on the machine and the built site's `.htaccess` into its Apache, with the repository's files planted beside the site, and checks every path's status and headers there, Apache behind a TLS-terminating proxy and Apache without `mod_rewrite` and `mod_headers` included, and the API behind nginx's proxy and an Apache `ProxyPass`, then the same with the API stopped; where either server is missing it says so and passes, unless `CI` is set. CI (`.github/workflows/ci.yml`) runs the lint, the unit suite, the conventions test and the end-to-end suite on every push.
 
-## Project layout
+Both component checks also run as part of `npm run e2e`. They can run separately in a browser that cannot install extensions; they exercise the actual detector, display code and report UI with a simulated storage/messaging bridge. The full end-to-end suite separately checks real extension storage and content-script integration.
+
+Layout:
 
 ```
 manifest.json               MV3 manifest

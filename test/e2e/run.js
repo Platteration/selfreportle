@@ -170,6 +170,8 @@ function rawGet(port, target, host) {
   const BACKEND = /\/api\/(?:config|me|checkout|portal|auth|webhooks)\b|accounts\.google\.com|googleapis\.com|stripe\.com/;
   ctx.on('request', (r) => { if (BACKEND.test(r.url())) backend.push(r.url()); });
   try {
+    await require('./text-display.js').run(ctx);
+    await require('./detection-research.js').run(ctx);
     let sw = ctx.serviceWorkers()[0];
     if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 30000 });
     const page = await ctx.newPage();
@@ -218,6 +220,16 @@ function rawGet(port, target, host) {
 
     const hasOverlay = await page.evaluate(() => !!document.querySelector('srl-overlay') && document.querySelectorAll('[data-srl-text]').length >= 4);
     assert.ok(hasOverlay, 'overlay and text markers rendered');
+
+    // Real storage changes must reach the content script and restore the page
+    // when optional emphasis is turned back off.
+    assert.equal(await page.locator('[data-srl-font]').count(), 0, 'font emphasis is opt-in');
+    const originalText = await page.locator('body').textContent();
+    await sw.evaluate(async () => chrome.storage.sync.set({ textStyle: 'both' }));
+    await page.waitForFunction(() => !!document.querySelector('[data-srl-font="high"]'));
+    assert.equal(await page.locator('body').textContent(), originalText, 'font emphasis does not rewrite text');
+    await sw.evaluate(async () => chrome.storage.sync.set({ textStyle: 'markers' }));
+    await page.waitForFunction(() => !document.querySelector('[data-srl-font]'));
 
     // Platform labels: same bytes, no embedded metadata, but a platform marker.
     const feed = await ctx.newPage();
