@@ -225,10 +225,10 @@ function rawGet(port, target, host) {
     // when optional emphasis is turned back off.
     assert.equal(await page.locator('[data-srl-font]').count(), 0, 'font emphasis is opt-in');
     const originalText = await page.locator('body').textContent();
-    await sw.evaluate(async () => chrome.storage.sync.set({ textStyle: 'both' }));
+    await sw.evaluate(async () => SRL.settings.save({ textStyle: 'both' }));
     await page.waitForFunction(() => !!document.querySelector('[data-srl-font="high"]'));
     assert.equal(await page.locator('body').textContent(), originalText, 'font emphasis does not rewrite text');
-    await sw.evaluate(async () => chrome.storage.sync.set({ textStyle: 'markers' }));
+    await sw.evaluate(async () => SRL.settings.save({ textStyle: 'markers' }));
     await page.waitForFunction(() => !document.querySelector('[data-srl-font]'));
 
     // Platform labels: same bytes, no embedded metadata, but a platform marker.

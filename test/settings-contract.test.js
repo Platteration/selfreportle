@@ -32,7 +32,7 @@ test('the storage keys', () => {
  * only these and reads only these. */
 test('the legacy keys, one item per field, kept for the old build', () => {
   assert.deepEqual([...S.LEGACY_KEYS], [
-    'enabled', 'showPill', 'showImageBadges', 'showTextMarkers', 'markUnflaggedImages', 'fetchImages',
+    'enabled', 'showPill', 'showImageBadges', 'showTextMarkers', 'textStyle', 'markUnflaggedImages', 'fetchImages',
     'maxImages', 'maxImageBytes', 'inspectMedia', 'maxMediaBytes', 'minImageSize', 'sensitivity', 'mood',
     'platformLabels', 'rememberDomains', 'disabledHosts',
   ]);
@@ -44,6 +44,7 @@ test('the fields and their defaults', () => {
     showPill: true,
     showImageBadges: true,
     showTextMarkers: true,
+    textStyle: 'markers',
     markUnflaggedImages: false,
     fetchImages: true,
     maxImages: 60,
@@ -69,7 +70,8 @@ test('the fields and their defaults', () => {
 test('the enum tables', () => {
   assert.deepEqual({ ...S.SENSITIVITY }, { low: true, medium: true, high: true });
   assert.deepEqual({ ...S.MOOD }, { quiet: true, reader: true, forensic: true });
-  for (const t of [S.SENSITIVITY, S.MOOD]) assert.ok(Object.isFrozen(t));
+  assert.deepEqual({ ...S.TEXT_STYLE }, { markers: true, highlight: true, font: true, both: true });
+  for (const t of [S.SENSITIVITY, S.MOOD, S.TEXT_STYLE]) assert.ok(Object.isFrozen(t));
 });
 
 /* The rows: one control per field on the options page, the selects offering
@@ -77,12 +79,13 @@ test('the enum tables', () => {
  * the validator applies. */
 test('the options page offers every field, every enum member and the same bounds', () => {
   const html = read('options/options.html');
-  const names = [...html.matchAll(/name="([^"]+)"/g)].map((m) => m[1]);
+  const names = [...html.matchAll(/<(?:input|select|textarea)\b[^>]*\bname="([^"]+)"/g)].map((m) => m[1]);
   const onPage = names.map((n) => (n === 'maxImageKB' ? 'maxImageBytes' : n === 'maxMediaKB' ? 'maxMediaBytes' : n));
   assert.deepEqual(onPage.sort(), Object.keys(S.DEFAULTS).sort());
-  const options = (name) => [...html.match(new RegExp('<select name="' + name + '">[\\s\\S]*?</select>'))[0].matchAll(/value="([^"]+)"/g)].map((m) => m[1]);
+  const options = (name) => [...html.match(new RegExp('<select name="' + name + '"[^>]*>[\\s\\S]*?</select>'))[0].matchAll(/value="([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(options('sensitivity'), ['low', 'medium', 'high']);
   assert.deepEqual(options('mood'), ['quiet', 'reader', 'forensic']);
+  assert.deepEqual(options('textStyle'), ['markers', 'highlight', 'font', 'both']);
   const bounds = (name) => { const m = html.match(new RegExp('name="' + name + '" min="(\\d+)" max="(\\d+)"')); return [Number(m[1]), Number(m[2])]; };
   assert.deepEqual(bounds('maxImages'), S.RANGES.maxImages);
   assert.deepEqual(bounds('minImageSize'), S.RANGES.minImageSize);

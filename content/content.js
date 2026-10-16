@@ -612,12 +612,45 @@
     for (const item of list) {
       // One unreadable item must not cost the page every later one.
       try {
-        const response = await fetch(entry.msg.url);
-        const cap = entry.msg.kind === 'av' ? settings.maxMediaBytes : settings.maxImageBytes;
-        const bounded = await S.byteBudget.read(response.body, cap);
-        entry.msg.base64 = toBase64(bounded.bytes);
-        entry.msg.truncated = bounded.truncated;
-      } catch (e) { entry.msg.base64 = null; }
+        const key = 'i' + (++imageCounter);
+        const hints = S.imageHints.analyzeImageHints(item);
+        const st = { key, el: item.el, url: item.url, kind: item.kind || 'image', hints, bytes: null, verdict: 'no-signal', score: 0, signals: hints, done: false };
+        // A poster shares its element with the video, so it is tracked by key.
+        imageState.set(item.kind === 'poster' ? Symbol('poster:' + item.url) : item.el, st);
+        const wanted = settings.fetchImages && !/^data:image\/svg/i.test(item.url) && pageLoaded(item);
+        const budgeted = spent.has(item.url) || spent.size < settings.maxImages;
+        if (wanted && budgeted) {
+          spent.add(item.url);
+          st.submitted = true;
+          const msg = { id: key, url: item.url, kind: item.kind === 'av' ? 'av' : 'image' };
+          holdUrl(item.url);
+          toFetch.push({ st, msg });
+        } else {
+          if (wanted) st.signals = [...st.signals, overBudgetSignal()];
+          st.done = true;
+          retryWhenLoaded(item, st);
+        }
+        applyImageVerdict(st);
+      } catch (e) { /* skip this item */ }
+    }
+    /*
+     * The bytes the page itself has, wherever they can be had.
+     *
+     * The worker's fetch is a second, distinguishable request — no cookies, a
+     * Range header, no Referer — so a server can answer the reader with an AI
+     * picture and the extension with a signed photograph, and the badge lands
+     * on the one nobody hashed. `only-if-cached` reads the response the
+     * browser already holds and makes no request of its own, so it costs no
+     * traffic and sends no cookies; it is same-origin only, and a blob: URL
+     * is only reachable from here at all. Reading the cache is not the same
+     * as reading the picture, though — see showsTheseBytes, which is what
+     * decides whether these bytes may speak for it. Where neither applies the
+     * worker still fetches, and deriveSignals will not read an exculpatory
+     * claim out of bytes nobody can tie to the picture (hints.rendered).
+     */
+    for (const entry of toFetch) {
+      if (entry.msg.kind === 'av') continue;      // a video is too large to pull through a message
+      await addPageBytes(entry.msg, entry.st.el);
     }
     pendingImages += toFetch.length;
     refreshSummary();

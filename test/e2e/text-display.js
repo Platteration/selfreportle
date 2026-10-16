@@ -93,11 +93,21 @@ async function run(context) {
     await page.addStyleTag({ path: path.join(ROOT, 'content/content.css') });
     await page.evaluate(() => {
       globalThis.testSettings = {};
-      globalThis.chrome = { storage: { sync: {
-        get(defaults, done) { done({ ...defaults, ...testSettings }); },
-        set(values, done) { testSettings = { ...values }; done(); },
-        clear() { testSettings = {}; return Promise.resolve(); },
-      } } };
+      globalThis.chrome = {
+        runtime: { getManifest() { return { version: '0.1.0' }; }, sendMessage() { return Promise.resolve({}); } },
+        storage: { sync: {
+          async get(defaults, done) {
+            const out = { ...testSettings };
+            if (done) done(out);
+            return out;
+          },
+          async set(values, done) {
+            Object.assign(testSettings, values, values['selfreportle.settings.v1'] || {});
+            if (done) done();
+          },
+          clear() { testSettings = {}; return Promise.resolve(); },
+        } },
+      };
     });
     for (const file of ['lib/settings.js', 'lib/text-display.js', 'options/options.js']) await page.addScriptTag({ path: path.join(ROOT, file) });
     await page.waitForFunction(() => document.querySelector('[name="textStyle"]').value === 'markers');
@@ -131,6 +141,7 @@ async function run(context) {
     await page.waitForFunction(() => testSettings.showTextMarkers === false && testSettings.textStyle === 'both');
     await page.locator('[name="showTextMarkers"]').check();
     assert.equal(await appearance.inputValue(), 'both', 'choice retained after disabling');
+    page.once('dialog', (d) => d.accept());
     await page.locator('#reset').click();
     await page.waitForFunction(() => document.querySelector('[name="textStyle"]').value === 'markers' && CSS.highlights.size === 0);
     assert.deepEqual(errors, [], 'no page errors');

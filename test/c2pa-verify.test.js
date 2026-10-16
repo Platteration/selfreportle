@@ -41,9 +41,51 @@ test('a genuine signature verifies, with its assertions, chain and hard binding'
   assert.ok(ids.includes('c2pa-ai-created'), 'the claim is still read');
 });
 
+/*
+ * From the October media audit: a genuine camera manifest replayed onto other
+ * pixels keeps its signature and its assertion hashes, and only the hard
+ * binding notices. The signer is anchored and the bytes are the page's own,
+ * so the binding is the one thing left to decide the badge.
+ */
 test('replayed camera credentials retain their signature but fail the media hard binding', async () => {
-  const { subtle } = require('node:crypto').webcrypto;
   const zlib = require('node:zlib');
+  const CAPTURE = [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }];
+  const real = await H.signedC2paAsset({ container: 'png', chain: 'full', generator: 'Test Camera', actions: CAPTURE });
+  CV.setTrustAnchors([await fingerprint(real.signer.certs[real.signer.certs.length - 1])]);
+  try {
+    const honest = await M.analyzeImageBytes(real.bytes, { rendered: true });
+    assert.equal(honest.metadata.c2pa.verification.signature, 'valid');
+    assert.equal(honest.metadata.c2pa.verification.binding.status, 'valid');
+    assert.equal(V.combineImageSignals(honest.signals).verdict, 'captured');
+
+    // The credential chunk unchanged, the pixels after it replaced.
+    const credentialEnd = real.exclusions[0].start + real.exclusions[0].length;
+    const tampered = H.concat([real.bytes.slice(0, credentialEnd),
+      H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 255, 0, 0])))), H.pngChunk('IEND', new Uint8Array(0))]);
+    const replay = await M.analyzeImageBytes(tampered, { rendered: true });
+    assert.equal(replay.metadata.c2pa.verification.signature, 'valid', 'manifest and signature are unchanged');
+    assert.equal(replay.metadata.c2pa.verification.assertions.matched, 2);
+    assert.equal(replay.metadata.c2pa.verification.binding.status, 'mismatch');
+    assert.equal(V.combineImageSignals(replay.signals).verdict, 'suspected');
+    assert.ok(!replay.signals.some((s) => s.id === 'c2pa-capture'));
+
+    const truncated = await M.analyzeImageBytes(real.bytes, { truncated: true, rendered: true });
+    assert.equal(truncated.metadata.c2pa.verification.binding.status, 'unchecked');
+    assert.notEqual(V.combineImageSignals(truncated.signals).verdict, 'captured');
+  } finally {
+    CV.setTrustAnchors([]);
+  }
+});
+
+/*
+ * The audit's own fixture reserved 4096 bytes for the credentials and padded
+ * the caBX chunk out to them. A chunk carrying more than the JUMBF store
+ * inside it is the shape of the store-swallowing attack further down, so it
+ * is not taken as the store's extent here, and the binding fails closed:
+ * neither valid nor an accusation.
+ */
+test('a caBX chunk padded past its store is not a binding extent, whatever the digest says', async () => {
+  const { subtle } = require('node:crypto').webcrypto;
   const bound = H.png([]);
   const hash = new Uint8Array(await subtle.digest('SHA-256', bound));
   const manifest = await H.signedC2paManifest({
@@ -53,24 +95,10 @@ test('replayed camera credentials retain their signature but fail the media hard
   });
   assert.ok(manifest.length + 12 <= 4096, 'fixture fits the excluded metadata chunk');
   const credential = H.pngChunk('caBX', H.concat([manifest, new Uint8Array(4096 - manifest.length - 12)]));
-  const original = H.concat([bound.slice(0, 33), credential, bound.slice(33)]);
-  const honest = await M.analyzeImageBytes(original);
-  assert.equal(honest.metadata.c2pa.verification.signature, 'valid');
-  assert.equal(honest.metadata.c2pa.verification.assetBinding.status, 'verified');
-  assert.equal(V.combineImageSignals(honest.signals).verdict, 'captured');
-
-  const tampered = H.concat([bound.slice(0, 33), credential,
-    H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 255, 0, 0])))), bound.slice(-12)]);
-  const replay = await M.analyzeImageBytes(tampered);
-  assert.equal(replay.metadata.c2pa.verification.signature, 'valid', 'manifest and signature are unchanged');
-  assert.equal(replay.metadata.c2pa.verification.assertions.matched, 2);
-  assert.equal(replay.metadata.c2pa.verification.assetBinding.status, 'mismatch');
-  assert.equal(V.combineImageSignals(replay.signals).verdict, 'suspected');
-  assert.ok(!replay.signals.some((s) => s.id === 'c2pa-capture'));
-
-  const truncated = await M.analyzeImageBytes(original, { truncated: true });
-  assert.equal(truncated.metadata.c2pa.verification.assetBinding.status, 'unchecked');
-  assert.notEqual(V.combineImageSignals(truncated.signals).verdict, 'captured');
+  const padded = await M.analyzeImageBytes(H.concat([bound.slice(0, 33), credential, bound.slice(33)]), { rendered: true });
+  assert.equal(padded.metadata.c2pa.verification.signature, 'valid');
+  assert.equal(padded.metadata.c2pa.verification.binding.status, 'unchecked');
+  assert.notEqual(V.combineImageSignals(padded.signals).verdict, 'captured');
 });
 
 test('a valid camera signature with unsupported binding is visibly unchecked', async () => {
@@ -78,10 +106,13 @@ test('a valid camera signature with unsupported binding is visibly unchecked', a
     actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
     extraAssertions: [['c2pa.hash.bmff', { hash: new Uint8Array(32) }]],
   });
-  const r = await M.analyzeImageBytes(H.png([H.pngChunk('caBX', manifest)]));
-  assert.equal(r.metadata.c2pa.verification.signature, 'valid');
-  assert.equal(r.metadata.c2pa.verification.assetBinding.status, 'unchecked');
-  assert.match(r.metadata.c2pa.verification.summary.text, /Asset binding unchecked/);
+  const r = await M.analyzeImageBytes(H.png([H.pngChunk('caBX', manifest)]), { rendered: true });
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.signature, 'valid');
+  assert.equal(v.binding.status, 'unsupported');
+  assert.equal(v.summary.caution, true);
+  assert.match(v.summary.text, /hard binding \(c2pa\.hash\.bmff\) not checkable by this reader/);
+  assert.ok(r.signals.some((s) => s.id === 'c2pa-unbound'), 'and the reader is told so');
   assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
 });
 
@@ -304,13 +335,400 @@ function corruptSecondCertificate(manifest) {
   return out;
 }
 
+/*
+ * The hard binding. Everything above answers "was this manifest altered?".
+ * This answers the separate question "is this manifest about THIS file?" —
+ * the one that stands between a genuine camera signature and someone else's
+ * picture, and the one that has no cryptographic difficulty at all for a
+ * forger: copying bytes is free.
+ */
 
+test('a manifest is bound to the bytes it travels in', async () => {
+  const { bytes, exclusions } = await H.signedC2paAsset({ container: 'png', actions: AI_ACTION });
+  const r = await M.analyzeImageBytes(bytes);
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.binding.status, 'valid');
+  assert.equal(v.binding.kind, 'c2pa.hash.data');
+  assert.ok(v.binding.hashed > 0, 'something outside the credential store was actually hashed');
+  assert.equal(v.summary.ok, true);
+  assert.match(v.summary.text, /bound to this file/);
+  assert.equal(exclusions.length, 1);
+});
+
+test('a genuine manifest moved onto a different image is rejected, not merely unverified', async () => {
+  const CAPTURE = [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }];
+  const real = await H.signedC2paAsset({ container: 'png', chain: 'full', generator: 'Leica M11-P', cn: 'Leica Camera AG', actions: CAPTURE });
+  assert.equal((await M.analyzeImageBytes(real.bytes)).metadata.c2pa.verification.summary.ok, true, 'baseline: the original does verify');
+
+  // The attack: the same manifest bytes, at the same offset, inside another
+  // picture. Nothing about the signature, the assertions or the chain changes.
+  const transplant = H.png([H.pngChunk('caBX', real.manifest), H.tEXt('Comment', 'an entirely different picture')]);
+  const r = await M.analyzeImageBytes(transplant);
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.signature, 'valid', 'the stolen signature really is genuine');
+  assert.equal(v.assertions.mismatched.length, 0, 'and every assertion still hashes as the claim says');
+  assert.equal(v.chain.linked, true);
+  assert.equal(v.binding.status, 'mismatch', 'only the binding catches it');
+  assert.equal(v.summary.ok, false);
+  assert.equal(v.summary.broken, true, 'a manifest describing another file is invalid, not unverified');
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes('c2pa-broken'), 'saw ' + ids.join(','));
+  assert.ok(!ids.includes('c2pa-capture'), 'and the camera claim never speaks');
+  assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
+  assert.equal(V.combineImageSignals(r.signals).verdict, 'suspected');
+});
+
+test('one changed byte of the asset breaks the binding while the signature stays valid', async () => {
+  const { bytes } = await H.signedC2paAsset({ container: 'png', actions: AI_ACTION });
+  const edited = bytes.slice();
+  // The last byte of the file: outside the credential store, so the manifest
+  // is untouched and every other check still passes.
+  edited[edited.length - 1] ^= 0xff;
+  const v = (await M.analyzeImageBytes(edited)).metadata.c2pa.verification;
+  assert.equal(v.signature, 'valid');
+  assert.equal(v.binding.status, 'mismatch');
+  assert.equal(v.summary.ok, false);
+  assert.equal(v.summary.broken, true);
+});
+
+test('a validly signed claim carrying no hard binding is invalid, not verified', async () => {
+  const manifest = await H.signedC2paManifest({ actions: AI_ACTION, chain: 'full' });
+  const r = await M.analyzeImageBytes(H.png([H.pngChunk('caBX', manifest)]));
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.signature, 'valid');
+  assert.equal(v.assertions.mismatched.length, 0);
+  assert.equal(v.binding.status, 'absent');
+  assert.equal(v.summary.ok, false, 'a claim about no particular file cannot pass');
+  assert.equal(v.summary.broken, true);
+  assert.ok(r.signals.map((s) => s.id).includes('c2pa-broken'));
+});
+
+/*
+ * The exclusion ranges are written by whoever wrote the manifest. If a
+ * validator applies them blindly, a forger simply excludes the whole file:
+ * the digest is then over nothing and matches whatever they put in. So the
+ * ranges have to sit inside the credential store and nowhere else.
+ */
+test('a binding may only exclude the credentials, never the picture', async () => {
+  const asset = new Uint8Array(512).map((_, i) => i & 0xff);
+  const store = [{ start: 100, end: 200 }];
+  const bind = async (exclusions, ranges) => {
+    const content = CBOR.encode({ exclusions, alg: 'sha256', hash: new Uint8Array(32) });
+    const manifest = {
+      claim: { alg: 'sha256', assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.hash.data' }] },
+      assertionBoxes: [{ label: 'c2pa.hash.data', raw: new Uint8Array(0), content, contentType: 'cbor' }],
+    };
+    return CV._internal.checkHardBinding(manifest, { assertions: null }, { asset, assetRanges: ranges === undefined ? store : ranges });
+  };
+  assert.equal((await bind([{ start: 0, length: asset.length }])).status, 'unchecked', 'excluding the whole file proves nothing');
+  assert.equal((await bind([{ start: 100, length: 150 }])).status, 'unchecked', 'nor may it spill past the store');
+  assert.equal((await bind([{ start: 100, length: 100 }])).status, 'mismatch', 'the honest range is applied and the digest actually checked');
+  assert.equal((await bind([{ start: 100, length: 100 }], [])).status, 'unchecked', 'and without knowing where the store is, nothing is confirmed');
+  // Malformed range sets are refused rather than guessed at.
+  assert.equal((await bind([{ start: 0, length: 10 }, { start: 5, length: 10 }])).status, 'unchecked');
+  assert.equal((await bind([{ start: 0, length: 10000 }])).status, 'unchecked');
+  assert.equal((await bind([{ start: -1, length: 4 }])).status, 'unchecked');
+  assert.equal((await bind('all of it')).status, 'unchecked');
+});
+
+test('a binding this reader cannot recompute is never a pass', async () => {
+  const manifest = {
+    claim: { alg: 'sha256', assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.hash.bmff.v3' }] },
+    assertionBoxes: [{ label: 'c2pa.hash.bmff.v3', raw: new Uint8Array(0), content: CBOR.encode({ hash: new Uint8Array(32) }), contentType: 'cbor' }],
+  };
+  const b = await CV._internal.checkHardBinding(manifest, { assertions: null }, { asset: new Uint8Array(64), assetRanges: [{ start: 0, end: 8 }] });
+  assert.equal(b.status, 'unsupported');
+  const s = CV.summarize({ signature: 'valid', assertions: null, chain: null, binding: b });
+  assert.equal(s.ok, false);
+  assert.equal(s.caution, true);
+});
+
+test('an unknown digest algorithm fails closed', async () => {
+  const manifest = {
+    claim: { assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.hash.data' }] },
+    assertionBoxes: [{ label: 'c2pa.hash.data', raw: new Uint8Array(0), content: CBOR.encode({ exclusions: [], alg: 'blake3', hash: new Uint8Array(32) }), contentType: 'cbor' }],
+  };
+  const b = await CV._internal.checkHardBinding(manifest, { assertions: null }, { asset: new Uint8Array(64), assetRanges: [{ start: 0, end: 8 }] });
+  assert.equal(b.status, 'unchecked');
+  assert.match(b.reason, /blake3/);
+});
+
+test('a binding that excludes nothing describes a sidecar, not this file', async () => {
+  const manifest = {
+    claim: { alg: 'sha256', assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.hash.data' }] },
+    assertionBoxes: [{ label: 'c2pa.hash.data', raw: new Uint8Array(0), content: CBOR.encode({ exclusions: [], hash: new Uint8Array(32) }), contentType: 'cbor' }],
+  };
+  const b = await CV._internal.checkHardBinding(manifest, { assertions: null }, { asset: new Uint8Array(64), assetRanges: [{ start: 0, end: 8 }] });
+  assert.equal(b.status, 'unchecked', 'no pass, and no accusation either');
+  assert.equal(CV.summarize({ signature: 'valid', assertions: null, chain: null, binding: b }).ok, false);
+});
+
+test('a hard binding the signed claim never referenced is not a binding', async () => {
+  const manifest = {
+    claim: { alg: 'sha256', assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.actions.v2' }] },
+    assertionBoxes: [{ label: 'c2pa.hash.data', raw: new Uint8Array(0), content: CBOR.encode({ exclusions: [], hash: new Uint8Array(32) }), contentType: 'cbor' }],
+  };
+  const b = await CV._internal.checkHardBinding(manifest, { assertions: null }, { asset: new Uint8Array(64), assetRanges: [{ start: 0, end: 8 }] });
+  assert.equal(b.status, 'absent', 'anyone can add an unreferenced box');
+});
+
+test('a byte-capped fetch cannot confirm a binding, so it is caution rather than a pass', async () => {
+  // A camera claim, because that is the one being withheld: most photographs
+  // large enough to be capped are exactly this case.
+  const { bytes } = await H.signedC2paAsset({ container: 'png', generator: 'Leica M11-P', cn: 'Leica Camera AG', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] });
+  const r = await M.analyzeImageBytes(bytes, { truncated: true });
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.binding.status, 'unchecked');
+  assert.equal(v.summary.ok, false);
+  assert.equal(v.summary.broken, false);
+  assert.equal(v.summary.caution, true);
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes('c2pa-unbound'), 'the reader is told why, saw ' + ids.join(','));
+  assert.ok(!ids.includes('c2pa-verified'));
+  /* A capped fetch is an unanswered question about a very ordinary large
+   * photograph. It withholds the badge; it must not accuse anyone. The claim
+   * is still shown as the file's own — slate, rank 2, counted as no finding —
+   * because refusing the badge is right and hiding what was refused is not. */
+  const capped = V.combineImageSignals(r.signals).verdict;
+  assert.equal(capped, 'self-claimed');
+  assert.equal(V.IMAGE[capped].rank, V.IMAGE['no-signal'].rank, 'ranked no higher than no signal at all');
+  assert.notEqual(V.IMAGE[capped].color, V.IMAGE.captured.color);
+});
+
+test('an unsigned manifest never earns the badge a signed, bound and anchored one does', async () => {
+  const CAPTURE = [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }];
+  const signed = await H.signedC2paAsset({ container: 'png', chain: 'full', generator: 'Leica M11-P', cn: 'Leica Camera AG', actions: CAPTURE });
+  CV.setTrustAnchors([await fingerprint(signed.signer.certs[signed.signer.certs.length - 1])]);
+  try {
+    const signedR = await M.analyzeImageBytes(signed.bytes, { rendered: true });
+    assert.equal(V.combineImageSignals(signedR.signals).verdict, 'captured');
+
+    const unsigned = H.c2paManifest({ generator: 'Leica M11-P', actions: CAPTURE });
+    const unsignedR = await M.analyzeImageBytes(H.png([H.pngChunk('caBX', unsigned)]), { rendered: true });
+    assert.equal(unsignedR.metadata.c2pa.verification.signature, 'absent');
+    assert.notEqual(V.combineImageSignals(unsignedR.signals).verdict, 'captured');
+  } finally {
+    CV.setTrustAnchors([]);
+  }
+});
+
+/*
+ * MISSED-3. checkAssertions used to `continue` past any reference whose hash
+ * was not a byte string *before* incrementing `checked`, so a claim whose
+ * hashed_uri entries carry the digest as text left checked at 0. summarize's
+ * whole assertion clause is gated on `checked`, so it said nothing about
+ * assertions and the result passed on the signature and binding alone — the
+ * second of the three advertised checks silently not performed. C2PA requires
+ * a hash on every assertion reference and requires validation to fail when
+ * one cannot be checked, so the reference is counted and reported instead.
+ */
+test('an assertion reference with no usable hash is counted, not skipped', async () => {
+  const { v, ids } = await analyse({ tamper: 'text-hashes' });
+  assert.equal(v.signature, 'valid', 'the claim itself is genuine');
+  assert.equal(v.binding.status, 'valid', 'and it really is bound to these bytes');
+  assert.equal(v.assertions.checked, 2, 'both references are counted');
+  assert.equal(v.assertions.matched, 0);
+  assert.deepEqual(v.assertions.mismatched, []);
+  assert.deepEqual(v.assertions.unhashed.sort(), ['c2pa.actions.v2', 'c2pa.hash.data']);
+  assert.equal(v.assertions.inconclusive, true);
+  const s = CV.summarize(v);
+  assert.equal(s.ok, false, 'a claim whose assertions could not be checked must never read as verified');
+  assert.equal(s.broken, false, 'and it is not an accusation either');
+  assert.equal(s.caution, true);
+  assert.match(s.text, /no hash this reader can use/);
+  assert.ok(!ids.includes('c2pa-verified'), 'no green verification signal');
+  assert.ok(ids.includes('c2pa-caution'));
+});
+
+test('an unhashed reference is reported alongside a real mismatch, not instead of it', () => {
+  const v = {
+    signature: 'valid', algorithm: 'ES256',
+    assertions: { checked: 3, matched: 1, mismatched: ['c2pa.actions.v2'], missing: [], unhashed: ['c2pa.thumbnail'], inconclusive: true, truncated: false, convention: 'whole JUMBF box', note: null, trustedLabels: [] },
+    binding: { status: 'valid', kind: 'c2pa.hash.data', reason: 'ok' },
+    chain: null,
+  };
+  const s = CV.summarize(v);
+  assert.match(s.text, /1 assertion\(s\) do not match the signed claim/);
+  assert.match(s.text, /1 assertion\(s\) record no hash/);
+  assert.equal(s.broken, true, 'the mismatch still decides the outcome');
+  assert.equal(s.ok, false);
+});
+
+/*
+ * L5-2. The fourth check rests on knowing where the credential store sits, and
+ * that used to come from length fields nothing hashes and nothing signs. Put
+ * the store in a private ancillary PNG chunk — every decoder skips it, the
+ * picture renders normally — write 0xfffffff0 over the outer JUMBF box's own
+ * length, and the reader clamped that to the end of the file and called the
+ * result "the store". The declared exclusion then swallowed the picture: the
+ * binding hashed 41 bytes of 1728, reported "valid", and the same manifest
+ * validated unchanged over completely different pixels.
+ */
+const zlib = require('zlib');
+const SIG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const u32be = (n) => Uint8Array.from([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+const IHDR = H.pngChunk('IHDR', H.concat([u32be(1), u32be(1), Uint8Array.from([8, 2, 0, 0, 0])]));
+const idatOf = (seed, n) => {
+  const raw = new Uint8Array(n);
+  for (let i = 0; i < n; i++) raw[i] = (seed + i * 13) & 0xff;
+  return H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from(raw))));
+};
+
+/* Builds the attack and returns an assembler, so the same manifest can be
+ * tried over other pixels without recomputing anything. */
+async function storeSwallowingThePicture(chunkType) {
+  const signer = await H.makeSigner({ cn: 'Canon Inc.', org: 'Canon Inc.', chain: 'leaf' });
+  const shape = { signer, generator: 'Canon EOS R5', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] };
+  const assemble = (store, idat) => H.concat([SIG, IHDR, H.pngChunk(chunkType, store), idat, H.pngChunk('IEND', new Uint8Array(0))]);
+  const storeAt = SIG.length + IHDR.length + 8;
+  // Nothing covers the outer box's own four-byte length: not the claim, which
+  // hashes the assertion boxes, and not the signature, which covers the claim.
+  const inflateLen = (store) => { const s = store.slice(); s.set([0xff, 0xff, 0xff, 0xf0], 0); return s; };
+
+  // The exclusion's length depends on the file's length, which depends on the
+  // manifest carrying it, so it is iterated to a fixed point.
+  let exclusions = [{ start: storeAt, length: 1 }];
+  let store = null;
+  let bytes = null;
+  const idat = idatOf(3, 4096);
+  for (let i = 0; i < 8; i++) {
+    store = inflateLen(await H.signedC2paManifest({ ...shape, dataHash: { exclusions, hash: new Uint8Array(32) } }));
+    bytes = assemble(store, idat);
+    const want = [{ start: storeAt, length: bytes.length - storeAt }];
+    if (want[0].length === exclusions[0].length) break;
+    exclusions = want;
+  }
+  // Only the bytes before the store are hashed: the header, and nothing else.
+  const hash = new Uint8Array(await require('crypto').webcrypto.subtle.digest('SHA-256', bytes.subarray(0, storeAt)));
+  store = inflateLen(await H.signedC2paManifest({ ...shape, dataHash: { exclusions, hash } }));
+  return { assemble: (seed) => assemble(store, idatOf(seed, 4096)), hashed: storeAt };
+}
+
+test('a declared store length that swallows the picture is not a hard binding', async () => {
+  const attack = await storeSwallowingThePicture('prVt');
+  const bytes = attack.assemble(3);
+  const r = await M.analyzeImageBytes(bytes, { rendered: true });
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.signature, 'valid', 'the signature itself is genuine, which is the point');
+  assert.notEqual(v.binding.status, 'valid',
+    'the binding would hash ' + attack.hashed + ' of ' + bytes.length + ' bytes and call it this file');
+  assert.equal(v.summary.ok, false);
+  assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
+});
+
+test('the same manifest over different pixels is not accepted either', async () => {
+  const attack = await storeSwallowingThePicture('prVt');
+  const a = await M.analyzeImageBytes(attack.assemble(3), { rendered: true });
+  const b = await M.analyzeImageBytes(attack.assemble(200), { rendered: true });
+  // Whatever the first one is, the second must not be better: one manifest
+  // minted once cannot describe two different pictures.
+  assert.equal(b.metadata.c2pa.verification.summary.ok, a.metadata.c2pa.verification.summary.ok);
+  assert.equal(b.metadata.c2pa.verification.summary.ok, false);
+  assert.notEqual(V.combineImageSignals(b.signals).verdict, 'captured');
+});
+
+/*
+ * The same idea through the container the format does define for it: a caBX
+ * chunk header whose declared length runs on past the JUMBF boxes inside it,
+ * over the image data and to the end of the file. Clamping that to the end of
+ * the file is what made it work; a chunk padded with the picture is not a
+ * credential store however its length field reads.
+ */
+test('a caBX chunk longer than the store inside it is not an exclusion range', async () => {
+  const signer = await H.makeSigner({ cn: 'Canon Inc.', org: 'Canon Inc.', chain: 'leaf' });
+  const shape = { signer, generator: 'Canon EOS R5', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] };
+  const idat = idatOf(3, 4096);
+  const iend = H.pngChunk('IEND', new Uint8Array(0));
+  const chunkAt = SIG.length + IHDR.length;
+  const storeAt = chunkAt + 8;
+  // length + 'caBX' + <store><IDAT><IEND>, the length counting all three.
+  const assemble = (store) => H.concat([SIG, IHDR, u32be(store.length + idat.length + iend.length), H.str('caBX'), store, idat, iend]);
+
+  let exclusions = [{ start: chunkAt, length: 1 }];
+  let store = null;
+  let bytes = null;
+  for (let i = 0; i < 8; i++) {
+    store = await H.signedC2paManifest({ ...shape, dataHash: { exclusions, hash: new Uint8Array(32) } });
+    bytes = assemble(store);
+    const want = [{ start: chunkAt, length: bytes.length - chunkAt }];
+    if (want[0].length === exclusions[0].length) break;
+    exclusions = want;
+  }
+  const hash = new Uint8Array(await require('crypto').webcrypto.subtle.digest('SHA-256', bytes.subarray(0, chunkAt)));
+  bytes = assemble(await H.signedC2paManifest({ ...shape, dataHash: { exclusions, hash } }));
+
+  const r = await M.analyzeImageBytes(bytes, { rendered: true });
+  assert.ok(r.metadata.c2pa, 'the credentials are still read and shown');
+  assert.notEqual(r.metadata.c2pa.verification.binding.status, 'valid',
+    'the binding would hash ' + chunkAt + ' of ' + bytes.length + ' bytes, the store having been declared to be the rest');
+  assert.equal(r.metadata.c2pa.verification.summary.ok, false);
+  assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
+  assert.equal(storeAt, chunkAt + 8, 'the store begins right after the chunk header');
+});
+
+/*
+ * L5-4. referencedLabels read "no references" as "no basis to restrict", so a
+ * signed claim carrying `assertions: []` switched the rule off: every box in
+ * the manifest was admitted, including a hard binding the claim never named,
+ * checkAssertions counted nothing, and summarize returned ok with the
+ * assertion clause missing entirely.
+ */
+test('a claim that references no assertions covers none of them', async () => {
+  const manifest = {
+    claim: { alg: 'sha256', assertions: [] },
+    assertionBoxes: [{ label: 'c2pa.hash.data', raw: new Uint8Array(0), content: CBOR.encode({ exclusions: [], hash: new Uint8Array(32) }), contentType: 'cbor' }],
+  };
+  const b = await CV._internal.checkHardBinding(manifest, { assertions: null }, { asset: new Uint8Array(64), assetRanges: [{ start: 0, end: 8 }] });
+  assert.equal(b.status, 'absent', 'a binding the claim never named binds nothing, empty list included');
+
+  const out = { checked: 0, matched: 0, mismatched: [], missing: [], unhashed: [], duplicateLabels: [], unreferenced: false, inconclusive: false, truncated: false, convention: null, note: null, trustedLabels: [] };
+  await CV._internal.checkAssertions(manifest, out);
+  assert.equal(out.checked, 0, 'there is nothing to check');
+  assert.equal(out.unreferenced, true, 'and that is itself the finding');
+  const s = CV.summarize({ signature: 'valid', assertions: out, chain: null, binding: b });
+  assert.equal(s.ok, false);
+  assert.match(s.text, /names no assertions/, 'and the summary says so rather than staying silent');
+});
+
+/*
+ * L5-5. C2PA requires a label to be unique within a manifest. Two boxes under
+ * one label meant the hash check settled on whichever the Map kept — the
+ * genuine one, which matched — while the reader tagged both with that label
+ * and read both, so a smuggled "digitalCapture" action nobody hashed was
+ * reported under "all 2 assertions match the signed claim".
+ */
+test('two assertion boxes sharing a label break the manifest', async () => {
+  const dup = (label, value) => H.jumb(H.UUID.cbor, label, [H.cborBox(value)]);
+  const manifest = {
+    claim: { alg: 'sha256', assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.actions.v2', alg: 'sha256', hash: new Uint8Array(32) }] },
+    assertionBoxes: [
+      { label: 'c2pa.actions.v2', raw: dup('c2pa.actions.v2', { actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] }), content: null, contentType: null },
+      { label: 'c2pa.actions.v2', raw: dup('c2pa.actions.v2', { actions: [{ action: 'c2pa.opened' }] }), content: null, contentType: null },
+    ],
+  };
+  const out = { checked: 0, matched: 0, mismatched: [], missing: [], unhashed: [], duplicateLabels: [], unreferenced: false, inconclusive: false, truncated: false, convention: null, note: null, trustedLabels: [] };
+  await CV._internal.checkAssertions(manifest, out);
+  assert.deepEqual(out.duplicateLabels, ['c2pa.actions.v2']);
+  const s = CV.summarize({ signature: 'valid', assertions: out, chain: null, binding: { status: 'valid' } });
+  assert.equal(s.broken, true, 'no box may ride along unhashed under a name that hashed');
+  assert.equal(s.ok, false);
+  assert.match(s.text, /appear twice/);
+});
+
+/*
+ * From the October media audit. A signed exclusion is not permission to
+ * leave the picture out of the digest: here the exclusion runs on from the
+ * credentials over a padding chunk and the pixels, so the digest covers the
+ * header and IEND only and holds for any picture at all. Signer anchored and
+ * bytes rendered, so nothing but the binding stands in the way.
+ */
 test('signed exclusions covering pixels cannot authenticate modified camera media', async () => {
   const { subtle } = require('node:crypto').webcrypto;
   const zlib = require('node:zlib');
+  const signer = await H.makeSigner({ chain: 'full', cn: 'Test Camera Co' });
   const header = H.png([]).slice(0, 33), end = H.pngChunk('IEND', new Uint8Array());
   const hash = new Uint8Array(await subtle.digest('SHA-256', H.concat([header, end])));
-  const manifest = await H.signedC2paManifest({ generator: 'Test Camera',
+  const manifest = await H.signedC2paManifest({ signer, generator: 'Test Camera',
     actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
     extraAssertions: [['c2pa.hash.data', { alg: 'sha256', hash, exclusions: [{ start: 33, length: 4096 }] }]],
   });
@@ -319,50 +737,150 @@ test('signed exclusions covering pixels cannot authenticate modified camera medi
   const blue = H.pngChunk('IDAT', new Uint8Array(zlib.deflateSync(Buffer.from([0, 0, 0, 255]))));
   assert.equal(red.length, blue.length);
   const padding = H.pngChunk('npAD', new Uint8Array(4096 - credential.length - red.length - 12));
-  for (const pixels of [red, blue]) {
-    const r = await M.analyzeImageBytes(H.concat([header, credential, padding, pixels, end]));
-    assert.equal(r.metadata.c2pa.verification.signature, 'valid');
-    assert.equal(r.metadata.c2pa.verification.assetBinding.status, 'unchecked');
-    assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
-    assert.ok(!r.signals.some((signal) => signal.id === 'c2pa-capture'));
+  CV.setTrustAnchors([await fingerprint(signer.certs[signer.certs.length - 1])]);
+  try {
+    for (const pixels of [red, blue]) {
+      const r = await M.analyzeImageBytes(H.concat([header, credential, padding, pixels, end]), { rendered: true });
+      assert.equal(r.metadata.c2pa.verification.signature, 'valid');
+      assert.equal(r.metadata.c2pa.verification.chain.anchored, true, 'the signer is one this build knows');
+      assert.equal(r.metadata.c2pa.verification.binding.status, 'unchecked');
+      assert.notEqual(V.combineImageSignals(r.signals).verdict, 'captured');
+      assert.ok(!r.signals.some((signal) => signal.id === 'c2pa-capture'));
+    }
+  } finally {
+    CV.setTrustAnchors([]);
   }
 });
 
-test('PNG bindings reject partial credentials, media/header exclusions and unvalidated layouts', async () => {
+/* checkHardBinding over a data hash whose digest really matches the bytes it
+ * leaves in, with the store where the parser would have put it. */
+async function bindPng(bytes, exclusions, store) {
   const { subtle } = require('node:crypto').webcrypto;
+  const included = [];
+  let offset = 0;
+  for (const range of exclusions) {
+    included.push(bytes.subarray(offset, range.start));
+    offset = range.start + range.length;
+  }
+  included.push(bytes.subarray(offset));
+  const hash = new Uint8Array(await subtle.digest('SHA-256', H.concat(included)));
+  const manifest = {
+    claim: { alg: 'sha256', assertions: [{ url: 'self#jumbf=c2pa.assertions/c2pa.hash.data' }] },
+    assertionBoxes: [{ label: 'c2pa.hash.data', raw: new Uint8Array(0), content: CBOR.encode({ alg: 'sha256', hash, exclusions }), contentType: 'cbor' }],
+  };
+  return CV._internal.checkHardBinding(manifest, { assertions: { trustedLabels: ['c2pa.hash.data'] } }, { asset: bytes, assetRanges: store });
+}
+
+/*
+ * Each of these digests matches, so nothing but the rule under test can stop
+ * it. The layout cases exclude the whole credential chunk, as an honest
+ * binding would, so only the PNG walk (trailing bytes, a cut-off IEND, no
+ * image data, a header that is missing, short or repeated, a chunk type that
+ * is not four letters) or the reach of the exclusion is left to refuse them;
+ * each control is the same layout, clean, and verifies.
+ */
+test('PNG bindings reject partial credentials, media/header exclusions and unvalidated layouts', async () => {
   const credentials = H.pngChunk('caBX', new Uint8Array([1, 2, 3]));
   const pixels = H.pngChunk('IDAT', new Uint8Array([1, 2, 3, 4]));
   const png = H.png([credentials, pixels]);
+  const chunk = [{ start: 33, end: 33 + credentials.length }];
+  const whole = [{ start: 33, length: credentials.length }];
+  assert.equal((await bindPng(png, whole, chunk)).status, 'valid', 'control: the whole credential chunk of a clean PNG verifies');
+  const text = H.tEXt('A', 'B');
   const cases = [
-    { name: 'partial credential', bytes: png, exclusions: [{ start: 34, length: credentials.length - 1 }] },
-    { name: 'image header', bytes: png, exclusions: [{ start: 8, length: 25 }] },
-    { name: 'credential and first pixel byte', bytes: png, exclusions: [{ start: 33, length: credentials.length + 1 }] },
-    { name: 'noncredential metadata', bytes: H.png([H.pngChunk('tEXt', new Uint8Array([65, 0, 66])), pixels]), exclusions: [{ start: 33, length: 15 }] },
-    { name: 'trailing unvalidated bytes', bytes: H.concat([png, new Uint8Array([7])]), exclusions: [] },
-    { name: 'incomplete PNG', bytes: png.slice(0, -1), exclusions: [] },
-    { name: 'unsupported JPEG layout', bytes: H.jpeg([]), exclusions: [] },
+    { name: 'partial credential', bytes: png, exclusions: [{ start: 34, length: credentials.length - 1 }], store: chunk },
+    { name: 'image header', bytes: png, exclusions: [{ start: 8, length: 25 }], store: chunk },
+    { name: 'credential and first pixel byte', bytes: png, exclusions: [{ start: 33, length: credentials.length + 1 }], store: chunk },
+    // Even told the text chunk is the store, the PNG walk knows it is not caBX.
+    { name: 'noncredential metadata', bytes: H.png([text, pixels]), exclusions: [{ start: 33, length: text.length }], store: [{ start: 33, end: 33 + text.length }] },
+    { name: 'trailing unvalidated bytes', bytes: H.concat([png, new Uint8Array([7])]), exclusions: whole, store: chunk },
+    { name: 'incomplete PNG', bytes: png.slice(0, -1), exclusions: whole, store: chunk },
+    { name: 'unsupported JPEG layout', bytes: H.jpeg([]), exclusions: [], store: [] },
   ];
+  /* The walk's other refusals, each a file that is clean but for the one
+   * thing under test, the credential chunk at the offset its exclusion and
+   * store name. */
+  const header = png.slice(0, 8), ihdr = png.slice(8, 33), end = H.pngChunk('IEND', new Uint8Array(0));
+  const laidOut = (name, before, after) => {
+    const start = header.length + before.reduce((n, c) => n + c.length, 0);
+    return { name, bytes: H.concat([header, ...before, credentials, ...after, end]), exclusions: [{ start, length: credentials.length }], store: [{ start, end: start + credentials.length }] };
+  };
+  const clean = laidOut('control', [ihdr], [pixels]);
+  assert.equal((await bindPng(clean.bytes, clean.exclusions, clean.store)).status, 'valid', 'control: built this way, a clean file verifies');
+  cases.push(
+    laidOut('no image data', [ihdr], []),
+    // thirteen bytes, as long as a header, so only its type gives it away
+    laidOut('no IHDR', [H.tEXt('Comment', 'hello')], [pixels]),
+    laidOut('a chunk before IHDR', [text, ihdr], [pixels]),
+    laidOut('a header of the wrong length', [H.pngChunk('IHDR', ihdr.slice(8, 20))], [pixels]),
+    laidOut('a second IHDR', [ihdr], [ihdr, pixels]),
+    laidOut('a chunk type that is not four letters', [ihdr], [H.pngChunk('ab1D', new Uint8Array([1])), pixels]),
+  );
   for (const fixture of cases) {
-    const included = [];
-    let offset = 0;
-    for (const range of fixture.exclusions) {
-      included.push(fixture.bytes.subarray(offset, range.start));
-      offset = range.start + range.length;
-    }
-    included.push(fixture.bytes.subarray(offset));
-    const hash = new Uint8Array(await subtle.digest('SHA-256', H.concat(included)));
-    const binding = await CV._internal.checkAssetBinding({ assertionBoxes: [{ label: 'c2pa.hash.data', value: { alg: 'sha256', hash, exclusions: fixture.exclusions } }] },
-      { signature: 'valid', assertions: { trustedLabels: ['c2pa.hash.data'] } }, { assetBytes: fixture.bytes });
+    const binding = await bindPng(fixture.bytes, fixture.exclusions, fixture.store);
     assert.equal(binding.status, 'unchecked', fixture.name + ' must not pass even though its signed digest matches');
   }
 });
 
 test('a binding may exclude adjacent complete credential chunks while covering pixels', async () => {
-  const { subtle } = require('node:crypto').webcrypto;
-  const credentials = H.concat([H.pngChunk('caBX', new Uint8Array([1])), H.pngChunk('caBX', new Uint8Array([2]))]);
+  const first = H.pngChunk('caBX', new Uint8Array([1]));
+  const second = H.pngChunk('caBX', new Uint8Array([2]));
   const pixels = H.pngChunk('IDAT', new Uint8Array([1, 2, 3, 4]));
-  const hash = new Uint8Array(await subtle.digest('SHA-256', H.png([pixels])));
-  const binding = await CV._internal.checkAssetBinding({ assertionBoxes: [{ label: 'c2pa.hash.data', value: { alg: 'sha256', hash, exclusions: [{ start: 33, length: credentials.length }] } }] },
-    { signature: 'valid', assertions: { trustedLabels: ['c2pa.hash.data'] } }, { assetBytes: H.png([credentials, pixels]) });
-  assert.equal(binding.status, 'verified');
+  const binding = await bindPng(H.png([first, second, pixels]), [{ start: 33, length: first.length + second.length }],
+    [{ start: 33, end: 33 + first.length }, { start: 33 + first.length, end: 33 + first.length + second.length }]);
+  assert.equal(binding.status, 'valid');
+  assert.equal(binding.hashed, H.png([pixels]).length, 'every byte but the two chunks was hashed');
+});
+
+/* A data-hash binding over a plain byte array, digest left wrong on purpose:
+ * 'mismatch' then means the ranges were accepted and the digest computed. */
+function dataHashOver(exclusions, label = 'c2pa.hash.data', extra = []) {
+  const box = (l, value) => ({ label: l, raw: new Uint8Array(0), content: CBOR.encode(value), contentType: 'cbor' });
+  return {
+    claim: { alg: 'sha256', assertions: [label, ...extra.map((x) => x[0])].map((l) => ({ url: 'self#jumbf=c2pa.assertions/' + l })) },
+    assertionBoxes: [box(label, { exclusions, alg: 'sha256', hash: new Uint8Array(32) }), ...extra.map(([l, v]) => box(l, v))],
+  };
+}
+
+test('an exclusion that leaves part of the credential store hashed is not a binding', async () => {
+  const asset = new Uint8Array(512).map((_, i) => i & 0xff);
+  const store = [{ start: 100, end: 200 }];
+  const check = (exclusions) => CV._internal.checkHardBinding(dataHashOver(exclusions), { assertions: null }, { asset, assetRanges: store });
+  const part = await check([{ start: 120, length: 50 }]);
+  assert.equal(part.status, 'unchecked', 'part of the store');
+  assert.match(part.reason, /only part of the credential store/);
+  assert.equal((await check([{ start: 100, length: 99 }])).status, 'unchecked', 'all of it but one byte');
+  // Spilling past the store is the other refusal, and says so.
+  const spill = await check([{ start: 100, length: 101 }]);
+  assert.equal(spill.status, 'unchecked');
+  assert.match(spill.reason, /outside the credential store/);
+  assert.equal((await check([{ start: 100, length: 50 }, { start: 150, length: 50 }])).status, 'mismatch', 'the whole store in two ranges is still the whole store');
+  assert.equal((await check([{ start: 100, length: 100 }])).status, 'mismatch', 'and in one');
+});
+
+test('a claim carrying two hard bindings settles neither', async () => {
+  const asset = new Uint8Array(512).map((_, i) => i & 0xff);
+  const manifest = dataHashOver([{ start: 100, length: 100 }], 'c2pa.hash.data', [['c2pa.hash.bmff.v2', { hash: new Uint8Array(32) }]]);
+  const b = await CV._internal.checkHardBinding(manifest, { assertions: null }, { asset, assetRanges: [{ start: 100, end: 200 }] });
+  assert.equal(b.status, 'unchecked');
+  assert.match(b.reason, /2 hard bindings/);
+  const one = await CV._internal.checkHardBinding(dataHashOver([{ start: 100, length: 100 }]), { assertions: null }, { asset, assetRanges: [{ start: 100, end: 200 }] });
+  assert.equal(one.status, 'mismatch', 'control: the data hash alone is checked');
+});
+
+test('at most 512 exclusion ranges are read', async () => {
+  const asset = new Uint8Array(2048);
+  const ones = (n) => Array.from({ length: n }, (_, i) => ({ start: 100 + i, length: 1 }));
+  const check = (n) => CV._internal.checkHardBinding(dataHashOver(ones(n)), { assertions: null }, { asset, assetRanges: [{ start: 100, end: 100 + n }] });
+  assert.equal((await check(512)).status, 'mismatch', '512 one-byte ranges tiling the store are applied');
+  assert.equal((await check(513)).status, 'unchecked', 'a 513th is a list someone chose the length of');
+});
+
+test('only the data-hash versions this reader knows are recomputed', async () => {
+  const asset = new Uint8Array(512).map((_, i) => i & 0xff);
+  const check = (label) => CV._internal.checkHardBinding(dataHashOver([{ start: 100, length: 100 }], label), { assertions: null }, { asset, assetRanges: [{ start: 100, end: 200 }] });
+  assert.equal((await check('c2pa.hash.data')).status, 'mismatch');
+  assert.equal((await check('c2pa.hash.data.v2')).status, 'mismatch');
+  assert.equal((await check('c2pa.hash.data.v3')).status, 'unsupported', 'a later version may hash something else');
+  assert.equal((await check('c2pa.hash.data.extra')).status, 'unsupported');
 });

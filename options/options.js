@@ -18,12 +18,17 @@
 
   function previewText() {
     const enabled = form.elements.showTextMarkers.checked;
+    const style = form.elements.textStyle.value;
     form.elements.textStyle.disabled = !enabled;
-    for (const sample of document.querySelectorAll('[data-preview-verdict]')) {
+    for (const sample of document.querySelectorAll('#textPreview [data-preview-verdict]')) {
       const verdict = sample.getAttribute('data-preview-verdict');
-      if (enabled) sample.setAttribute('data-srl-text', verdict);
-      else sample.removeAttribute('data-srl-text');
-      globalThis.SRL.textDisplay.apply(sample, verdict, enabled ? form.elements.textStyle.value : 'markers');
+      if (enabled) {
+        sample.setAttribute('data-srl-text', verdict);
+        globalThis.SRL.textDisplay.apply(sample, verdict, style);
+      } else {
+        sample.removeAttribute('data-srl-text');
+        globalThis.SRL.textDisplay.clear(sample);
+      }
     }
   }
 
@@ -47,8 +52,29 @@
   fill(await S.load());
   form.elements.textStyle.addEventListener('change', previewText);
   form.elements.showTextMarkers.addEventListener('change', previewText);
-  form.addEventListener('submit', async (e) => { e.preventDefault(); fill(await S.save(read())); flash('Saved'); });
-  document.getElementById('reset').addEventListener('click', async () => { await chrome.storage.sync.clear(); fill(await S.load()); flash('Defaults restored'); });
-  document.getElementById('clearHistory').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-history' }); flash('Domain memory cleared'); });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    /* The browser refuses a host list past its per-item quota. save() has
+     * stored the rest by then and says which list it was, so the message
+     * does too, rather than flashing Saved or blaming every setting. */
+    try { fill(await S.save(read())); flash('Saved'); } catch (err) {
+      if (err && err.code === 'hosts') { fill(await S.load()); flash('Saved, except ' + err.message); } else flash('Could not save: ' + ((err && err.message) || err));
+    }
+  });
+  /* Confirmed, because neither can be undone from inside the extension:
+   * Reset is every preference and every paused host, Clear domain memory
+   * is the counters. The image cache is re-fetchable, so Clear image cache
+   * asks nothing. Cancel is the safe answer in both. */
+  document.getElementById('reset').addEventListener('click', async () => {
+    if (!window.confirm('Reset every setting to its default and clear the paused hosts? Domain memory is not touched.')) return;
+    await S.reset();
+    fill(await S.load());
+    flash('Defaults restored');
+  });
+  document.getElementById('clearHistory').addEventListener('click', async () => {
+    if (!window.confirm('Clear the per-domain memory? The counters cannot be recovered.')) return;
+    await chrome.runtime.sendMessage({ type: 'srl:clear-history' });
+    flash('Domain memory cleared');
+  });
   document.getElementById('clearCache').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'srl:clear-cache' }); flash('Cache cleared'); });
 })();

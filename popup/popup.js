@@ -149,7 +149,7 @@
       case 'undisclosed-ai': return 'AI-generation markers were found but no disclosure statement. Verify the operator before relying on this content or doing business.';
       case 'disclosed-ai': return 'AI use is declared on the page or in metadata. Decide whether that is acceptable for your purpose.';
       case 'weak-ai': return 'Only heuristic or indirect signals. Treat as a prompt to look closer, not a verdict.';
-      case 'provenance': return 'Some content carries capture or human-origin metadata. Check the evidence: C2PA claims require a verified signature and asset binding, while EXIF and XMP can be copied or forged.';
+      case 'provenance': return 'Some content carries capture or human-creation credentials that verified, bind to the file they arrived in, chain to a signer on this build\'s trust list and decode to the picture on the page. Camera EXIF and XMP never count here: they can be copied or forged.';
       default: return 'No markers found. Many AI systems still emit nothing detectable, so this is not proof of human origin.';
     }
   }
@@ -488,11 +488,16 @@
   function verificationRow(v) {
     if (!v) return null;
     const sum = v.summary || {};
-    const state = sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
-      : sum.caution ? { icon: '!', color: V.COLORS.gold, word: 'Signed, assertions unreconciled' }
-        : sum.ok && !sum.assetVerified ? { icon: '!', color: V.COLORS.gold, word: 'Signature valid; asset binding unchecked' }
-          : sum.ok ? { icon: '✓', color: V.COLORS.green, word: 'Signature and asset binding verified' }
-          : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
+    const state = sum.bindingMismatch ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials describe a different file' }
+      : sum.bindingAbsent && sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials bound to no file' }
+        : sum.broken ? { icon: '✗', color: V.COLORS.vermillion, word: 'Credentials do not verify' }
+          : sum.caution ? { icon: '!', color: V.COLORS.gold, word: sum.binding && sum.binding !== 'valid' ? 'Signed, not tied to this file' : 'Signed, assertions unreconciled' }
+            /* A green tick for a signature nobody vouches for is the whole
+             * forgery: mint a certificate saying "Leica Camera AG", sign your
+             * own claim, and every question below answers yes. */
+            : sum.ok && sum.anchored ? { icon: '✓', color: V.COLORS.green, word: 'Verified and bound to this file' }
+              : sum.ok ? { icon: '!', color: V.COLORS.gold, word: 'Signed by an unvouched signer, bound to this file' }
+                : { icon: '○', color: V.COLORS.mist, word: 'Signature not verified' };
     const d = el('div', 'attr');
     const t = tint(el('div', 'tag'), state.color);
     t.appendChild(el('span', 'ic', state.icon));
@@ -503,13 +508,16 @@
     const det = el('details');
     det.appendChild(el('summary', null, 'What this does and does not prove'));
     const body = el('div', 'skew');
-    body.appendChild(el('div', null, sum.ok
-      ? (sum.assetVerified ? 'The manifest signature and supported asset hard binding verified. This does not prove the signer is who the certificate name suggests, because this build ships no trust list to anchor the chain.' : 'The manifest signature verified, but its binding to this media did not. Camera and human-origin claims are not authenticated for this asset; complete data-hash bytes are required, and BMFF or other binding formats remain unsupported.')
-      : sum.broken
-        ? 'Something verifiably does not add up: the signature, an assertion hash or the certificate chain. Treat the claims inside the manifest as unreliable.'
-        : sum.caution
-          ? 'The claim is authentic but the assertions present do not hash to the values it recorded. Either an assertion was replaced after signing, or this reader does not know the hashing convention used.'
-          : 'No cryptographic check completed, so the manifest is being read as an unverified claim.'));
+    body.appendChild(el('div', null, sum.ok && sum.anchored
+      ? 'The manifest has not been altered since it was signed, the digest it records over the file matches this file\'s bytes, and the chain reaches a signer this build knows — so these credentials are about this image, not another one, and the name on the certificate has someone behind it.'
+      : sum.ok
+        ? 'The manifest has not been altered since it was signed and the digest it records matches the bytes inspected here. But no certificate on its chain is a signer this build knows, so whatever name it carries vouches for nothing: anyone can mint a certificate in any name and sign their own claim with it. The claim is shown; it is not read as provenance for this image.'
+        : sum.broken
+          ? 'Something verifiably does not add up: the signature, an assertion hash, the certificate chain, or the digest the claim records over the file. Treat the claims inside the manifest as unreliable.'
+          : sum.caution
+            ? 'The claim is authentic, but something could not be reconciled: either the assertions do not hash to the values it recorded, or the digest tying it to this file could not be recomputed here. Until that is settled, the manifest is not read as provenance for this image.'
+            : 'No cryptographic check completed, so the manifest is being read as an unverified claim: whatever it says about how the image was made is only what someone wrote in it.'));
+    if (sum.bindingNote) body.appendChild(el('div', 'basis', sum.bindingNote));
     if (v.chain && v.chain.anchorNote) body.appendChild(el('div', 'basis', v.chain.anchorNote));
     if (v.notes && v.notes.length) body.appendChild(el('div', 'basis', v.notes.join(' ')));
     det.appendChild(body);

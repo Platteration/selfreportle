@@ -213,13 +213,13 @@
   }
 
   function clearTextStyle(m) {
-    m.el.removeAttribute('data-srl-text');
+    PAGE_EL.removeAttribute(m.el, 'data-srl-text');
     S.textDisplay.clear(m.el);
   }
 
   function applyTextStyle(m) {
     if (!visible || !settings.showTextMarkers) { clearTextStyle(m); return; }
-    m.el.setAttribute('data-srl-text', m.verdict);
+    PAGE_EL.setAttribute(m.el, 'data-srl-text', m.verdict);
     S.textDisplay.apply(m.el, m.verdict, settings.textStyle || 'markers');
   }
 

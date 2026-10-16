@@ -127,11 +127,107 @@ test('PNG caBX C2PA manifest with generative edit is AI-edited', async () => {
   assert.ok(r.signals.some((s) => s.id === 'c2pa-ai-edited'));
 });
 
-test('an unverified camera manifest cannot authenticate the media', async () => {
+/*
+ * A camera claim is the one worth forging, and every question the verifier
+ * asks — signature, assertions, chain, binding — is answered yes by a
+ * certificate the forger minted this morning with "Leica Camera AG" typed
+ * into the subject. So the badge needs two more things than a pass: a chain
+ * that reaches a signer this build knows, and bytes the page itself loaded
+ * rather than a second fetch the server could answer differently.
+ */
+test('C2PA manifest from a camera is captured once it verifies, binds, anchors and is the page\'s own bytes', async () => {
+  const { bytes, signer } = await H.signedC2paAsset({
+    container: 'jpeg', segment: 400, chain: 'full', generator: 'Leica M11-P', cn: 'Leica Camera AG',
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+  });
+  CV.setTrustAnchors([await fingerprint(signer.certs[signer.certs.length - 1])]);
+  try {
+    const { verdict, r } = await verdictOf(bytes, { rendered: true });
+    assert.equal(r.metadata.c2pa.verification.summary.ok, true);
+    assert.equal(r.metadata.c2pa.verification.chain.anchored, true);
+    assert.equal(verdict, 'captured');
+    assert.ok(r.signals.some((s) => s.id === 'c2pa-capture' && s.hard));
+  } finally {
+    CV.setTrustAnchors([]);
+  }
+});
+
+/*
+ * L5-1. The same asset, the same signature, the same hard binding — and a
+ * self-signed certificate is all it took, because nothing checked the root
+ * against anything. An unanchored chain may not produce the green badge.
+ */
+test('a signature that verifies but anchors nowhere earns no capture verdict', async () => {
+  const { bytes } = await H.signedC2paAsset({
+    container: 'jpeg', segment: 400, chain: 'leaf', generator: 'Leica M11-P', cn: 'Leica Camera AG',
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+  });
+  const { verdict, r } = await verdictOf(bytes, { rendered: true });
+  const v = r.metadata.c2pa.verification;
+  assert.equal(v.summary.ok, true, 'all four questions still answer yes');
+  assert.equal(v.chain.anchored, false, 'but nobody vouches for the signer');
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes('c2pa-capture-unverified'), 'the claim is shown, saw ' + ids.join(','));
+  assert.ok(!r.signals.some((s) => s.hard && s.verdict === 'captured'));
+  assert.notEqual(verdict, 'captured');
+  assert.equal(V.overall({ site: {}, text: {}, images: { counts: { [verdict]: 1 } }, disclosures: [] }), 'none', 'and no page-level provenance tick');
+});
+
+/*
+ * L5-3. The worker re-fetches the URL itself: no cookies, a Range header, no
+ * Referer. A server that tells the two requests apart can hand the reader an
+ * AI picture and the extension a signed photograph, and the badge lands on
+ * the picture nobody hashed. Credentials read out of bytes the page did not
+ * load say nothing about the picture on the page.
+ */
+test('a fully anchored manifest still earns no badge when the bytes are not the ones the page loaded', async () => {
+  const { bytes, signer } = await H.signedC2paAsset({
+    container: 'jpeg', segment: 400, chain: 'full', generator: 'Leica M11-P', cn: 'Leica Camera AG',
+    actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }],
+  });
+  CV.setTrustAnchors([await fingerprint(signer.certs[signer.certs.length - 1])]);
+  try {
+    const { verdict, r } = await verdictOf(bytes, {});
+    assert.equal(r.metadata.c2pa.verification.summary.ok, true);
+    assert.equal(r.metadata.c2pa.verification.chain.anchored, true);
+    assert.ok(!r.signals.some((s) => s.hard && s.verdict === 'captured'));
+    assert.notEqual(verdict, 'captured');
+    assert.ok(r.signals.some((s) => s.id === 'c2pa-capture-unverified'));
+  } finally {
+    CV.setTrustAnchors([]);
+  }
+});
+
+/*
+ * The cheapest forgery of camera provenance is not a stolen key: it is a
+ * hand-written JUMBF box with no signature at all. Nothing may be exculpatory
+ * for free — a claim of capture has to be paid for cryptographically.
+ */
+test('an unsigned C2PA camera claim earns no capture verdict and no provenance badge', async () => {
   const manifest = H.c2paManifest({ generator: 'Leica M11-P', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCapture' }] });
   const { verdict, r } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
-  assert.equal(verdict, 'no-signal');
-  assert.ok(r.signals.some((s) => s.id === 'c2pa-binding-unchecked'));
+  assert.equal(r.metadata.c2pa.verification.signature, 'absent');
+  assert.equal(r.metadata.c2pa.verification.summary.ok, false);
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes('c2pa-capture-unverified'), 'the claim is shown, saw ' + ids.join(','));
+  assert.ok(!r.signals.some((s) => s.hard && s.verdict === 'captured'), 'but never as a hard capture signal');
+  assert.notEqual(verdict, 'captured');
+  assert.equal(V.overall({ site: {}, text: {}, images: { counts: { [verdict]: 1 } }, disclosures: [] }), 'none', 'and no page-level provenance tick');
+});
+
+test('an unsigned C2PA "human made this" claim is not exculpatory either', async () => {
+  const manifest = H.c2paManifest({ generator: 'Scanner Co', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'digitalCreation' }] });
+  const { verdict, r } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+  assert.ok(!r.signals.some((s) => s.hard && (s.verdict === 'human-created' || s.verdict === 'captured')));
+  assert.notEqual(verdict, 'human-created');
+});
+
+/* A claim of AI generation is a disclosure against interest: nobody forges
+ * one to look better, so it is still read from an unsigned manifest. */
+test('an unsigned C2PA AI-generation claim is still read', async () => {
+  const manifest = H.c2paManifest({ generator: 'Anon Tool', actions: [{ action: 'c2pa.created', digitalSourceType: DST + 'trainedAlgorithmicMedia' }] });
+  const { verdict } = await verdictOf(H.jpeg([H.app11Jumbf(manifest)]));
+  assert.equal(verdict, 'ai-generated');
 });
 
 test('WebP with C2PA chunk and EXIF', async () => {

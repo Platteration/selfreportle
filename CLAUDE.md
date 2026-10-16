@@ -92,7 +92,7 @@ added it; a change that undoes one passes every test it did not add.
 
 ## Website
 
-The analysers are also a website (README, "The website"): `web/index.html` loads twelve
+The analysers are also a website (README, "The website"): `web/index.html` loads fourteen
 `lib/` modules, `web/app.js`, which runs them on one file the visitor picks, and
 `web/account.js` (sign-in and "Support this app", below) — media through
 `analyzeImageBytes`, a saved page through the site, text, trader and image-hint analysers on
@@ -183,9 +183,10 @@ without a second edit.
   Google's and Stripe's pages in the browser through the DevTools protocol's Fetch domain
   (Playwright's `page.route` does not see a redirect's next hop); `test/e2e/hosts.js` runs the
   API behind the real nginx and an Apache `ProxyPass`.
-- **Five modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
+- **Six modules are left out on purpose** — `settings.js`, `history.js` (chrome.storage),
   `fetch-policy.js` (the worker's fetches), `byte-budget.js` (streamed reads; the site
-  slices the picked file instead), `platform-labels.js` (needs layout) — and the
+  slices the picked file instead), `platform-labels.js` (needs layout), `text-display.js`
+  (in-page DOM emphasis; the site draws its own report) — and the
   website test fails when a new `lib/` module is neither loaded nor added to that list.
 
 ## Settings

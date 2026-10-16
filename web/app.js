@@ -12,14 +12,15 @@
  *
  * Nothing is uploaded and nothing is fetched for the analysis: the file is read with the File
  * API, and the policy's connect-src is 'self', for the site's own api/ that account.js asks
- * about sign-in and nothing else. Five lib/ modules are not loaded, each for a reason the page
+ * about sign-in and nothing else. Six lib/ modules are not loaded, each for a reason the page
  * cannot work around: settings.js and history.js keep their records in chrome.storage (this
  * page keeps no such record), fetch-policy.js governs the extension worker's cross-origin fetches
  * (this page fetches nothing from another site), byte-budget.js bounds a stream whose other
  * end chooses its length (this page slices the picked file to its cap, so there is no stream
- * to bound), and platform-labels.js pairs a platform's "Made with AI" label with the media in
+ * to bound), platform-labels.js pairs a platform's "Made with AI" label with the media in
  * the same post by where each sits on screen, which a saved file parsed without layout cannot
- * answer.
+ * answer, and text-display.js styles paragraphs in a live page's DOM whereas this page draws
+ * its own report and leaves the parsed document inert.
  *
  * Everything the file says reaches the page as text: elements are built with createElement
  * and filled with textContent, never from a string of HTML. The one place a string becomes a
@@ -30,7 +31,7 @@
 (function () {
   'use strict';
   const S = globalThis.SRL;
-  const NEEDS = ['lexicons', 'signals', 'verdicts', 'textAnalyzer', 'siteAnalyzer', 'imageHints', 'legitimacy', 'attribution', 'cbor', 'x509', 'c2paVerify', 'imageMeta'];
+  const NEEDS = ['modelCatalog', 'research', 'lexicons', 'signals', 'verdicts', 'textAnalyzer', 'siteAnalyzer', 'imageHints', 'legitimacy', 'attribution', 'cbor', 'x509', 'c2paVerify', 'imageMeta'];
   /* A missing module is a start failure the safety net (guard.js) reports, not a picker that
    * accepts a file and then throws. */
   const missing = NEEDS.filter((k) => !S || !S[k]);

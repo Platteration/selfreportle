@@ -238,13 +238,13 @@ function repositoryFiles() {
   }
 }
 
-const EXCLUDED_MODULES = ['lib/settings.js', 'lib/history.js', 'lib/fetch-policy.js', 'lib/byte-budget.js', 'lib/platform-labels.js'];
+const EXCLUDED_MODULES = ['lib/settings.js', 'lib/history.js', 'lib/fetch-policy.js', 'lib/byte-budget.js', 'lib/platform-labels.js', 'lib/text-display.js'];
 
 test('the site is the checker, the lib/ modules it names, and the files every site has', () => {
   assert.deepEqual(site.siteFiles(), [
     '.well-known/security.txt', '404.html', 'LICENSE', 'account.js', 'api/config', 'app.js', 'guard.js', 'icons/icon32.png', 'index.html',
     'lib/attribution.js', 'lib/c2pa-verify.js', 'lib/cbor.js', 'lib/image-hints.js', 'lib/image-metadata.js', 'lib/legitimacy.js',
-    'lib/lexicons.js', 'lib/signals.js', 'lib/site-analyzer.js', 'lib/text-analyzer.js', 'lib/verdicts.js', 'lib/x509.js',
+    'lib/lexicons.js', 'lib/model-catalog.js', 'lib/research.js', 'lib/signals.js', 'lib/site-analyzer.js', 'lib/text-analyzer.js', 'lib/verdicts.js', 'lib/x509.js',
     'robots.txt', 'site.css',
   ]);
   for (const [to, from] of Object.entries(site.siteMap())) assert.ok(fs.existsSync(path.join(root, from)), to + ' comes from ' + from + ', which exists');

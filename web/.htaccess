@@ -42,7 +42,7 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
 # The site's own files and nothing else: this file, the extension's other scripts, the
 # repository's notes and tests, dotfiles (.git above all) and folders all answer 404, so a
 # server pointed at the wrong folder still publishes only the site.
-RewriteRule !^(index\.html|404\.html|app\.js|account\.js|guard\.js|site\.css|robots\.txt|LICENSE|icons/icon32\.png|\.well-known/security\.txt|api/config|lib/(lexicons|signals|verdicts|text-analyzer|site-analyzer|image-hints|legitimacy|attribution|cbor|x509|c2pa-verify|image-metadata)\.js)?$ - [R=404,L]
+RewriteRule !^(index\.html|404\.html|app\.js|account\.js|guard\.js|site\.css|robots\.txt|LICENSE|icons/icon32\.png|\.well-known/security\.txt|api/config|lib/(model-catalog|research|lexicons|signals|verdicts|text-analyzer|site-analyzer|image-hints|legitimacy|attribution|cbor|x509|c2pa-verify|image-metadata)\.js)?$ - [R=404,L]
 
 Header always set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types selfreportle-saved-page; frame-ancestors 'none'; upgrade-insecure-requests"
 Header always set X-Content-Type-Options "nosniff"

@@ -349,7 +349,8 @@
   }
 
   function snippetBlock(sn) {
-    // A function replacement keeps page-controlled $', $` and $& literal.
+    /* A function, not a string: a replacement string reads $' and $` as the
+     * text either side of the match, and the code carries the page's title. */
     const code = sn.wrap ? sn.wrap.replace('%s', () => sn.code) : sn.code;
     const d = el('div', 'snippet');
     const hd = el('div', 'hd');
@@ -370,12 +371,13 @@
     for (const it of (r.images || {}).items || []) {
       const v = it.metadata && it.metadata.c2pa && it.metadata.c2pa.verification;
       if (!v || !v.summary) continue;
-      if (v.summary.ok && v.summary.assetVerified) continue;
+      if (v.summary.ok) continue;
       const state = v.signature === 'absent' ? 'No signature in the manifest'
-        : v.summary.broken ? 'Does not verify'
-          : v.summary.ok && !v.summary.assetVerified ? 'Signature valid, asset binding unchecked'
-            : v.summary.caution ? 'Signed, but assertions could not be reconciled'
-            : 'Signature could not be checked';
+        : v.summary.bindingMismatch ? 'Signed, but the credentials describe different bytes'
+          : v.summary.bindingAbsent && v.summary.broken ? 'Signed, but bound to no file'
+            : v.summary.broken ? 'Does not verify'
+              : v.summary.caution ? 'Signed, but could not be fully reconciled'
+                : 'Signature could not be checked';
       const advice = v.signature === 'absent'
         ? 'A manifest without a signature carries no guarantee at all. Sign it, or readers have only your word for it.'
         : v.summary.bindingMismatch
