@@ -443,3 +443,10 @@ test('the page says exactly what leaves the device, with the API and without it'
   }
   assert.match(html, /<p id="accountNote" class="account-note" role="status" aria-live="polite"><\/p>/, 'notes are announced');
 });
+
+test('web/app.js renders research source citations and model catalog notes', () => {
+  const app = read('web/app.js');
+  assert.match(app, /if \(s\.sourceIds && S\.research && S\.research\.SOURCES\)/, 'sigRow checks sourceIds against research catalogue');
+  assert.match(app, /if \(sys\.id && S\.modelCatalog && S\.modelCatalog\.MODELS\)/, 'toolsPanel checks system against model catalogue');
+});
+

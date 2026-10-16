@@ -648,6 +648,14 @@
     const r = el('div');
     r.appendChild(el('div', 'l', s.label));
     if (s.detail) r.appendChild(el('div', 'd', s.detail));
+    if (s.sourceIds && S.research && S.research.SOURCES) {
+      for (const srcId of s.sourceIds) {
+        const src = S.research.SOURCES[srcId];
+        if (src) {
+          r.appendChild(el('div', 'd', 'Research: ' + src.title + ' (' + src.year + ') — ' + src.limitation));
+        }
+      }
+    }
     d.appendChild(r);
     return d;
   }
@@ -921,6 +929,10 @@
       if (sys.vendor) it.appendChild(el('div', 'd', sys.vendor + (sys.country ? ', ' + sys.country : '')));
       if (sys.evidence) it.appendChild(el('div', 'd', 'Evidence: ' + sys.evidence));
       if (sys.marking) it.appendChild(el('div', 'd', 'Marking: ' + sys.marking));
+      if (sys.id && S.modelCatalog && S.modelCatalog.MODELS) {
+        const m = S.modelCatalog.MODELS.find((entry) => entry.id === sys.id);
+        if (m && m.limitation) it.appendChild(el('div', 'd', 'Model note: ' + m.limitation));
+      }
       const kind = sys.layers.includes('image') && !sys.layers.includes('text') ? 'image' : sys.layers.includes('site') && sys.layers.length === 1 ? 'site' : 'text';
       const sk = skewList(sys, kind);
       if (sk) it.appendChild(sk);
