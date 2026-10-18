@@ -167,19 +167,40 @@
   function reposition() {
     if (!visible) return;
     const vw = window.innerWidth, vh = window.innerHeight;
+
+    // Phase 1: Batch DOM reads (parent bounding rects)
+    const updates = [];
     for (const m of markers.values()) {
       const node = m.node;
       if (!node) continue;
-      if (!m.el.isConnected) { node.hidden = true; continue; }
+      if (!m.el.isConnected) { updates.push({ node, hidden: true }); continue; }
       const r = PAGE_EL.rect(m.el);
-      if (r.width < 8 || r.height < 8 || r.bottom < -40 || r.top > vh + 40 || r.right < 0 || r.left > vw) { node.hidden = true; continue; }
-      node.hidden = false;
-      const bw = node.offsetWidth || 40;
+      if (r.width < 8 || r.height < 8 || r.bottom < -40 || r.top > vh + 40 || r.right < 0 || r.left > vw) { updates.push({ node, hidden: true }); continue; }
+      updates.push({ node, hidden: false, r, kind: m.kind });
+    }
+
+    // Phase 2: Batch DOM writes (visibility only, so offsetWidth can be read)
+    for (const u of updates) {
+      if (u.node.hidden !== u.hidden) u.node.hidden = u.hidden;
+    }
+
+    // Phase 3: Batch DOM reads (offsetWidth of visible elements)
+    // This triggers one layout recalculation for the whole document
+    for (const u of updates) {
+      if (u.hidden) continue;
+      u.bw = u.node.offsetWidth || 40;
+    }
+
+    // Phase 4: Batch DOM writes (transforms)
+    for (const u of updates) {
+      if (u.hidden) continue;
       let x, y;
-      if (m.kind === 'image') { x = r.left + 6; y = r.top + 6; }
-      else { x = Math.min(r.right, vw) - bw - 4; y = r.top - 9; if (y < 0) y = r.top + 2; }
-      node.style.setProperty('--x', Math.round(Math.max(0, Math.min(x, vw - bw - 2))) + 'px');
-      node.style.setProperty('--y', Math.round(Math.max(0, y)) + 'px');
+      if (u.kind === 'image') { x = u.r.left + 6; y = u.r.top + 6; }
+      else { x = Math.min(u.r.right, vw) - u.bw - 4; y = u.r.top - 9; if (y < 0) y = u.r.top + 2; }
+
+      // Since we assign variables sequentially rather than interleaving reads and writes, layout thrashing is avoided
+      u.node.style.setProperty('--x', Math.round(Math.max(0, Math.min(x, vw - u.bw - 2))) + 'px');
+      u.node.style.setProperty('--y', Math.round(Math.max(0, y)) + 'px');
     }
   }
 
