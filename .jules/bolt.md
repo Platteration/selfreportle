@@ -1,0 +1,3 @@
+## 2025-05-18 - Avoid Number.toString(16).padStart() in tight loops
+**Learning:** `Number.toString(16).padStart(2, '0')` inside loops processing byte arrays is a severe performance bottleneck in JavaScript, making code up to 5x slower compared to using a precomputed Look-Up Table (LUT). `String.fromCharCode` in a loop also creates overhead compared to `TextDecoder` for larger arrays.
+**Action:** When extracting hex or ascii strings from `Uint8Array` byte buffers, use a precomputed array like `const HEX_LUT = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));` or `TextDecoder` for better performance.
