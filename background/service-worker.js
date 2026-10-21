@@ -116,9 +116,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       getResult(ownPage ? msg.tabId : fromTab).then(sendResponse);
       return true;
     case 'srl:get-history':
+      if (!ownPage) { sendResponse({ error: 'unauthorized sender' }); return false; }
       S.history.get(msg.host).then((rec) => sendResponse({ record: rec, summary: S.history.summarize(rec) }));
       return true;
     case 'srl:clear-history':
+      if (!ownPage) { sendResponse({ error: 'unauthorized sender' }); return false; }
       S.history.clear().then(() => sendResponse({ ok: true }));
       return true;
     case 'srl:clear-cache':
