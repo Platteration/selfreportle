@@ -1,0 +1,4 @@
+## 2024-10-21 - [SEC-2] Fix unauthorized access to domain history records
+**Vulnerability:** Service-worker message handlers (`srl:get-history`, `srl:clear-history`) validated neither the sender nor the tabId/host they were asked about, allowing potentially any page to read or clear the user's browsing history by passing arbitrary URLs to the extension.
+**Learning:** In a chrome extension context, missing sender validation combined with web-accessible resources can lead to severe privilege escalation or information leakage if a framed or injected page communicates with `chrome.runtime.sendMessage`.
+**Prevention:** Always validate `sender.id` and check the context. For internal extension requests, verify `ownPage` using `sender.url` matched against `chrome.runtime.getURL('')` before performing actions or returning sensitive data.
