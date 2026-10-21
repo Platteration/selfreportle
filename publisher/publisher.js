@@ -203,7 +203,7 @@
     const tells = [];
     for (const f of text.flagged || []) {
       for (const s of f.signals || []) {
-        if (['unicode-tags', 'zw-stego', 'zw-density', 'variation-selector-run', 'self-reference', 'markdown-leak'].includes(s.id) && !tells.includes(s.label)) tells.push(s.label);
+        if (['unicode-tags', 'zw-stego', 'zw-density', 'variation-selector-run', 'self-reference', 'transcript-label', 'markdown-leak'].includes(s.id) && !tells.includes(s.label)) tells.push(s.label);
       }
     }
     if (tells.length) return 'Found on this page: ' + tells.join('; ') + '. These are artefacts of pasting from a chat window. They do not belong in published copy and a reader’s tool will flag them.';

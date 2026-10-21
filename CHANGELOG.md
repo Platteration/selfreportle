@@ -6,6 +6,16 @@ development branch.
 ## Unreleased
 
 ### Added
+- **Chat replies are read by their shape.** Text written by a current chat assistant
+  (Claude, ChatGPT, Gemini) read as "No AI signals found" pasted, as a text file and on a
+  page: the only evidence that could lift a heuristic over the flag threshold was the 2023
+  vocabulary list. The text analyser now reads a reply's register (opener, prepared answer,
+  offer or closing question, `CHAT_REGISTER` in `lib/signals.js`), counts paragraphs that open
+  with a bold label (as `**…**` in the text, or from the page's `<strong>`/`<b>`, which the
+  content script and the website now count and pass in), reads "ChatGPT said:" style turn
+  labels as hard evidence naming the tool, and notes "it isn't X. It's Y" reframes. Heuristics
+  now corroborate by family (vocabulary, register, format, rhythm), not only through the word
+  list. One register part alone still never flags.
 - **Source-linked detection research and wider model coverage.** A local
   catalogue of six published studies, 16 researched vocabulary families,
   additional model/version names and documented conversation-format markers.
