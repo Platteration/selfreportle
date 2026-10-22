@@ -402,13 +402,13 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     r = await pick(page, 'chat.txt');
     check(/Strong AI indicators/.test(r.banner), 'text with chat-transcript leakage: strong AI indicators');
     r = await pick(page, 'reply.html');
-    check(/Possibly AI-written/.test(r.report) && /4 on the page/.test(r.report), 'saved chat reply: its four rendered bold labels are counted and flag it, the form-led item not among them');
+    check(/Likely AI-written/.test(r.report) && /4 on the page/.test(r.report), 'saved chat reply: its four rendered bold labels are counted and flag it, the form-led item not among them');
     r = await pick(page, 'reply-control.html');
-    check(!r.error && !/Possibly AI-written|open with a bold label/.test(r.report), 'saved reply with no bold labels: nothing flagged');
+    check(!r.error && !/Possibly AI-written|Likely AI-written|open with a bold label/.test(r.report), 'saved reply with no bold labels: nothing flagged');
     r = await pick(page, 'basil.md');
     check(/Possibly AI-written/.test(r.report), 'a reply copied with its markdown: flagged though each paragraph is read joined');
     r = await pick(page, 'basil-control.md');
-    check(!r.error && !/Possibly AI-written/.test(r.report), 'the same reply without its markdown: nothing flagged');
+    check(!r.error && !/Possibly AI-written|Likely AI-written/.test(r.report), 'the same reply without its markdown: nothing flagged');
     r = await pick(page, 'archive.bin');
     check(r.error && /not one Selfreportle reads/.test(r.status), 'a file it cannot read is said so, in the page');
 

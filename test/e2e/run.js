@@ -463,7 +463,8 @@ function rawGet(port, target, host) {
      * A chat reply as a chat window renders it: its "**Label.**" lead-ins are
      * <strong> and <b> now, so only the page can count them. The words alone
      * stay below the flag (the control page, whose labels are <span>s, must
-     * say nothing); the count read from the page is what flags the reply. The
+     * say nothing); the count read from the page is what flags the reply,
+     * with its offer and its answer to "you" beside the labels. The
      * list item opening with a form whose controls are named after every
      * property that count reads must neither stop it nor count as a label.
      */
@@ -493,7 +494,7 @@ function rawGet(port, target, host) {
     };
     const chatReply = await replyResult('chat-reply.html');
     assert.ok(chatReply.r && !chatReply.r.error && !chatReply.errors.length, 'a rendered reply is analysed: ' + ((chatReply.r && chatReply.r.error) || chatReply.errors.join('; ')));
-    assert.equal(chatReply.r.text.verdict, 'possible-ai', 'a rendered chat reply with an offer and bold lead-ins is flagged');
+    assert.equal(chatReply.r.text.verdict, 'likely-ai', 'a rendered chat reply with an offer, an answer to "you" and bold lead-ins is flagged');
     const leads = chatReply.r.text.page.signals.find((s) => s.id === 'bold-lead-ins');
     assert.ok(leads && /^4 on the page/.test(leads.detail), 'four labels are counted, the form-led list item not among them: ' + (leads && leads.detail));
     const control = await replyResult('chat-reply-control.html');
