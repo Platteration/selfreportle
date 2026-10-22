@@ -15,7 +15,9 @@ development branch.
   content script and the website now count and pass in), reads "ChatGPT said:" style turn
   labels as hard evidence naming the tool, and notes "it isn't X. It's Y" reframes. Heuristics
   now corroborate by family (vocabulary, register, format, rhythm), not only through the word
-  list. One register part alone still never flags.
+  list. One register part alone still never flags. A plain explanation that opens on
+  the point, addresses "you" and sits under three or more bold labels gives the weak flag
+  (`addressed-answer`); a page that opens with a title never counts.
 - **Source-linked detection research and wider model coverage.** A local
   catalogue of six published studies, 16 researched vocabulary families,
   additional model/version names and documented conversation-format markers.

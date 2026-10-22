@@ -11,9 +11,9 @@ const V = require('../lib/verdicts.js');
  * pasted, saved as a text file, and rendered on a page — because the only
  * evidence that could lift a heuristic past the flag threshold was a 2023
  * word list ("delve", "tapestry") those replies no longer use. The fixtures
- * under fixtures/chat/ are three such replies, verbatim, from two assistants:
+ * under fixtures/chat/ are four such replies, verbatim, from two assistants:
  * each scored no-signal before the reply's shape (register, bold lead-ins,
- * transcript labels) was read.
+ * transcript labels, an answer addressed to "you") was read.
  *
  * The other half of this file is the people who write the same phrases: a
  * support e-mail closes "Hope this helps", a tutor opens "Good question",
@@ -45,8 +45,8 @@ function rendered(md) {
   return { text: blocks.join('\n\n'), boldLeads };
 }
 
-test('three real assistant replies are flagged pasted and rendered, as a heuristic and no more', () => {
-  assert.equal(replies.length, 3);
+test('four real assistant replies are flagged pasted and rendered, as a heuristic and no more', () => {
+  assert.equal(replies.length, 4);
   for (const f of replies) {
     const pasted = analysed(read(f), { lang: 'en' });
     assert.ok(flagged(pasted.verdict), f + ' pasted: ' + pasted.verdict + ' ' + pasted.score);
@@ -248,4 +248,29 @@ test('the publisher page lists a chat turn label among the pasted-in leftovers',
   const r = T.analyzeText('ChatGPT said:');
   const tells = sandbox.describeTextTellsForTest({ verdict: r.verdict, flagged: [{ verdict: r.verdict, signals: r.signals }] });
   assert.match(tells, /^Found on this page: Chat transcript turn labelled as an AI assistant\./);
+});
+
+test('a plain explanation that answers "you" under bold labels gives the weak flag; without the labels, nothing', () => {
+  // No opener, no offer, no announced answer: only the answer's shape.
+  const coffee = read('claude-coffee.md');
+  const r = T.analyzeText(coffee, { lang: 'en' });
+  assert.equal(r.verdict, 'possible-ai');
+  assert.ok(!r.signals.some((s) => s.id === 'chat-register'));
+  assert.ok(r.signals.some((s) => s.id === 'addressed-answer'));
+  // The same words with the bold taken out: an answer to "you" is what a letter is too.
+  const plain = T.analyzeText(coffee.replace(/\*\*/g, ''), { lang: 'en', sensitivity: 'high' });
+  assert.equal(plain.verdict, 'no-signal');
+  assert.ok(plain.signals.some((s) => s.id === 'addressed-answer'), 'still noted, never enough alone');
+});
+
+test('a page that opens with a title is not an answer, however it addresses its reader', () => {
+  const body = ['**Cut back the dead wood.** You should remove anything brown or brittle first, so your plant puts its energy into new growth.',
+    '**Open up the middle.** You want air to move through the bush, so take out any stems that cross the centre or rub against each other.',
+    '**Cut above an outward bud.** Your cut should sit just above a bud that faces out, at a slight angle, so rain runs off it.',
+    '**Feed it afterwards.** Once you have finished, give your roses a balanced feed and a thick mulch to keep the roots cool.'].join('\n\n');
+  const titled = T.analyzeText('Pruning roses in early spring for a better summer\n\n' + body, { lang: 'en', sensitivity: 'high' });
+  assert.equal(titled.verdict, 'no-signal', titled.signals.map((s) => s.id).join(', '));
+  assert.ok(!titled.signals.some((s) => s.id === 'addressed-answer'));
+  const answered = T.analyzeText('Late winter is the best time, just as the buds start to swell.\n\n' + body, { lang: 'en' });
+  assert.equal(answered.verdict, 'possible-ai');
 });
