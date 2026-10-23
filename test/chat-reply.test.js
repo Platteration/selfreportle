@@ -220,16 +220,17 @@ test('a non-English page keeps its own closing-phrase check and is not read for 
   assert.ok(!r.signals.some((s) => s.id === 'chat-register'));
 });
 
-test('"it isn\'t X. It\'s Y" reframes are noted, and on their own stay below the flag', () => {
+test('"it isn\'t X. It\'s Y" reframes are noted as one kind of move, and on their own stay below the flag', () => {
   const essay = 'The question of whether cities should ban cars from their centres isn\'t really a question about cars. It\'s a question about what we think streets are for. '
     + 'For most of the last century the answer was obvious, and everything else had to fit in around the traffic that used them. '
     + 'The cost was real even when it was spread thin: noise, dirty air, and children who no longer played outside on the pavement. '
     + 'Cities that closed their centres tell a fairly consistent story about what happened to the shops and the people who lived there. '
     + 'It\'s not a universal fix, though. It\'s a choice that only works where the buses and bicycles are already good enough to carry everyone.';
   const r = T.analyzeText(essay, { lang: 'en', sensitivity: 'high' });
-  const reframe = r.signals.find((s) => s.id === 'reframe');
-  assert.ok(reframe, 'two reframes in a short essay are noted');
-  assert.match(reframe.detail, /^2 in /);
+  const rhetoric = r.signals.find((s) => s.id === 'rhetoric');
+  assert.ok(rhetoric, 'two reframes in a short essay are noted');
+  assert.match(rhetoric.detail, /^2 in \d+ words, 1 kind: /);
+  assert.equal(rhetoric.forms, 1, 'variants of one move are one habit');
   assert.equal(r.verdict, 'no-signal', 'a rhetorical habit alone accuses nobody');
 });
 
@@ -273,4 +274,29 @@ test('a page that opens with a title is not an answer, however it addresses its 
   assert.ok(!titled.signals.some((s) => s.id === 'addressed-answer'));
   const answered = T.analyzeText('Late winter is the best time, just as the buds start to swell.\n\n' + body, { lang: 'en' });
   assert.equal(answered.verdict, 'possible-ai');
+});
+
+test('stacked stock rhetoric anchors; one writer\'s favourite move, however often, does not', () => {
+  const post = 'Here\'s the thing about burnout: it\'s not a time problem, it\'s an energy problem. I learned that the hard way last spring, after a year of saying yes to everything. '
+    + 'The result? Three months of feeling like a ghost in my own job, answering messages at midnight and remembering none of them. '
+    + 'No meetings. No Slack. Just a long walk every morning — and that\'s where the real recovery comes in. '
+    + 'Rest is not a reward — it\'s a requirement. Protect it the way you protect your calendar for the people who matter.';
+  const r = T.analyzeText(post, { lang: 'en' });
+  const rhetoric = r.signals.find((s) => s.id === 'rhetoric');
+  assert.ok(rhetoric.forms >= 4, 'reframe, fragment question, negation run, here\'s the thing, comes in: ' + rhetoric.detail);
+  assert.equal(r.verdict, 'possible-ai', 'four kinds or more give the weak flag alone, and never more: ' + r.signals.map((s) => s.id).join(', '));
+  // Three kinds anchor but need a second family; here, the dashes of a longer post.
+  const three = post.replace("Here's the thing about burnout: it's", "Burnout: it's").replace(' — and that\'s where the real recovery comes in', '');
+  assert.equal(T.analyzeText(three, { lang: 'en' }).signals.find((s) => s.id === 'rhetoric').forms, 3);
+  assert.equal(T.analyzeText(three, { lang: 'en' }).verdict, 'no-signal', 'three kinds and nothing else stay below the flag');
+  const dashed = three + ' Sleep — real sleep — is the work. Boundaries — kind ones — are the job. Joy — small joy — is the point.';
+  assert.ok(flagged(T.analyzeText(dashed, { lang: 'en' }).verdict), 'three kinds with dense dashes beside them flag');
+  // A columnist's one habit, used four times, is one kind of move: noted, never anchoring.
+  const columnist = 'It\'s not the heat, it\'s the humidity, my grandmother used to say about every summer we spent at the lake. '
+    + 'It wasn\'t the cottage we loved. It was the hours of nothing in it, the long afternoons with a book and the radio on low. '
+    + 'The town isn\'t much to look at now. It\'s two shops and a petrol station where there used to be a dance hall and a cinema. '
+    + 'And the lake isn\'t the same lake. It\'s colder, they say, and the fish have gone further out where the boats can\'t follow them.';
+  const c = T.analyzeText(columnist, { lang: 'en', sensitivity: 'high' });
+  assert.equal(c.signals.find((s) => s.id === 'rhetoric').forms, 1);
+  assert.equal(c.verdict, 'no-signal');
 });
