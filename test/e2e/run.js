@@ -460,6 +460,47 @@ function rawGet(port, target, host) {
       'a poster on a hidden video is not fetched');
 
     /*
+     * A chat reply as a chat window renders it: its "**Label.**" lead-ins are
+     * <strong> and <b> now, so only the page can count them. The words alone
+     * stay below the flag (the control page, whose labels are <span>s, must
+     * say nothing); the count read from the page is what flags the reply,
+     * with its offer and its answer to "you" beside the labels. The
+     * list item opening with a form whose controls are named after every
+     * property that count reads must neither stop it nor count as a label.
+     */
+    const reply = (tag) => `<!doctype html><html lang="en"><head><title>Tomatoes</title></head><body><main>
+<p>Yellowing that starts on the lowest leaves is common with tomatoes, and it is often not serious at all.</p>
+<p><${tag}>Normal ageing.</${tag}> As the plant grows, the bottom leaves get shaded out and the plant pulls resources from them.</p>
+<p><${tag}>Nitrogen deficiency.</${tag}> Nitrogen moves from old leaves to new growth when the plant is short of it.</p>
+<p>
+  <${tag}>Early blight.</${tag}> Brown spots with rings like a target, starting on the leaves nearest the soil.</p>
+<p><${tag === 'strong' ? 'b' : tag}>Watering problems.</${tag === 'strong' ? 'b' : tag}> Both soggy soil and irregular watering can turn the lower leaves yellow over time.</p>
+<ul><li><form><input name="firstChild"><input name="nextSibling"><input name="textContent"><input name="matches"><input name="nodeType"></form>Check the soil a couple of inches down before you water the plants again.</li></ul>
+<p>If you tell me what the leaves look like up close and how often you water, I can help you narrow it down.</p>
+</main></body></html>`;
+    fs.writeFileSync(path.join(site, 'chat-reply.html'), reply('strong'));
+    fs.writeFileSync(path.join(site, 'chat-reply-control.html'), reply('span'));
+    const replyResult = async (name) => {
+      const p = await ctx.newPage();
+      const errors = [];
+      p.on('pageerror', (e) => errors.push(e.message));
+      const u = 'http://localhost:' + port + '/' + name;
+      await p.goto(u);
+      await p.waitForTimeout(2500);
+      const id = await sw.evaluate(async (x) => (await chrome.tabs.query({})).find((t) => t.url === x).id, u);
+      const r = await sw.evaluate(async (k) => (await chrome.storage.session.get('tab:' + k))['tab:' + k], id);
+      await p.close();
+      return { r, errors };
+    };
+    const chatReply = await replyResult('chat-reply.html');
+    assert.ok(chatReply.r && !chatReply.r.error && !chatReply.errors.length, 'a rendered reply is analysed: ' + ((chatReply.r && chatReply.r.error) || chatReply.errors.join('; ')));
+    assert.equal(chatReply.r.text.verdict, 'likely-ai', 'a rendered chat reply with an offer, an answer to "you" and bold lead-ins is flagged');
+    const leads = chatReply.r.text.page.signals.find((s) => s.id === 'bold-lead-ins');
+    assert.ok(leads && /^4 on the page/.test(leads.detail), 'four labels are counted, the form-led list item not among them: ' + (leads && leads.detail));
+    const control = await replyResult('chat-reply-control.html');
+    assert.equal(control.r.text.verdict, 'no-signal', 'the same words with no bold labels say nothing');
+
+    /*
      * Nor with one form control. A <form> answers a property lookup with its
      * own control of that name first, in the content script's world too:
      * <input name="attributes"> stopped the whole analysis (an AI page with a

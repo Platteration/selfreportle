@@ -202,6 +202,32 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
   const paras = Array.from({ length: 600 }, (_, i) => '<p>Paragraph ' + i + ' of our shop page, with a few words in it.</p>').join('');
   fs.writeFileSync(path.join(fx, 'main.html'), htmlPage('<main>' + paras + '</main>' + '<i></i>'.repeat(SPANS - 50000)));
   fs.writeFileSync(path.join(fx, 'nomain.html'), htmlPage('<div>' + paras + '</div>' + '<i></i>'.repeat(SPANS - 50000)));
+  /* A chat reply saved as rendered (its "**Label.**" lead-ins are <strong> and <b>, read off the
+   * document) and as copied (the markdown written out, read off the text), each beside a control
+   * with the same words and no bold labels, which must say nothing. The saved page's list item
+   * opens with a form whose controls are named after every property the count reads. */
+  const reply = (tag) => htmlPage(`<main>
+<p>Yellowing that starts on the lowest leaves is common with tomatoes, and it is often not serious at all.</p>
+<p><${tag}>Normal ageing.</${tag}> As the plant grows, the bottom leaves get shaded out and the plant pulls resources from them.</p>
+<p><${tag}>Nitrogen deficiency.</${tag}> Nitrogen moves from old leaves to new growth when the plant is short of it.</p>
+<p>
+  <${tag}>Early blight.</${tag}> Brown spots with rings like a target, starting on the leaves nearest the soil.</p>
+<p><${tag === 'strong' ? 'b' : tag}>Watering problems.</${tag === 'strong' ? 'b' : tag}> Both soggy soil and irregular watering can turn the lower leaves yellow over time.</p>
+<ul><li><form><input name="firstChild"><input name="nextSibling"><input name="textContent"><input name="matches"><input name="nodeType"></form>Check the soil a couple of inches down before you water the plants again.</li></ul>
+<p>If you tell me what the leaves look like up close and how often you water, I can help you narrow it down.</p>
+</main>`);
+  fs.writeFileSync(path.join(fx, 'reply.html'), reply('strong'));
+  fs.writeFileSync(path.join(fx, 'reply-control.html'), reply('span'));
+  const basil = (bold) => ['Here is a step-by-step guide to keeping basil alive indoors:',
+    '1. Plenty of sunlight. Basil needs six to eight hours of direct sun every day, so a south-facing window is best.',
+    '2. The right pot. Use a pot with drainage holes, because basil hates sitting in soggy soil.',
+    '3. Careful watering. Water when the top inch of soil feels dry, and never let the pot stand in water.',
+    '4. Regular pruning. Pinch off the tops above a pair of leaves so the plant grows bushy instead of tall.',
+    '5. Warmth. Keep it away from cold draughts and air-conditioning vents.',
+    'With a sunny spot and regular trimming, your basil should give you fresh leaves for months.']
+    .map((l) => (bold ? l.replace(/^(\d\. [^.]+\.)/, '**$1**') : l)).join('\n\n');
+  fs.writeFileSync(path.join(fx, 'basil.md'), basil(true));
+  fs.writeFileSync(path.join(fx, 'basil-control.md'), basil(false));
   fs.writeFileSync(path.join(fx, 'chat.txt'), 'Certainly! Here is a summary of the quarterly results.\n\nAs an AI language model, I cannot verify these figures, but here they are anyway.\n\nRevenue grew by twelve percent.');
   fs.writeFileSync(path.join(fx, 'archive.bin'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]));
   fs.writeFileSync(path.join(fx, 'midjourney_render_0_0.png'), H.png([]));
@@ -375,6 +401,14 @@ const FORMS = `<!doctype html><html lang="en"><head><title>Form controls</title>
     check(/Title: Über uns · Bäckerei Müller/.test(r.report), 'a saved page is read in the encoding it declares');
     r = await pick(page, 'chat.txt');
     check(/Strong AI indicators/.test(r.banner), 'text with chat-transcript leakage: strong AI indicators');
+    r = await pick(page, 'reply.html');
+    check(/Likely AI-written/.test(r.report) && /4 on the page/.test(r.report), 'saved chat reply: its four rendered bold labels are counted and flag it, the form-led item not among them');
+    r = await pick(page, 'reply-control.html');
+    check(!r.error && !/Possibly AI-written|Likely AI-written|open with a bold label/.test(r.report), 'saved reply with no bold labels: nothing flagged');
+    r = await pick(page, 'basil.md');
+    check(/Possibly AI-written/.test(r.report), 'a reply copied with its markdown: flagged though each paragraph is read joined');
+    r = await pick(page, 'basil-control.md');
+    check(!r.error && !/Possibly AI-written|Likely AI-written/.test(r.report), 'the same reply without its markdown: nothing flagged');
     r = await pick(page, 'archive.bin');
     check(r.error && /not one Selfreportle reads/.test(r.status), 'a file it cannot read is said so, in the page');
 

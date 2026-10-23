@@ -71,6 +71,9 @@
   const DOM = {
     nodeType: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType').get),
     tagName: call.bind(Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get),
+    firstChild: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'firstChild').get),
+    nextSibling: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'nextSibling').get),
+    textContent: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get),
     matches: call.bind(Element.prototype.matches),
     contains: call.bind(Node.prototype.contains),
     attributeNames: call.bind(Element.prototype.getAttributeNames),
@@ -473,6 +476,18 @@
     while ((node = walker.nextNode())) yield node;
   }
 
+  /* content/content.js's opensWithBold: whether a block opens with a bold label (<p><strong>Tip:</strong> …),
+   * which is how a chat window renders a reply's "**Tip:**" lead-ins. The
+   * block is never a form, but its first child may be one, so every read
+   * goes through the prototype. */
+  function opensWithBold(elm) {
+    let c = DOM.firstChild(elm);
+    while (c && DOM.nodeType(c) === 3 && !c.nodeValue.trim()) c = DOM.nextSibling(c);
+    if (!c || DOM.nodeType(c) !== 1 || !DOM.matches(c, 'strong, b')) return false;
+    const label = DOM.textContent(c).trim();
+    return label.length >= 2 && label.length <= 80;
+  }
+
   /* The content script's block analysis (analyzeTextBlocks), on the saved document. */
   function analyseBlocks(doc, snapshot, language) {
     const declared = snapshot.lang;
@@ -482,7 +497,7 @@
       if (blocks.length >= 600) break;
       const text = ownText(doc, elm);
       if (!text || text.trim().length < 2) continue;
-      blocks.push({ el: elm, text });
+      blocks.push({ el: elm, text, bold: opensWithBold(elm) ? 1 : 0 });
     }
     const total = blocks.reduce((n, b) => n + b.text.length, 0);
     if (total < 600) {
@@ -509,8 +524,12 @@
       verdicts.push(r.verdict);
       flagged.push({ verdict: r.verdict, score: r.score, words: r.words, excerpt: b.text.replace(/\s+/g, ' ').trim().slice(0, 160), signals: r.signals.slice(0, 6).map(({ id, kind, label, detail, weight }) => ({ id, kind, label, detail, weight })) });
     }
-    const pageText = blocks.filter(inMain).map((b) => b.text.replace(/\s+/g, ' ').trim()).filter((t) => S.textAnalyzer.countWords(t) >= 8).join('\n\n');
-    const page = S.textAnalyzer.analyzeText(pageText, { ...opts, mode: 'page' });
+    const main = blocks.filter(inMain);
+    const pageText = main.map((b) => b.text.replace(/\s+/g, ' ').trim()).filter((t) => S.textAnalyzer.countWords(t) >= 8).join('\n\n');
+    // Joining a block's lines takes away the line starts its bold labels sat at, so each block
+    // brings its own count of them: rendered on a saved page, written out as ** in a text file.
+    const boldLeads = main.reduce((n, b) => n + (b.bold || 0), 0);
+    const page = S.textAnalyzer.analyzeText(pageText, { ...opts, mode: 'page', boldLeads });
     verdicts.push(page.verdict);
     const aiVerdicts = verdicts.filter((v) => V.AI_TEXT_VERDICTS.has(v));
     const verdict = aiVerdicts.length ? V.worst('text', aiVerdicts) : verdicts.includes('human-disclosed') ? 'human-disclosed' : 'no-signal';
@@ -584,7 +603,7 @@
     const { text, truncated, read } = await readText(file, MAX_PAGE_BYTES);
     const body = text.slice(0, MAX_BODY_TEXT);
     const language = S.lexicons.detectLanguage(body, '');
-    const blocks = paragraphs(body).slice(0, 600).filter((t) => t.trim().length >= 2).map((t) => ({ text: t }));
+    const blocks = paragraphs(body).slice(0, 600).filter((t) => t.trim().length >= 2).map((t) => ({ text: t, bold: S.textAnalyzer.scanMarkdownLeak(t).boldLeads }));
     const result = combineBlocks(blocks, { lang: '', language, sensitivity: SENSITIVITY }, () => true);
     const disclosures = S.signals.findDisclosures(body, { max: 25, lang: language.code });
     result.attribution = A.attributeText(result, { disclosures: disclosures.filter((d) => d.scope === 'text' || d.scope === 'general'), metaText: '' });

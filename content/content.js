@@ -31,6 +31,9 @@
     matches: call.bind(Element.prototype.matches),
     contains: call.bind(Node.prototype.contains),
     attributeNames: call.bind(Element.prototype.getAttributeNames),
+    firstChild: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'firstChild').get),
+    nextSibling: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'nextSibling').get),
+    textContent: call.bind(Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get),
   };
 
   /* location.hostname keeps a trailing dot when the page was reached by its
@@ -315,6 +318,18 @@
     return out;
   }
 
+  /* Whether a block opens with a bold label (<p><strong>Tip:</strong> …),
+   * which is how a chat window renders a reply's "**Tip:**" lead-ins. The
+   * block is never a form, but its first child may be one, so every read
+   * goes through the prototype. */
+  function opensWithBold(elm) {
+    let c = DOM.firstChild(elm);
+    while (c && DOM.nodeType(c) === 3 && !c.nodeValue.trim()) c = DOM.nextSibling(c);
+    if (!c || DOM.nodeType(c) !== 1 || !DOM.matches(c, 'strong, b')) return false;
+    const label = DOM.textContent(c).trim();
+    return label.length >= 2 && label.length <= 80;
+  }
+
   function isRendered(elm) {
     if (!elm.getClientRects().length) return false;
     const cs = getComputedStyle(elm);
@@ -331,7 +346,7 @@
       const text = ownText(elm);
       if (!text || text.trim().length < 2) continue;
       if (!isRendered(elm)) continue;
-      blocks.push({ el: elm, text });
+      blocks.push({ el: elm, text, bold: opensWithBold(elm) });
     }
     // Fallback for div-soup pages: leaf-ish divs with substantial direct text.
     const total = blocks.reduce((n, b) => n + b.text.length, 0);
@@ -385,8 +400,9 @@
     let page = null;
     if (!onlyNew) {
       const mainEl = document.querySelector('main, article, [role="main"]');
-      const pageText = blocks.filter((b) => !mainEl || DOM.contains(mainEl, b.el)).map((b) => b.text.replace(/\s+/g, ' ').trim()).filter((t) => S.textAnalyzer.countWords(t) >= 8).join('\n\n');
-      page = S.textAnalyzer.analyzeText(pageText, { ...opts, mode: 'page' });
+      const inMain = blocks.filter((b) => !mainEl || DOM.contains(mainEl, b.el));
+      const pageText = inMain.map((b) => b.text.replace(/\s+/g, ' ').trim()).filter((t) => S.textAnalyzer.countWords(t) >= 8).join('\n\n');
+      page = S.textAnalyzer.analyzeText(pageText, { ...opts, mode: 'page', boldLeads: inMain.filter((b) => b.bold).length });
       verdicts.push(page.verdict);
     } else if (result && result.text) {
       verdicts.push(result.text.verdict);
