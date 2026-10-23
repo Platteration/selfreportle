@@ -300,3 +300,25 @@ test('stacked stock rhetoric anchors; one writer\'s favourite move, however ofte
   assert.equal(c.signals.find((s) => s.id === 'rhetoric').forms, 1);
   assert.equal(c.verdict, 'no-signal');
 });
+
+test('each kind of stock move is recognised, and its variants count as one kind', () => {
+  const S = require('../lib/signals.js');
+  const kinds = (text) => [...new Set(S.RHETORIC_PATTERNS.filter((p) => S.normalizeQuotes(text).match(p.re)).map((p) => p.form))].sort();
+  const cases = {
+    reframe: ["It's not a time problem, it's an energy problem.", "Trust isn't a perk you hand out. It's the infrastructure.", 'Not just a tool, but a partner.',
+      "It's about progress, not perfection.", "Remote work doesn't fail because of distance. It fails because of a lack of trust."],
+    'not-because': ['We stayed not because we had to, but because we wanted to.'],
+    'fragment-question': ['We shipped it. The result? Faster deploys.', 'Honestly? It was worth it.', 'Why? Because nobody asked.'],
+    'negation-run': ['No fluff. No jargon. Just results.', 'Not a course. Not a coach.'],
+    'heres-the': ["Here's the thing: nobody feels ready.", "Here's what nobody tells you about hiring."],
+    hook: ['Let that sink in.', "Let's talk about burnout in tech."],
+    'comes-in': ["That's where good tooling comes in."],
+    'less-more': ['Less noise, more signal.'],
+    'and-thats': ["Some days you rest. And that's okay."],
+    staccato: ['Clear. Simple. Effective.', 'Send the email. Write the first page. Make the call.'],
+    anaphora: ['Burnout looks like cynicism. Like dreading standup. Like staring at a ticket for an hour.'],
+  };
+  for (const [kind, texts] of Object.entries(cases)) for (const t of texts) assert.deepEqual(kinds(t), [kind], t);
+  // Five reframes are one kind.
+  assert.deepEqual(kinds(cases.reframe.join(' ')), ['reframe']);
+});

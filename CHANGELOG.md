@@ -18,6 +18,9 @@ development branch.
   list. One register part alone still never flags. A plain explanation that opens on
   the point, addresses "you" and sits under three or more bold labels gives the weak flag
   (`addressed-answer`); a page that opens with a title never counts.
+  Stock assistant rhetoric ("it's not X, it's Y", "The result? …", "No fluff. Just
+  results.", "here's the thing" and seven more kinds, `RHETORIC_PATTERNS`) is counted by
+  kind: three kinds anchor, four give the weak flag alone.
 - **Source-linked detection research and wider model coverage.** A local
   catalogue of six published studies, 16 researched vocabulary families,
   additional model/version names and documented conversation-format markers.
